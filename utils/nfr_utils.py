@@ -704,88 +704,88 @@ def get_dfn_info(mesh, cache_dir=None, map_location='cuda'):
     dfn_info = [_.to(map_location).float() if type(_) is not torch.Size else _  for _ in dfn_info]
     return dfn_info
 
-class renderer:
-    def __init__(self, view_d=6, img_size=1024, fragments=False):
+# class renderer:
+#     def __init__(self, view_d=6, img_size=1024, fragments=False):
 
-        import warnings
-        warnings.filterwarnings('ignore')
-        from pytorch3d.renderer import (
-        look_at_view_transform,
-        FoVPerspectiveCameras, 
-        PointLights, 
-        Materials, 
-        RasterizationSettings, 
-        MeshRenderer,
-        MeshRendererWithFragments,
-        MeshRasterizer)
+#         import warnings
+#         warnings.filterwarnings('ignore')
+#         from pytorch3d.renderer import (
+#         look_at_view_transform,
+#         FoVPerspectiveCameras, 
+#         PointLights, 
+#         Materials, 
+#         RasterizationSettings, 
+#         MeshRenderer,
+#         MeshRendererWithFragments,
+#         MeshRasterizer)
 
-        if torch.cuda.is_available():
-            device = torch.device("cuda:0")
-            torch.cuda.set_device(device)
-        else:
-            device = torch.device("cpu")
-        R, T = look_at_view_transform(view_d, 0, 0) 
-        cameras = FoVPerspectiveCameras(device=device, R=R, T=T)
-        raster_settings = RasterizationSettings(
-            image_size=img_size, 
-            blur_radius=0.0, 
-            faces_per_pixel=1, 
-            cull_backfaces=True
-        )
-        lights = PointLights(device=device, location=[[0.0, 0.0, -3.0]])
-        self.return_fragment = fragments
-        if self.return_fragment:
-            rd = MeshRendererWithFragments
-        else:
-            rd = MeshRenderer
-        materials = Materials(
-            device=device,
-            specular_color=[[0.0, 0.0, 0.0]],
-            shininess=100
-        )
-        # color = [172, 219, 255]
-        color = torch.tensor([255, 255, 255]) / 2 / 255
-        lights = PointLights(device=device, location=[[0.0, 0.0, 6]])
-        renderer = rd(
-            rasterizer=MeshRasterizer(
-                cameras=cameras, 
-                raster_settings=raster_settings
-            ),
-            shader=pytorch3d.renderer.HardFlatShader(
-                device=device, 
-                cameras=cameras,
-                lights=lights
-            )
-        )
+#         if torch.cuda.is_available():
+#             device = torch.device("cuda:0")
+#             torch.cuda.set_device(device)
+#         else:
+#             device = torch.device("cpu")
+#         R, T = look_at_view_transform(view_d, 0, 0) 
+#         cameras = FoVPerspectiveCameras(device=device, R=R, T=T)
+#         raster_settings = RasterizationSettings(
+#             image_size=img_size, 
+#             blur_radius=0.0, 
+#             faces_per_pixel=1, 
+#             cull_backfaces=True
+#         )
+#         lights = PointLights(device=device, location=[[0.0, 0.0, -3.0]])
+#         self.return_fragment = fragments
+#         if self.return_fragment:
+#             rd = MeshRendererWithFragments
+#         else:
+#             rd = MeshRenderer
+#         materials = Materials(
+#             device=device,
+#             specular_color=[[0.0, 0.0, 0.0]],
+#             shininess=100
+#         )
+#         # color = [172, 219, 255]
+#         color = torch.tensor([255, 255, 255]) / 2 / 255
+#         lights = PointLights(device=device, location=[[0.0, 0.0, 6]])
+#         renderer = rd(
+#             rasterizer=MeshRasterizer(
+#                 cameras=cameras, 
+#                 raster_settings=raster_settings
+#             ),
+#             shader=pytorch3d.renderer.HardFlatShader(
+#                 device=device, 
+#                 cameras=cameras,
+#                 lights=lights
+#             )
+#         )
 
-        self.renderer = renderer
-        self.color = color
-        self.device = device
-        self.materials = materials
+#         self.renderer = renderer
+#         self.color = color
+#         self.device = device
+#         self.materials = materials
 
-    def renderbatch(self, vertices, faces, reverse=False):
-        meshes = pytorch3d.structures.Meshes(verts=vertices, faces=faces)
-        meshes.textures = pytorch3d.renderer.TexturesVertex(verts_features=torch.tensor(self.color).to(self.device).unsqueeze(0).unsqueeze(0).expand(len(meshes), meshes.num_verts_per_mesh()[0], -1))
-        if self.return_fragment:
-            images, fragments = self.renderer(meshes,materials=self.materials)
-        else:
-            images = self.renderer(meshes,materials=self.materials)
-            fragments = None
-        if reverse:
-            return 1 - images[..., :3], fragments
-        return images[..., :3], fragments
+#     def renderbatch(self, vertices, faces, reverse=False):
+#         meshes = pytorch3d.structures.Meshes(verts=vertices, faces=faces)
+#         meshes.textures = pytorch3d.renderer.TexturesVertex(verts_features=torch.tensor(self.color).to(self.device).unsqueeze(0).unsqueeze(0).expand(len(meshes), meshes.num_verts_per_mesh()[0], -1))
+#         if self.return_fragment:
+#             images, fragments = self.renderer(meshes,materials=self.materials)
+#         else:
+#             images = self.renderer(meshes,materials=self.materials)
+#             fragments = None
+#         if reverse:
+#             return 1 - images[..., :3], fragments
+#         return images[..., :3], fragments
 
 
-    def mesh2img(self, mesh, reverse=False, noise=False):
-        mesh = pytorch3d.structures.Meshes(verts=[torch.from_numpy(mesh.vertices).float().to(self.device)], faces=[torch.from_numpy(mesh.faces).to(self.device)])
-        mesh.textures = pytorch3d.renderer.TexturesVertex(verts_features=torch.tensor(self.color).to(self.device).unsqueeze(0).expand_as(mesh.verts_packed())[None])
-        if self.return_fragment:
-            images, fragments = self.renderer(mesh,materials=self.materials)
-        else:
-            images = self.renderer(mesh,materials=self.materials)
-            fragments = None
-        if noise:
-            images += (torch.randn(images.shape[:3]).unsqueeze(-1) * 0.01).to(images.device)
-        if reverse:
-            return ((1 - images[0, ..., :3].detach().cpu().numpy()) * 255).astype(np.uint8), fragments
-        return (images[0, ..., :3].detach().cpu().numpy() * 255).astype(np.uint8), fragments
+#     def mesh2img(self, mesh, reverse=False, noise=False):
+#         mesh = pytorch3d.structures.Meshes(verts=[torch.from_numpy(mesh.vertices).float().to(self.device)], faces=[torch.from_numpy(mesh.faces).to(self.device)])
+#         mesh.textures = pytorch3d.renderer.TexturesVertex(verts_features=torch.tensor(self.color).to(self.device).unsqueeze(0).expand_as(mesh.verts_packed())[None])
+#         if self.return_fragment:
+#             images, fragments = self.renderer(mesh,materials=self.materials)
+#         else:
+#             images = self.renderer(mesh,materials=self.materials)
+#             fragments = None
+#         if noise:
+#             images += (torch.randn(images.shape[:3]).unsqueeze(-1) * 0.01).to(images.device)
+#         if reverse:
+#             return ((1 - images[0, ..., :3].detach().cpu().numpy()) * 255).astype(np.uint8), fragments
+#         return (images[0, ..., :3].detach().cpu().numpy() * 255).astype(np.uint8), fragments

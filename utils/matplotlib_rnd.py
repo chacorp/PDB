@@ -24,7 +24,11 @@ def vis_rig(rig, save_fn, normalize=False):
     heatmap = rig.unsqueeze(1) # (bs, 1, T, 53)
     heatmap = heatmap.repeat(1, 3, 1, 1) # (bs, 3, T, 53) --> height, width
     tvu.save_image(heatmap, f"{save_fn}", nrow=1, normalize=normalize)
-
+    
+def normalize(V):
+    V = V - V.mean(axis=0)
+    return V / np.max(np.linalg.norm(V, axis=1))
+    
 def frustum(left, right, bottom, top, znear, zfar):
     M = np.zeros((4, 4), dtype=np.float32)
     M[0, 0] = +2.0 * znear / (right - left)
@@ -94,6 +98,11 @@ def transform_vertices(frame_v, MVP, F, norm=True, no_parsing=False):
     VF = V[F]
     return VF
 
+
+def softmax(x):
+    exp_x = np.exp(x)
+    return exp_x / exp_x.sum(-1)[:,None]
+    
 # def calc_face_norm(fv):
 #     span = fv[ :, 1:, :] - fv[ :, :1, :]
 #     norm = np.cross(span[:, 0, :], span[:, 1, :])
@@ -341,13 +350,18 @@ def plot_image_array(Vs,
             C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
             NI = np.argwhere(C[:,2] > 0.0).squeeze()
             V, F, vidx = get_new_mesh(V, F, NI, invert=True)
-            
-            C = calc_face_norm(V, F,mode='v') #@ model[:3,:3].T
+            #F = np.flip(F, 1)#F[:,::-1]
+            C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
             
             #VV = (V-V.min()) / (V.max()-V.min())# world coordinate
             V = transform_vertices(V, MVP, F, norm, no_parsing=True)
-            triangle_ = tri.Triangulation(V[:,0], V[:,1], triangles=F)
             
+            
+            #VF_tri = transform_vertices(V, MVP, F, norm)
+            print(V.shape)
+            
+            triangle_ = tri.Triangulation(V[:,0], V[:,1], triangles=F)
+            #print(triangle_.shape)
             C = (C @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
             C = np.clip(C, 0, 1)
             C = C*0.5+0.25
@@ -375,6 +389,181 @@ def plot_image_array(Vs,
     else:
         plt.show()
         plt.close()
+        
+
+from matplotlib.colors import ListedColormap
+from matplotlib.collections import LineCollection
+from matplotlib.cm import get_cmap
+def plot_image_array_grd(Vs, Fs, Cs=None, rot_list=None, size=6, norm=False, 
+                         mode='shade', # not used
+                         threshold=0.01,
+                         seg_divide=False,
+                         is_diff=False,
+                         diff_base=None,
+                         diff_revert=False,
+                         linewidth=1, linestyle='solid', 
+                         light_dir=np.array([0, 0, 1]),
+                         view_dir=np.array([0, 0, 1]),
+                         mesh_scale=1.0,
+                         mesh_trans=np.array([0,0,0]),
+                         c_map="nipy_spectral", blend=0.5,
+                         seg_only=-1,
+                         bg_black=True, logdir='.', name='000', save=False, show=True):
+
+    def transform(V, M):
+        V_homo = np.hstack([V, np.ones((V.shape[0], 1))])
+        return (M @ V_homo.T).T[:, :3]
+
+    num_meshes = len(Vs)
+    plt.style.use('dark_background' if bg_black else 'default')
+    fig = plt.figure(figsize=(size * num_meshes, size))
+    
+    if is_diff:
+        if diff_base is None:
+            raise ValueError('diff_base is None!')
+            
+    if Cs==None:
+        Cs = [None] * num_meshes
+    
+    # light source data type int -> float
+    light_dir_view = light_dir.astype(float)
+    
+#     if is_diff:
+#         D_diff = np.array(abs(diff_base - np.array(Vs)))
+#         print(D_diff.shape)
+#         D_diff = np.linalg.norm(D_diff, axis=-1)
+#         print(D_diff.shape)
+
+#         if threshold is not None:
+#             D_diff[D_diff > threshold] = 0
+#         diff_min, diff_max = D_diff.min(), D_diff.max()
+        
+            
+    for idx, (V, F, C) in enumerate(zip(Vs, Fs, Cs)):
+                
+        if norm:
+            V = normalize(V)
+            
+        if is_diff:
+            #C = np.linalg.norm(abs(C), axis=-1)
+            C = np.linalg.norm(abs(V-diff_base), axis=-1)
+            C = (C - C.min(0)) / (C.max(0) - C.min(0))
+            C = 1 - C if diff_revert else C
+            print(C.shape, C.max(0), C.min(0))
+#             diff = D_diff[idx]
+#             if diff_max > 0:
+#                 diff = (diff - diff_min) / (diff_max - diff_min)
+        
+        V = V * mesh_scale + mesh_trans
+    
+        ax_pos = [idx / num_meshes, 0, 1 / num_meshes, 1]
+        ax = fig.add_axes(ax_pos, xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
+
+        xrot, yrot, zrot = rot_list[idx] if rot_list else (0, 0, 0)
+        model = translate(0, 0, -5) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
+        proj = ortho(-1, 1, -1, 1, 1, 100)
+        MVP = proj @ model
+
+        # Normal 변환은 inverse transpose의 rotation part
+        model_rot = model[:3, :3]
+        model_rot_invT = np.linalg.inv(model_rot).T
+
+        # 정점 normal
+        vertex_normals_obj = calc_face_norm(V, F, mode='v')
+        vertex_normals_view = (model_rot_invT @ vertex_normals_obj.T).T
+        
+        face_normals_obj = calc_face_norm(V, F)
+        face_normals_view = (model_rot_invT @ face_normals_obj.T).T
+        keep = (face_normals_view @ view_dir) >= 0
+        #F = F[keep]
+        
+        # intensity per vertex
+        #intensity = np.clip(vertex_normals_view @ light_dir_view, 0, 1)
+        # light sticked to front face
+        intensity = np.clip(vertex_normals_obj @ light_dir_view, 0, 1)
+        
+        # 정점 변환
+        V_proj = transform(V, MVP)
+
+        # depth sorting: triangle 중심 z
+        tri_depth = V_proj[F][:, :, 2].mean(axis=1)
+        sort_idx = np.argsort(-tri_depth)
+        F_sorted = F[sort_idx]
+
+        # Gouraud shading
+        triang = tri.Triangulation(V_proj[:, 0], V_proj[:, 1], F_sorted)
+                
+        vertex_color = intensity[..., np.newaxis].repeat(3, axis=-1)
+        vertex_color = vertex_color *0.7 + 0.2
+#         vertex_color = vertex_color *0.6 + 0.3
+        
+        if is_diff:
+            Sc = plt.get_cmap("YlOrRd")(C)[...,:3] ## [N, 4]
+            mask = C[:,np.newaxis]
+            #vertex_color = vertex_color*(1-blend)*(1-mask) + blend*Sc*mask
+            vertex_color = vertex_color*(1-mask) + Sc*mask
+                    
+            #vertex_color = np.clip(vertex_color, 0, 1)
+        else:
+            if C != None:
+                len_seg = C.shape[-1]
+                #S = softmax(C) # softmax
+                S=C
+                S = S.argmax(-1).numpy()#.float()
+
+                if seg_only>0:
+                    SF = S[F_sorted]
+
+                    v_mask = (S==seg_only).any(-1)
+                    vertex_color = vertex_color[v_mask][0]
+                    S = S[v_mask][0]
+
+                    f_mask = (SF==seg_only).any(-1)
+                    F_sorted_masked = F_sorted[f_mask]
+                    triang = tri.Triangulation(V_proj[:, 0], V_proj[:, 1], F_sorted_masked)
+
+                S = S.astype(float)
+                Sc = plt.get_cmap(c_map)(S/len_seg)[...,:3]
+
+                vertex_color = vertex_color*(1-blend) + blend*Sc
+                vertex_color = np.clip(vertex_color, 0, 1)
+
+    #         if seg_divide:
+    #             n_model = model.copy()
+    #             n_model[:3, :3] = model_rot_invT
+    #             N_MVP = proj @ n_model
+    #             N_proj = transform(vertex_normals_view, N_MVP)
+
+    #             for seg_n in range(len_seg):
+    #                 V_proj_seg = V_proj.copy()
+    #                 SF = S[F_sorted]
+
+    #                 v_mask = (S==seg_n).any(-1)
+    #                 vertex_color_seg = vertex_color[v_mask][0]
+    #                 S = S[v_mask][0]
+
+    #                 f_mask = (SF==seg_n).any(-1)
+    #                 F_sorted_masked = F_sorted[f_mask]
+    #                 V_proj_seg[v_mask, :2] = V_proj_seg[v_mask, :2] + (V_proj_seg[v_mask, :2]*0.5)
+    #                 triang = tri.Triangulation(V_proj_seg[:, 0], V_proj_seg[:, 1], F_sorted_masked)
+
+    #                 cmap = colors_to_cmap(vertex_color_seg)
+    #                 zs = np.linspace(0.0, 1.0, num=V.shape[0])
+    #                 plt.tripcolor(triang, zs, cmap=cmap, shading='gouraud')
+    #         else:
+        cmap = colors_to_cmap(vertex_color)
+        zs = np.linspace(0.0, 1.0, num=V.shape[0])
+        plt.tripcolor(triang, zs, cmap=cmap, shading='gouraud')
+            
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    if save:
+        plt.savefig(f'{logdir}/{name}.png', bbox_inches='tight')
+    
+    if show:
+        plt.show()
+    plt.close()
         
 def plot_image_array_VC(V, 
                      F, 
@@ -986,8 +1175,7 @@ def plot_image_array_col(Vs,
     fig = plt.figure(figsize=(size * num_meshes, size))  # Adjust figure size based on the number of meshes
     
     for idx, (V, F, col) in enumerate(zip(Vs, Fs, Cs)):
-        S = col
-        
+        S = col.numpy() if type(col)==torch.Tensor else col
         # Calculate the position of the subplot for the current mesh
         ax_pos = [idx / num_meshes, 0, 1 / num_meshes, 1]
         ax = fig.add_axes(ax_pos, xlim=[-1, +1], ylim=[-1, +1], aspect=1, frameon=False)
@@ -1027,9 +1215,10 @@ def plot_image_array_col(Vs,
 
         #C = C*0.5+0.25
         C = C*0.7+0.15
-        #S = torch.from_numpy(S).mode(-1).values.numpy()
-        Sc = S.mean(-1).numpy()
-        Sc = Sc[...,:3]
+        #Sc = torch.from_numpy(S).mode(-1).values.numpy()
+        
+        Sc = S.mean(1)#.numpy()
+        #Sc = Sc[...,:3]
 
         if blend >= 1.0:
             print('using given color')
@@ -1038,7 +1227,7 @@ def plot_image_array_col(Vs,
             C = (C*(1-blend) + Sc*blend)
             C = np.clip(C, 0, 1)
         
-        collection = PolyCollection(T, closed=False, linewidth=linewidth,facecolor=Sc, edgecolor=Sc)
+        collection = PolyCollection(T, closed=False, linewidth=linewidth,facecolor=C, edgecolor=C)
         
         ax.add_collection(collection)
         plt.xticks([])
@@ -1063,10 +1252,12 @@ def plot_image_array_seg(Vs,
                      linestyle='solid', 
                      light_dir=np.array([0,0,1]),
                      bg_black = True,
-                    logdir='.', 
-                    name='000', 
+                     c_map="nipy_spectral",
+                     logdir='.', 
+                     name='000', 
                      save=False,
-                    draw_base=True,
+                     draw_base=True,
+                     blend = 0.4,
                     ):
     num_meshes = len(Vs)
     if bg_black:
@@ -1087,12 +1278,15 @@ def plot_image_array_seg(Vs,
 #     proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
 #     MVP   = proj @ model # view is identity
     
-    
+        
     for idx, (V, F, seg) in enumerate(zip(Vs, Fs, Cs)):
         
         len_seg = seg.shape[-1]
-        S = seg.argmax(-1) 
-        
+        #S = seg.argmax(-1)
+        #print(seg.argmax(-1).shape)
+        S = softmax(seg) # softmax
+        S = S.argmax(-1).float()
+                
         # Calculate the position of the subplot for the current mesh
         ax_pos = [idx / num_meshes, 0, 1 / num_meshes, 1]
         ax = fig.add_axes(ax_pos, xlim=[-1, +1], ylim=[-1, +1], aspect=1, frameon=False)
@@ -1132,12 +1326,14 @@ def plot_image_array_seg(Vs,
         #C = C*0.5+0.25
         C = C*0.7+0.15
 
-        #S = torch.from_numpy(S).mode(-1).values.numpy()
-        S = S.mode(-1).values.numpy()
-        Sc = plt.get_cmap("nipy_spectral")(S/len_seg)
+        #S = S.mode(-1).values.numpy()
+        #S = S.max(-1).values.numpy()
+        S = S.mean(-1)
+#         S = S.argmax(-1)
+        
+        Sc = plt.get_cmap(c_map)(S/len_seg)
         Sc = Sc[...,:3]
         
-        blend = 0.4
         
         C = (C*(1-blend) + Sc*blend)
         C = np.clip(C, 0, 1)
@@ -1403,17 +1599,24 @@ def render_wo_audio(#basedir="tmp",
                    savename="temp",
                    figsize=(3,3),
                    fps=30,
+                   size=4,
                    y_rot=0,
                    light_dir=np.array([0,0,1]),
                    mode='mesh', 
                    linewidth=1,
                    save=True,
+                   bg_black=False,
                   ):
+    if bg_black:
+        plt.style.use('dark_background')
+    else:
+        plt.style.use('default')
     # make dirs
     os.makedirs(savedir, exist_ok=True)
         
     num_meshes = len(Vs)
-    size = 4
+    size = size
+    figsize = (size, size)
     
     ## visualize
     fig = plt.figure(figsize=figsize)

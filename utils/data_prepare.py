@@ -46,6 +46,8 @@ if __name__ == "__main__":
     python data_prepare.py -i path_to_obj -o output_dir
     python utils/data_prepare.py -i /data/sihun/multiface_align/obj -o /data/sihun/multiface_align/precomputes
     python utils/data_prepare.py -i /data/sihun/ICT-audio2face/precompute-synth-narrow_face -o /data/sihun/ICT-audio2face/precompute-synth-narrow_face
+    
+    python utils/data_prepare.py -i _exp2/flame -o _exp2/flame_precompute
     """
 
     args = Options()
@@ -57,9 +59,12 @@ if __name__ == "__main__":
     os.makedirs(args.out_dir, exist_ok=True)
     
     for src_mesh_file in tqdm(src_mesh_list):
+        src_name = src_mesh_file.split("/")[-1].replace(".obj", "")
         dfn_info_filename = f'{args.out_dir}/{src_name}_dfn_info.pkl'
         operators_filename = f'{args.out_dir}/{src_name}_operators.pkl'
         img_filename = f'{args.out_dir}/{src_name}_img.npy'
+        
+        src_name = src_name.replace("_mesh", "")
         
         if os.path.isfile(dfn_info_filename):
             continue
@@ -68,8 +73,6 @@ if __name__ == "__main__":
         if os.path.isfile(img_filename):
             continue
         
-        src_name = src_mesh_file.split("/")[-1].replace(".obj", "")
-        src_name = src_name.replace("_mesh", "")
             
         src_mesh = trimesh.load(src_mesh_file, maintain_order=True, process=False)
         if args.decimate:
