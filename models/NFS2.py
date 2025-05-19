@@ -13,26 +13,15 @@ from pathlib import Path
 abs_path = str(Path(__file__).parents[1].absolute())
 sys.path+=[abs_path, f'{abs_path}/mesh_utils']
 
-from models.CNN import TextureEncoder
+from tqdm import tqdm
+
 from utils.nfr_utils import Normalizer, get_dfn_info, calc_cent
 from utils.remesh_utils import ICT_face_model
 from utils.mesh_utils import Renderer, calc_norm_torch, get_mesh_operators, get_jacobian_matrix
-# import utils.nfr_utils as nfr_utils
-# from utils import (
-#     ICT_face_model, 
-#     Renderer, 
-#     calc_norm_torch, 
-#     calc_cent, 
-#     get_mesh_operators, 
-#     get_jacobian_matrix,
-#     vis_rig,
-# )
 
-from tqdm import tqdm
-
-from .CNN import TextureEncoder
-from .decoder import *
-from .encoder import *
+from models.CNN import TextureEncoder
+from models.decoder import *
+from models.encoder import BaseDiffusionNetEncoder
 # from .NFR import *
 # from .siren_decoder import SurfaceDeformationField
 
@@ -72,55 +61,7 @@ class NFS(nn.Module):
         in_shape_dict = {'cents&norms':6, 'cents':3, 'cents&norms&seg':7}
         out_shape_dict = {'vert': 3, 'disp': 3, 'jacob': 9}
         
-        if self.design == 'nfr':
-            # mesh_ae = NFR(self.opts, pre_computes=mesh_dfn_info, device=self.device, mode='default')
-            ### not using 'mesh_ae'
-            # self.img_encoder = mesh_ae.img_encoder
-            # self.img_fc = mesh_ae.img_fc
-            self.img_encoder = TextureEncoder()
-            img_feat=32
-            self.img_fc = linear_layer(128, img_feat)
-            self.id_encoder = BaseDiffusionNetEncoder(
-                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
-                pre_computes=pre_computes,
-                out_shape=self.id_dim,
-            )
-            self.exp_encoder = BaseDiffusionNetEncoder(
-                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
-                pre_computes = pre_computes,
-                out_shape=self.rig_dim,
-            )
-            self.decoder = BaseDecoder(
-                #in_shape=3+3+128+100+53, ### NFR original setting
-                in_dim=in_shape_dict[self.in_key]+self.img_feat_dim+self.rig_dim+self.id_dim, 
-                out_shape=out_shape_dict[self.out_key]
-            )
-            
-        elif self.design == 'new1': # added segment encoder, skinning block (MLP)
-            self.mesh_id_encoder = BaseDiffusionNetEncoder(
-                in_shape=in_shape_dict[self.in_key],
-                pre_computes=mesh_dfn_info,
-                out_shape=self.id_dim,
-            )
-            self.mesh_exp_encoder = BaseDiffusionNetEncoder(
-                in_shape=in_shape_dict[self.in_key],
-                pre_computes=mesh_dfn_info,
-                out_shape=self.rig_dim,
-            )
-            self.mesh_seg_encoder = BaseDiffusionNetEncoder(
-                in_shape=in_shape_dict[self.in_key],
-                pre_computes = mesh_dfn_info,
-                out_shape=self.seg_dim,
-                outputs_at='vertices',
-            )
-            self.mesh_decoder = SkinningDecoder(
-                in_dim=in_shape_dict[self.in_key], 
-                id_dim=self.id_dim,
-                exp_dim=self.rig_dim,
-                seg_dim=self.seg_dim,
-                out_shape=out_shape_dict[self.out_key],
-            )
-        elif self.design == 'new2': # added segment encoder, skinning block (MLP)
+        if self.design == 'new2': # added segment encoder, skinning block (MLP)
             self.img_encoder = TextureEncoder()
             self.img_fc = nn.Linear(128, self.img_feat_dim)
             
@@ -146,6 +87,37 @@ class NFS(nn.Module):
                 exp_dim=self.rig_dim,
                 seg_dim=self.seg_dim,
                 out_shape=out_shape_dict[self.out_key],
+            )
+        elif self.design == 'r':
+            from utils.mesh_utils import compute_wks_autoscale
+            self.compute_wks_autoscale = compute_wks_autoscale
+            self.mesh_fe = BaseDiffusionNetEncoder(
+                in_shape=128,
+                pre_computes=mesh_dfn_info,
+                out_shape=256,
+            )
+        elif self.design == 'new3':             
+            self.mesh_id_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes=mesh_dfn_info,
+                out_shape=self.id_dim,
+            )
+            self.mesh_exp_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes=mesh_dfn_info,
+                out_shape=self.rig_dim,
+            )
+            self.mesh_seg_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes=mesh_dfn_info,
+                out_shape=self.seg_dim,
+                outputs_at='vertices',
+            )
+            self.mesh_decoder = BaseDiffusionNetDecoder(
+                in_dim=in_shape_dict[self.in_key]+self.img_feat_dim+self.seg_dim, 
+                pre_computes=mesh_dfn_info,
+                out_shape=out_shape_dict[self.out_key],
+                outputs_at='vertices',
             )
             # elif self.design == 'new4':
             #     self.mesh_id_encoder = BaseDiffusionNetEncoder(
@@ -174,7 +146,8 @@ class NFS(nn.Module):
             
         # print all layer params number
         if print_param:
-            self.print_parameter_num()
+            if self.design != 'r': 
+                self.print_parameter_num()
         
         self.criterion = nn.MSELoss()
         self.calc_norm_torch = calc_norm_torch
@@ -289,6 +262,13 @@ class NFS(nn.Module):
         ]
         if 'new2' in self.design:
             param_list = param_list + [*self.mesh_seg_encoder.parameters()]
+        return param_list
+    
+    def get_mesh_fe_parameters(self):
+        """mesh feature extractor"""
+        param_list= [
+            *self.mesh_fe.parameters(), 
+        ]
         return param_list
     
     def get_img_feat(self, img):
@@ -600,6 +580,29 @@ class NFS(nn.Module):
             pred_seg_coeff = self.encode_seg(vert_feat, dfn_info) # [1, V, Seg]
                 
         return pred_id_coeff, pred_exp_coeff, pred_seg_coeff
+     
+    def extract_mesh_feature(self, dfn_info, verbose=False):
+        """batch size is 1
+        Args
+        ----------
+            dfn_info (list): mesh precompute features for DiffusionNet
+        
+        Returns
+        ----------
+            mesh_feat (torch.tensor): [B, feat] identity code per batch
+        """
+        if verbose:
+            print("extracting feature ...")
+        self.mesh_fe.update_precomputes(dfn_info)
+        
+        wks = self.compute_wks_autoscale(
+            evals=dfn_info[2].squeeze(0),
+            evecs=dfn_info[3].squeeze(0),
+            mass=dfn_info[0].squeeze(0)
+        )
+        mesh_feat = self.mesh_fe(wks)
+        return mesh_feat
+    
     
     def gaussian_kernel1d(self, kernel_size=5, sigma=1.0):
         x = torch.arange(kernel_size).float() - (kernel_size - 1) / 2
@@ -840,86 +843,10 @@ class NFS(nn.Module):
         ##------------------------------------------------------------------------------
         
         ## Encoding --------------------------------------------------------------------
-        ## source & target mesh image feature
-        img_feat = self.get_img_feat(img).unsqueeze(1) # [1, 1, 128]
-        # source expression face
-        vert_feat_exp = self.get_local_feature(gt_vertices, faces, img_feat)  # [W, V, 6]
-        # target neutral face
-        vert_feat = self.get_local_feature(template, faces, img_feat) # [1, V, 6]
+        import pdb;pdb.set_trace()
+        mesh_feat = extract_mesh_feature(self, dfn_info, verbose=False)
         
-        pred_id_coeff, pred_exp_coeff, pred_seg_coeff = self.encode_mesh_grad(vert_feat, vert_feat_exp, dfn_info)
         ##------------------------------------------------------------------------------
-        
-        
-        ## Decoding --------------------------------------------------------------------
-        # target local features
-        if self.opts.dec_type=='jacob':
-            faces_feat = self.get_local_feature(template, faces, img_feat, at='faces')
-            local_feat = faces_feat # [1, V, 3+3+128]
-        else: # dec_type=='disp'
-            local_feat = vert_feat # [1, V, 3+3+128]
-        
-        style_emb = None # -> not used!
-        
-        # target inputs
-        if epoch < 100 and mesh_data == 'ict' and self.opts.warmup:
-            inputs = (local_feat, gt_rig_params, pred_id_coeff, pred_seg_coeff, style_emb, template, faces, operators)
-        else:
-            inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff, style_emb, template, faces, operators)
-        # inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff, style_emb, template, faces, operators)
-        pred_outputs, pred_jacobians = self.decode_grad(inputs)
-        ##------------------------------------------------------------------------------
-        
-        
-        ## Loss function ---------------------------------------------------------------
-        loss = {}
-            
-        loss["recon_vDec"] = self.criterion(gt_vertices, pred_outputs)
-        
-        pred_normals = self.calc_norm_torch(pred_outputs, faces, at='verts')
-        loss["norm_vDec"] = self.criterion(gt_normals, pred_normals)
-        
-        gt_jacobians = self.get_jacobian_matrix(gt_vertices, faces, template, return_torch=True)
-        loss["jacob_vDec"] = self.criterion(gt_jacobians, pred_jacobians)
-        
-        if mesh_data == 'ict':
-            loss["vert_rIEnc"] = self.criterion(gt_id_coeff, pred_id_coeff)
-            loss["vert_rEEnc"] = self.criterion(gt_rig_params, pred_exp_coeff)
-            
-            region_num = self.ict_face_model.get_region_num(gt_vertices)
-            v_num, faces = self.ict_face_model.get_random_v_and_f(region_num, mode='torch')
-            ict_seg = self.ict_vert_segment[:v_num]
-                
-            if not self.opts.no_BP:
-                pred_ICT_recon = self.ict_face_model.apply_coeffs_batch_torch(pred_id_coeff[:, :100], pred_exp_coeff[:, :53], region=region_num)                
-                loss["vert_vICT"] = self.criterion(gt_vertices, pred_ICT_recon)
-        
-            if not self.opts.no_BR:
-                inputs_ict = self.get_inputs_ict(pred_exp_coeff.detach(), region=region_num, v_num=v_num, faces_ict=faces)
-                gt_recon_ICT = self.ict_face_model.apply_coeffs_batch_torch(inputs_ict[2][:, :100], pred_exp_coeff[:, :53].detach(), region=region_num)
-                pred_outputs_ict, _ = self.decode_grad(inputs_ict)
-                loss["vert_vICT"] = self.criterion(gt_recon_ICT, pred_outputs_ict)
-
-            if 'new2' in self.design:
-                pred_seg_log = F.log_softmax(pred_seg_coeff, dim=-1) ## [V, Seg]
-                loss["nll_vSeg"] = 0
-                for pred_s_l in pred_seg_log:
-                    loss["nll_vSeg"] += F.nll_loss(pred_s_l, ict_seg)
-                loss["nll_vSeg"] = loss["nll_vSeg"] / pred_seg_log.shape[0]
-        else:
-            # if not self.opts.no_BR:
-            #     inputs_ict = self.get_inputs_ict(pred_exp_coeff.detach(), region=region_num, v_num=v_num, faces_ict=faces)
-            #     gt_recon_ICT = self.ict_face_model.apply_coeffs_batch_torch(inputs_ict[2][:, :100], pred_exp_coeff[:, :53].detach(), region=region_num)
-            #     pred_outputs_ict, _ = self.decode_grad(inputs_ict)
-            #     loss["vert_vICT"] = self.criterion(gt_recon_ICT, pred_outputs_ict)
-            loss["vert_rIEnc"] = self.non_ict_loss(pred_id_coeff[:, :100]) + self.L2_regularization(pred_id_coeff[:, 100:])
-            loss["vert_rEEnc"] = self.non_ict_loss(pred_exp_coeff[:, :53]) + self.L2_regularization(pred_exp_coeff[:, 53:])
-            
-        if return_all:
-            if self.design == 'nfr': 
-                return loss, pred_outputs, None, pred_exp_coeff, pred_id_coeff, None
-            else:
-                return loss, pred_outputs, None, pred_exp_coeff, pred_id_coeff, pred_seg_coeff
         return loss
     
     def stage11_forward(self, batch, teacher_forcing=True, return_all=False, epoch=0):
