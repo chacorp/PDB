@@ -756,7 +756,7 @@ class MeshDataset(data.Dataset):
         faces = torch.from_numpy(faces).long()
         
         ## Random Augmentation ---------------------------------------------------
-        # template, vertices = self.random_trans_scale(template, vertices)
+        template, vertices = self.random_trans_scale(template, vertices)
         ## -----------------------------------------------------------------------
         
         dfn_info = os.path.join(precompute_dir, f"{id_key}_dfn_info.pkl")
@@ -801,7 +801,7 @@ class MeshDataset(data.Dataset):
         template = torch.from_numpy(template).float()
 
         ## Random Augmentation ---------------------------------------------------
-        # template, vertices = self.random_trans_scale(template, vertices)
+        template, vertices = self.random_trans_scale(template, vertices)
         ## -----------------------------------------------------------------------
         
         # get exp_coeff  (no GT == zeros!)
@@ -860,7 +860,7 @@ class MeshDataset(data.Dataset):
         template = torch.from_numpy(template).float()
         
         ## Random Augmentation ---------------------------------------------------
-        # template, vertices = self.random_trans_scale(template, vertices)
+        template, vertices = self.random_trans_scale(template, vertices)
         ## -----------------------------------------------------------------------
         
         # get id_coeff and exp_coeff (no GT == zeros!)
@@ -903,6 +903,9 @@ class MeshDataset(data.Dataset):
         template = torch.from_numpy(template).float()
         faces = torch.from_numpy(faces).long()
 
+        ## Random Augmentation ---------------------------------------------------
+        template, vertices = self.random_trans_scale(template, vertices)
+        ## -----------------------------------------------------------------------
         id_coeff = torch.zeros(128)
         exp_coeff = torch.zeros(self.WS, 128)
         dummy = torch.zeros(1)
@@ -941,6 +944,9 @@ class MeshDataset(data.Dataset):
         template = torch.from_numpy(template).float()
         faces = torch.from_numpy(faces).long()
 
+        ## Random Augmentation ---------------------------------------------------
+        template, vertices = self.random_trans_scale(template, vertices)
+        ## -----------------------------------------------------------------------
         id_coeff = torch.zeros(128)
         exp_coeff = torch.zeros(self.WS, 128)
         dummy = torch.zeros(1)
@@ -980,6 +986,9 @@ class MeshDataset(data.Dataset):
         template = torch.from_numpy(template).float()
         faces = torch.from_numpy(faces).long()
         
+        ## Random Augmentation ---------------------------------------------------
+        template, vertices = self.random_trans_scale(template, vertices)
+        ## -----------------------------------------------------------------------
         id_coeff = torch.zeros(128)
         exp_coeff = torch.zeros(self.WS, 128)
         dummy = torch.zeros(1)

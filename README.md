@@ -40,6 +40,13 @@ pip install -r requirements.txt
 # pip install -r requirements-cuda12.1.txt ## if using chacorp/diff3f:latest, use this
 ``` -->
 
+### Third party
+```
+cd third_party
+git clone https://github.com/USC-ICT/ICT-FaceKit
+git clone https://github.com/vsitzmann/siren
+```
+
 ### Downloads
 Download the following files from the link and place them in the root directory of this repo.
 - [ICT files](https://drive.google.com/file/d/1NeSJyVgybzZS-p6uHafv6e3Tv8jTxbCy/view?usp=sharing). \
