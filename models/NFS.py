@@ -79,15 +79,15 @@ class NFS(nn.Module):
             # self.img_fc = mesh_ae.img_fc
             self.img_encoder = TextureEncoder()
             img_feat=32
-            self.img_fc = linear_layer(128, img_feat)
+            self.img_fc = nn.Linear(128, img_feat)
             self.id_encoder = BaseDiffusionNetEncoder(
                 in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
-                pre_computes=pre_computes,
+                pre_computes=mesh_dfn_info,
                 out_shape=self.id_dim,
             )
             self.exp_encoder = BaseDiffusionNetEncoder(
                 in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
-                pre_computes = pre_computes,
+                pre_computes = mesh_dfn_info,
                 out_shape=self.rig_dim,
             )
             self.decoder = BaseDecoder(
@@ -147,28 +147,22 @@ class NFS(nn.Module):
                 seg_dim=self.seg_dim,
                 out_shape=out_shape_dict[self.out_key],
             )
-            # elif self.design == 'new4':
-            #     self.mesh_id_encoder = BaseDiffusionNetEncoder(
-            #         in_shape=in_shape_dict[self.in_key],
-            #         pre_computes=mesh_dfn_info,
-            #         out_shape=self.id_dim,
-            #     )
-            #     self.mesh_exp_encoder = BaseDiffusionNetEncoder(
-            #         in_shape=in_shape_dict[self.in_key],
-            #         pre_computes=mesh_dfn_info,
-            #         out_shape=self.rig_dim,
-            #     )
-            #     self.mesh_seg_encoder = BaseDiffusionNetEncoder(
-            #         in_shape=in_shape_dict[self.in_key],
-            #         pre_computes=mesh_dfn_info,
-            #         out_shape=self.seg_dim,
-            #         outputs_at='vertices',
-            #     )
-            #     self.mesh_decoder = SurfaceDeformationField(
-            #         in_dim=in_shape_dict[self.in_key], 
-            #         latent_dim=self.rig_dim,
-            #         out_shape=out_shape_dict[self.out_key],
-            #     )
+        elif self.design == 'new4':
+            self.mesh_id_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key],
+                pre_computes=mesh_dfn_info,
+                out_shape=self.id_dim,
+            )
+            self.mesh_exp_encoder = AdaINDiffusionNet(
+                in_shape=in_shape_dict[self.in_key],
+                pre_computes=mesh_dfn_info,
+                out_shape=self.rig_dim,
+            )
+            self.mesh_decoder = AdaINDiffusionNet(
+                in_dim=in_shape_dict[self.in_key], 
+                latent_dim=self.rig_dim,
+                out_shape=out_shape_dict[self.out_key],
+            )
         else:
             raise NotImplementedError
             
