@@ -17,7 +17,7 @@ feature_type: 'cents&norms'
 
 input_dim: 768 # (not used)
 feat_dim: 128 # (not used)
-rig_dim: 128 # 'rig (expression code) dim'
+rig_dim: 64 # 128 # 'rig (expression code) dim'
 id_dim: 128 # 'identity code dim'
 seg_dim: 20 # face segmentation dim
 ltn_dim: 128 # dim for mesh autoencoder latent
@@ -55,7 +55,7 @@ batch_size: 1
 
 # Data directory
 data_dir: "/data/ICT-audio2face/split_set"
-log_dir: "./ckpts"
+log_dir: "./ckpts_new"
 
 ckpt: ''
 
@@ -90,4 +90,4 @@ std_file: data/ICT_live_100
 
 stage1: True
 
-design: 'new2'
+design: 'new4'
