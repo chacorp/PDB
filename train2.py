@@ -19,7 +19,10 @@ from dataloader_mesh import (
     NFSDataset,
     MeshDataset,
     MeshSampler,
-    collate_wrapper
+    collate_wrapper,
+    IDMeshDataset,
+    IDMeshSampler,
+    collate_wrapper_ID
 )
 
 from utils.mesh_utils import Renderer #, calc_cent
@@ -102,10 +105,7 @@ class Trainer():
         self.opts = opts
         self.set_seed(self.opts)
         self.device = opts.device
-        
-        # utils
-        self.renderer = Renderer(view_d=2.5, img_size=256, fragments=True)
-        
+                
         if 'exp' in self.opts.design:
             from models.NFS import Exp
             self.model = Exp(self.opts, None).to(self.device)
@@ -408,121 +408,165 @@ class Trainer():
                 "total": 0
             }
             counter = 0
-            for index, batch in tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100):
-                counter += 1
-                # ------------------------------------------------------------------------------------------------
-                # _, id_coeff, gt_rig_params, template, dfn_info, operators_path, vertices, faces, img, mesh_data = batch
+            if epoch % 10 == 0:
+                for index, batch in tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100):
+                    counter += 1
+                    # ------------------------------------------------------------------------------------------------
+                    # _, id_coeff, gt_rig_params, template, dfn_info, operators_path, vertices, faces, img, mesh_data = batch
+                        
+                    with torch.no_grad():
+                        loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
+                            batch, 
+                            stage=1 if not self.opts.design == 'exp'else 11, 
+                            return_all=True
+                        )
+
+                    # get total loss
+                    loss = 0
+                    for key, value in loss_dict.items():
+                        key_ = key.split("_")[0]
+                        tmp = value.item()*self.loss_lambda[key_]
+                        loss += tmp
+                        running_losses[key] += tmp
+                    loss_dict["total"] = loss 
+
+                    # running loss
+                    running_losses["total"] += loss_dict["total"]
+                    # ------------------------------------------------------------------------------------------------
+
+                    # for visualization
+                    gt_id_coeff = batch.id_coeff.cpu()
+                    gt_rig = batch.gt_rig_params.cpu()
+                    vertices = batch.vertices.cpu().squeeze()
+                    faces = batch.faces.cpu()
+                    mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                     
-                with torch.no_grad():
-                    loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
-                        batch, 
-                        stage=1 if not self.opts.design == 'exp'else 11, 
-                        return_all=True
-                    )
+                    interv = round(len_valid_data /5)
+                    if index % interv == 0:
+                    # if index % 2 == 0:
+                        log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
+                        for key, value in running_losses.items():
+                            log_text += f"{key}: {value:.6f} "
+                        self.logger.write(log_text+"\n")
 
-                # get total loss
-                loss = 0
-                for key, value in loss_dict.items():
-                    key_ = key.split("_")[0]
-                    tmp = value.item()*self.loss_lambda[key_]
-                    loss += tmp
-                    running_losses[key] += tmp
-                loss_dict["total"] = loss 
-
-                # running loss
-                running_losses["total"] += loss_dict["total"]
-                # ------------------------------------------------------------------------------------------------
-
-                # for visualization
-                gt_id_coeff = batch.id_coeff.cpu()
-                gt_rig = batch.gt_rig_params.cpu()
-                vertices = batch.vertices.cpu().squeeze()
-                faces = batch.faces.cpu()
-                mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
-                
-                interv = round(len_valid_data /5)
-                if index % interv == 0:
-                # if index % 2 == 0:
-                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
-                    for key, value in running_losses.items():
-                        log_text += f"{key}: {value:.6f} "
-                    self.logger.write(log_text+"\n")
-
-                    frame = BS//2
-                    v_list = [ v for v in vertices[frame:frame+2] ] + \
-                        [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
-                    len_v = len(v_list)
-                    f_list=[faces] * len_v
-                    save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
-                    save_img_name = f"{epoch:03d}_{index:04d}"
-                    if pred_seg is not None:
-                        pred_seg=pred_seg.squeeze(0).cpu().detach()
-                        
-                        if mesh_data == 'ict':
-                            c_list=[gt_seg]*2+[seg for seg in pred_seg[frame:frame+2]]
-                        else:
-                            c_list=[seg for seg in pred_seg[frame:frame+2]]*2
-                        
-                        plot_image_array_seg(
-                            v_list, f_list, c_list, 
-                            rot_list=[[0,0,0]]*len_v,
-                            size=1, bg_black=False, mode='shade', 
-                            logdir=save_logdir, 
-                            name=save_img_name, save=True
-                        )
-                    else:
-                        plot_image_array(
-                            v_list, f_list, 
-                            rot_list=[[0,0,0]]*len_v,
-                            size=1, bg_black=False, mode='shade', 
-                            logdir=save_logdir, 
-                            name=save_img_name, save=True
-                        )
-                    if mesh_data == 'ict':
-                        if pred_exp is not None:
-                            vis_rig(
-                                torch.cat([pred_exp.cpu().detach()[None], gt_rig.squeeze()[None]], dim=0), 
-                                f"{self.opts.log_dir}/img/valid/rig/{epoch:03d}_{index:04d}.jpg",
-                                normalize=True
+                        frame = BS//2
+                        v_list = [ v for v in vertices[frame:frame+2] ] + \
+                            [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
+                        len_v = len(v_list)
+                        f_list=[faces] * len_v
+                        save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                        save_img_name = f"{epoch:03d}_{index:04d}"
+                        if pred_seg is not None:
+                            pred_seg=pred_seg.squeeze(0).cpu().detach()
+                            
+                            if mesh_data == 'ict':
+                                c_list=[gt_seg]*2+[seg for seg in pred_seg[frame:frame+2]]
+                            else:
+                                c_list=[seg for seg in pred_seg[frame:frame+2]]*2
+                            
+                            plot_image_array_seg(
+                                v_list, f_list, c_list, 
+                                rot_list=[[0,0,0]]*len_v,
+                                size=1, bg_black=False, mode='shade', 
+                                logdir=save_logdir, 
+                                name=save_img_name, save=True
                             )
-                if self.opts.debug:
-                    break
-            # log
-            if self.opts.tb:
-                self.log_loss(self.writer_valid, running_losses, epoch, counter)
-            
-            # best loss
-            if running_losses["total"]/counter < BEST_LOSS:
-                BEST_LOSS = running_losses["total"]/counter
-                BEST_EPOCH = epoch
-                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
-                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                        else:
+                            plot_image_array(
+                                v_list, f_list, 
+                                rot_list=[[0,0,0]]*len_v,
+                                size=1, bg_black=False, mode='shade', 
+                                logdir=save_logdir, 
+                                name=save_img_name, save=True
+                            )
+                        if mesh_data == 'ict':
+                            if pred_exp is not None:
+                                vis_rig(
+                                    torch.cat([pred_exp.cpu().detach()[None], gt_rig.squeeze()[None]], dim=0), 
+                                    f"{self.opts.log_dir}/img/valid/rig/{epoch:03d}_{index:04d}.jpg",
+                                    normalize=True
+                                )
+                    if self.opts.debug:
+                        break
+                # log
+                if self.opts.tb:
+                    self.log_loss(self.writer_valid, running_losses, epoch, counter)
+                
+                # best loss
+                if running_losses["total"]/counter < BEST_LOSS:
+                    BEST_LOSS = running_losses["total"]/counter
+                    BEST_EPOCH = epoch
+                    print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
+                    self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
+                    torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
     
-    # Unsupervised Learning of Robust Spectral Shape Matching   
-    def train_ULRSSM(self, epochs):
-        from models.encoder import BaseDiffusionNetEncoder
-        self.model = BaseDiffusionNetEncoder(in_shape=128, out_shape=256)
+    # Unsupervised Learning of Robust Spectral Shape Matching
+    def train_ULRSSM(self, epochs, stage=9):
         
         # define loss lamdba -------------------------------------------------------------------------------------
         self.loss_lambda = {
-            "w_bij": 1.0,
-            "w_orth": 1.0,
-            "w_lap": 0.0,
+            "d": 1.0, # dummy
+            "l": self.opts.batch_size,
+            "align": self.opts.lambda_align,
+            "recon": self.opts.lambda_vert, # gt vertex recon
+            "vert": 1.0, # == blendshape recon
+            "norm":  self.opts.lambda_normal,
+            "jacob": self.opts.lambda_jacob,
+            "temp":  self.opts.lambda_temp,
+            "nll":   self.opts.lambda_seg,
         }
         
         # define optimizer
-        if self.opts.design == 'new':
-            self.optimizer = torch.optim.Adam(self.model.mesh_decoder.parameters(), lr=self.opts.lr, betas=(0.5, 0.999))
-            updated_optim=False
-        else:
-            self.optimizer = torch.optim.Adam(self.model.get_mesh_autoencoder_parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
+        if stage == 9:
+            self.optimizer = torch.optim.Adam(
+                self.model.get_mesh_ae_parameters(),
+                lr=self.opts.lr, 
+                betas=(0.5, 0.999)
+            )
+        elif stage == 8:
+            self.optimizer = torch.optim.Adam(
+                [*self.model.mesh_encoder.parameters()],
+                lr=self.opts.lr, 
+                betas=(0.5, 0.999)
+            )
     
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=10, eta_min=1e-4
         )
         
         # define dataset -----------------------------------------------------------------------------------------
+        # BS = self.opts.batch_size
+        # self.train_dataset = IDMeshDataset(self.opts, is_train=True)
+        # train_sampler = IDMeshSampler(
+        #     self.train_dataset.len_list, 
+        #     self.opts.batch_size,
+        #     shuffle=True,
+        #     balance=False,
+        #     n_sampling=self.opts.n_sampling,
+        #     n_=8
+        # )
+        # self.train_dataloader = torch.utils.data.DataLoader(
+        #     self.train_dataset, 
+        #     batch_sampler=train_sampler, 
+        #     collate_fn=partial(collate_wrapper_ID, device=opts.device), 
+        #     num_workers=0
+        # )
+        
+        # self.valid_dataset = IDMeshDataset(self.opts, is_valid=True)
+        # valid_sampler = IDMeshSampler(
+        #     self.valid_dataset.len_list, 
+        #     self.opts.batch_size,
+        #     shuffle=True,
+        #     balance=False,
+        #     n_sampling=self.opts.n_sampling,
+        #     n_=64
+        # )
+        # self.valid_dataloader = torch.utils.data.DataLoader(
+        #     self.valid_dataset, 
+        #     batch_sampler=valid_sampler, 
+        #     collate_fn=partial(collate_wrapper_ID, device=opts.device), 
+        #     num_workers=0
+        # )
         BS = self.opts.batch_size
         self.train_dataset = MeshDataset(self.opts, is_train=True)
         train_sampler = MeshSampler(
@@ -535,8 +579,7 @@ class Trainer():
         )
         self.train_dataloader = torch.utils.data.DataLoader(
             self.train_dataset, 
-            batch_sampler=train_sampler, 
-            # batch_size=8, shuffle=True,
+            batch_sampler=train_sampler,
             collate_fn=partial(collate_wrapper, device=opts.device), 
             num_workers=0
         )
@@ -552,8 +595,7 @@ class Trainer():
         )
         self.valid_dataloader = torch.utils.data.DataLoader(
             self.valid_dataset, 
-            batch_sampler=valid_sampler, 
-            # batch_size=8, shuffle=True,
+            batch_sampler=valid_sampler,
             collate_fn=partial(collate_wrapper, device=opts.device), 
             num_workers=0
         )
@@ -619,14 +661,6 @@ class Trainer():
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
             
             running_losses = {
-                "recon_vDec": 0,
-                "vert_rEEnc": 0,
-                "vert_rIEnc": 0,
-                "vert_vICT":0,
-                "vert_rot":0,
-                "norm_vDec":0,
-                "jacob_vDec":0,
-                "nll_vSeg":0,
                 "total": 0
             }
             self.model.train()
@@ -634,7 +668,8 @@ class Trainer():
             
             len_train_data = len(self.train_dataloader)
             len_valid_data = len(self.valid_dataloader)
-            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
+            # pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
+            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0)
                                              
             for index, batch in pbar:
                                 
@@ -645,18 +680,31 @@ class Trainer():
                 loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
                     batch, 
                     return_all=True, 
-                    stage=1 if not self.opts.design == 'exp'else 11, 
+                    stage=stage,
                     epoch=epoch
                 )
                 
                 # get total loss
                 loss = 0
+                # tttt = "log"
                 for key, value in loss_dict.items():
                     key_ = key.split("_")[0]
                     tmp = value*self.loss_lambda[key_]
                     loss += tmp
-                    running_losses[key] += tmp
+
+                    # # log text -------------------------
+                    # tkey=key.split("_")[-1]
+                    # tttt += f"|{tkey} {tmp:.3g}"
+                    # # ----------------------------------
+
+                    if key in running_losses.keys():
+                        running_losses[key] += tmp
+                    else:
+                        running_losses[key] = tmp
                 loss_dict["total"] = loss 
+                
+                ### pbar.set_description(f"loss: {loss:.5f}")
+                # pbar.set_description(tttt)
 
                 # running loss
                 running_losses["total"] += loss_dict["total"]
@@ -678,7 +726,7 @@ class Trainer():
                 mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                 
                 interv = round(len_train_data / 10)
-                if train_counter % interv == 1:
+                if train_counter % interv == 1 and pred_vertices is not None:
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
                     for key, value in running_losses.items():
                         log_text += f"{key}: {value:.6f} "
@@ -726,6 +774,11 @@ class Trainer():
                     break
                 # ------------------------------------------------------------------------------------------------
             
+            ## write log in txtfile
+            t_l = running_losses["total"]/train_counter
+            train_log_ = f"[{epoch:03d}/{epochs:03d}][Train] Avg Loss: {t_l}\n"
+            self.logger.write(train_log_)
+
             # scheduler
             if self.opts.design == 'nfr' or self.opts.use_scheduler:
                 self.scheduler.step()
@@ -741,16 +794,7 @@ class Trainer():
             # validation -----------------------------------------------------------------------------------------
             self.model.eval()
             print(f"[{epoch:03d}/{epochs:03d}][Valid]")
-            running_losses = {
-                "recon_vDec": 0,
-                "vert_rEEnc": 0,
-                "vert_rIEnc": 0,
-                "vert_rA-rE": 0,
-                "vert_vICT":0,
-                "vert_rot":0,
-                "norm_vDec":0,
-                "jacob_vDec":0,
-                "nll_vSeg":0,
+            running_losses_val = {
                 "total": 0
             }
             counter = 0
@@ -762,7 +806,7 @@ class Trainer():
                 with torch.no_grad():
                     loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
                         batch, 
-                        stage=1 if not self.opts.design == 'exp'else 11, 
+                        stage=stage,
                         return_all=True
                     )
 
@@ -772,11 +816,14 @@ class Trainer():
                     key_ = key.split("_")[0]
                     tmp = value.item()*self.loss_lambda[key_]
                     loss += tmp
-                    running_losses[key] += tmp
+                    if key in running_losses_val.keys():
+                        running_losses_val[key] += tmp
+                    else:
+                        running_losses_val[key] = tmp
                 loss_dict["total"] = loss 
 
                 # running loss
-                running_losses["total"] += loss_dict["total"]
+                running_losses_val["total"] += loss_dict["total"]
                 # ------------------------------------------------------------------------------------------------
 
                 # for visualization
@@ -787,10 +834,10 @@ class Trainer():
                 mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                 
                 interv = round(len_valid_data /5)
-                if index % interv == 0:
+                if index % interv == 0 and pred_vertices is not None:
                 # if index % 2 == 0:
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
-                    for key, value in running_losses.items():
+                    for key, value in running_losses_val.items():
                         log_text += f"{key}: {value:.6f} "
                     self.logger.write(log_text+"\n")
 
@@ -835,14 +882,19 @@ class Trainer():
                     break
             # log
             if self.opts.tb:
-                self.log_loss(self.writer_valid, running_losses, epoch, counter)
+                self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
             
+            v_l = running_losses_val["total"]/counter
+            train_log_ = f"[{epoch:03d}/{epochs:03d}][Valid] Avg Loss: {v_l}\n"
+            self.logger.write(train_log_)
+
             # best loss
-            if running_losses["total"]/counter < BEST_LOSS:
-                BEST_LOSS = running_losses["total"]/counter
+            if running_losses_val["total"]/counter < BEST_LOSS:
+                BEST_LOSS = running_losses_val["total"]/counter
                 BEST_EPOCH = epoch
-                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
-                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
+                best_txt= f"[Valid] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}"
+                print(f"[{epoch:03d}/{epochs:03d}]{best_txt}\n")
+                self.logger.write(f"[{epoch:03d}/{epochs:03d}]{best_txt}\n")
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
         
     @staticmethod
@@ -887,6 +939,9 @@ if __name__ == "__main__":
     opts = argparse.Namespace(**opts_yaml)
     
     trainer = Trainer(opts)
-    #trainer.train_ULRSSM(epochs=opts.max_epoch)
-    trainer.train_stage1(epochs=opts.max_epoch)
+    if opts.design == "new3":
+        trainer.train_ULRSSM(epochs=opts.max_epoch, stage=8)
+        # trainer.train_ULRSSM(epochs=opts.max_epoch, stage=9)
+    else:
+        trainer.train_stage1(epochs=opts.max_epoch)
     
