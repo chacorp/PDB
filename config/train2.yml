@@ -12,12 +12,14 @@ model_type: 'conv'
 audio_type: 'wav2vec2'
 feat_level: '05'
 
-feature_type: 'cents&norms'
-#feature_type: 'cents&norms&seg'
+# feature_type: 'wks' # 128
+enc_feature_type: 'cents&norms&disp' # 9
+dec_feature_type: 'cents&norms' # 6
+# feature_type: 'cents&norms&seg'
 
 input_dim: 768 # (not used)
 feat_dim: 128 # (not used)
-rig_dim: 64 # 128 # 'rig (expression code) dim'
+rig_dim: 64 # 'rig (expression code) dim'
 id_dim: 128 # 'identity code dim'
 seg_dim: 20 # face segmentation dim
 ltn_dim: 128 # dim for mesh autoencoder latent
@@ -28,16 +30,18 @@ warmup: True
 continue_ckpt: True
 
 # optimizer
-lr : 0.0001
+# lr : 1.0E-4 # original lr
+lr : 5.0E-4
 max_epoch: 500
-start_epoch: 1900
+start_epoch: 0
 
 # scheduler
 sc_step: 100
 sc_gamma: 0.85
 
 # loss
-lambda_vert: 10.0
+# lambda_vert: 10.0
+lambda_vert: 1.0E+2
 lambda_normal: 1.0
 lambda_jacob: 1.0
 
@@ -45,6 +49,15 @@ lambda_bs: 1.0
 lambda_seg: 1.0
 lambda_enc: 1.0
 lambda_temp: 0.0
+
+lambda_align: 1.0
+
+lambda_w_bij: 1.0
+lambda_w_orth: 1.0
+lambda_w_lap: 1.0E-3
+# lambda_w_bij: 1.0E-1
+# lambda_w_orth: 1.0E-1
+# lambda_w_lap: 1.0E-4
 
 no_BR: False
 no_BP: False
@@ -72,10 +85,10 @@ use_ict_real: False # checked
 use_ict_synth: True # checked
 use_ict_synth_single: False # checked
 use_mf_SEN: False # checked
-use_mf_ROM: True # checked
+use_mf_ROM: False # checked
 use_voca: False # TBD
-use_coma: True # TBD
-use_biwi: True # TBD
+use_coma: False # TBD
+use_biwi: False # TBD
 
 style_emb: False # (not used)
 recon_type: 'baseline' # "baseline, distill, hybrid"
