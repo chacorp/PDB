@@ -164,7 +164,7 @@ def colors_to_cmap(colors):
     colors = np.asarray(colors)
     if colors.shape[1] == 3:
         colors = np.hstack((colors, np.ones((len(colors),1))))
-    steps = (0.5 + np.asarray(range(len(colors)-1), dtype=np.float))/(len(colors) - 1)
+    steps = (0.5 + np.asarray(range(len(colors)-1), dtype=float))/(len(colors) - 1)
     return matclrs.LinearSegmentedColormap(
         'auto_cmap',
         {clrname: ([(0, col[0], col[0])] + 
@@ -394,25 +394,45 @@ def plot_image_array(Vs,
 from matplotlib.colors import ListedColormap
 from matplotlib.collections import LineCollection
 from matplotlib.cm import get_cmap
-def plot_image_array_grd(Vs, Fs, Cs=None, rot_list=None, size=6, norm=False, 
+def plot_image_array_grd(Vs, Fs, 
+                         Cs=None, 
+                         rot_list=None, 
+                         size=6, 
+                         norm=False, 
                          mode='shade', # not used
                          threshold=0.01,
                          seg_divide=False,
                          is_diff=False,
-                         diff_base=None,
+                         diff_base=None, # required if is_diff is True
                          diff_revert=False,
-                         linewidth=1, linestyle='solid', 
                          light_dir=np.array([0, 0, 1]),
+                         light_sticked=True, # light sticked to the front of the face
                          view_dir=np.array([0, 0, 1]),
+                         mesh_trans=np.array([0, 0, 0]),
                          mesh_scale=1.0,
-                         mesh_trans=np.array([0,0,0]),
-                         c_map="nipy_spectral", blend=0.5,
+                         c_map="nipy_spectral", 
+                         blend=0.5,
                          seg_only=-1,
                          bg_black=True, logdir='.', name='000', save=False, show=True):
-
+    """
+    v_list=[ vertices]
+    f_list=[ faces ]
+    c_list=[ ict_vert_segment ]
+    diff_list=[ vertices - ict_tri.vertices ]
+    
+    plot_image_array_grd(
+        v_list, f_list, 
+        # c_list, # uncomment to visualize segmentation
+        # diff_list, is_diff=True, diff_base=ict_tri.vertices, # uncomment to visualize difference
+        rot_list=[[0,-10,0]]*len(v_list), 
+        size=SIZE, 
+        bg_black=False,
+        show=True
+    )
+    """
     def transform(V, M):
-        V_homo = np.hstack([V, np.ones((V.shape[0], 1))])
-        return (M @ V_homo.T).T[:, :3]
+        V_h = np.hstack([V, np.ones((V.shape[0], 1))])
+        return (M @ V_h.T).T[:, :3]
 
     num_meshes = len(Vs)
     plt.style.use('dark_background' if bg_black else 'default')
@@ -427,18 +447,7 @@ def plot_image_array_grd(Vs, Fs, Cs=None, rot_list=None, size=6, norm=False,
     
     # light source data type int -> float
     light_dir_view = light_dir.astype(float)
-    
-#     if is_diff:
-#         D_diff = np.array(abs(diff_base - np.array(Vs)))
-#         print(D_diff.shape)
-#         D_diff = np.linalg.norm(D_diff, axis=-1)
-#         print(D_diff.shape)
-
-#         if threshold is not None:
-#             D_diff[D_diff > threshold] = 0
-#         diff_min, diff_max = D_diff.min(), D_diff.max()
-        
-            
+                
     for idx, (V, F, C) in enumerate(zip(Vs, Fs, Cs)):
                 
         if norm:
@@ -449,10 +458,10 @@ def plot_image_array_grd(Vs, Fs, Cs=None, rot_list=None, size=6, norm=False,
             C = np.linalg.norm(abs(V-diff_base), axis=-1)
             C = (C - C.min(0)) / (C.max(0) - C.min(0))
             C = 1 - C if diff_revert else C
-            print(C.shape, C.max(0), C.min(0))
-#             diff = D_diff[idx]
-#             if diff_max > 0:
-#                 diff = (diff - diff_min) / (diff_max - diff_min)
+            #print(C.shape, C.max(0), C.min(0))
+            # diff = D_diff[idx]
+            # if diff_max > 0:
+            #     diff = (diff - diff_min) / (diff_max - diff_min)
         
         V = V * mesh_scale + mesh_trans
     
@@ -477,10 +486,12 @@ def plot_image_array_grd(Vs, Fs, Cs=None, rot_list=None, size=6, norm=False,
         keep = (face_normals_view @ view_dir) >= 0
         #F = F[keep]
         
-        # intensity per vertex
-        #intensity = np.clip(vertex_normals_view @ light_dir_view, 0, 1)
-        # light sticked to front face
-        intensity = np.clip(vertex_normals_obj @ light_dir_view, 0, 1)
+        if light_sticked:
+            # light sticked to front face
+            intensity = np.clip(vertex_normals_obj @ light_dir_view, 0, 1)
+        else:
+            # intensity per vertex
+            intensity = np.clip(vertex_normals_view @ light_dir_view, 0, 1)
         
         # 정점 변환
         V_proj = transform(V, MVP)
@@ -495,21 +506,26 @@ def plot_image_array_grd(Vs, Fs, Cs=None, rot_list=None, size=6, norm=False,
                 
         vertex_color = intensity[..., np.newaxis].repeat(3, axis=-1)
         vertex_color = vertex_color *0.7 + 0.2
-#         vertex_color = vertex_color *0.6 + 0.3
+        # vertex_color = vertex_color *0.6 + 0.3
         
         if is_diff:
             Sc = plt.get_cmap("YlOrRd")(C)[...,:3] ## [N, 4]
             mask = C[:,np.newaxis]
             #vertex_color = vertex_color*(1-blend)*(1-mask) + blend*Sc*mask
             vertex_color = vertex_color*(1-mask) + Sc*mask
-                    
-            #vertex_color = np.clip(vertex_color, 0, 1)
+            
         else:
-            if C != None:
+            # if type(C)==np.ndarray:
+            #     C=torch.tensor(C)
+            if type(C)==torch.tensor:
+                C=C.numpy()
+                
+            if C.any() != None:
                 len_seg = C.shape[-1]
                 #S = softmax(C) # softmax
+                    
                 S=C
-                S = S.argmax(-1).numpy()#.float()
+                S = S.argmax(-1)#.float()
 
                 if seg_only>0:
                     SF = S[F_sorted]
@@ -551,7 +567,7 @@ def plot_image_array_grd(Vs, Fs, Cs=None, rot_list=None, size=6, norm=False,
     #                 zs = np.linspace(0.0, 1.0, num=V.shape[0])
     #                 plt.tripcolor(triang, zs, cmap=cmap, shading='gouraud')
     #         else:
-        cmap = colors_to_cmap(vertex_color)
+        cmap = colors_to_cmap(torch.tensor(vertex_color))
         zs = np.linspace(0.0, 1.0, num=V.shape[0])
         plt.tripcolor(triang, zs, cmap=cmap, shading='gouraud')
             
@@ -696,6 +712,9 @@ def plot_image_array_diff(Vs,
                      save=False,
                     draw_base=True,
                     ):
+    """
+    Renders displacement for each mesh: requires vertices for each mesh sequence
+    """
     num_meshes = len(Vs)
     if bg_black:
         plt.style.use('dark_background')
@@ -842,6 +861,18 @@ def plot_image_array_diff2(Vs,
                     draw_base=True,
                     c_map = 'YlOrRd'
                     ):
+    """
+    v_list=[ mesh_base.vertices, mesh1.vertices, mesh2.vertices ]
+    f_list=[ mesh_base.faces,    mesh1.faces,    mesh2.faces ]
+    d_list= mesh_base.vertices 
+    SIZE=4
+
+    plot_image_array_diff2(
+        v_list, f_list, d_list,
+        rot_list=[[0,-10,0]]*len(v_list), 
+        size=SIZE,
+    )
+    """
     num_meshes = len(Vs)
     if bg_black:
         plt.style.use('dark_background')

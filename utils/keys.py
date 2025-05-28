@@ -117,9 +117,12 @@ KEYS = ['BrowDownLeft', 'BrowDownRight', 'BrowInnerUp', 'BrowInnerUp', 'BrowOute
 
 
 ict_data_synth = {
-    'train': [f'{i:03d}' for i in range(201)], 
-    'val':   [f'{i:03d}' for i in range(100)], 
-    'test':  [f'{i:03d}' for i in range(100)], 
+    # 'train': [f'{i:03d}' for i in range(201)], 
+    # 'val':   [f'{i:03d}' for i in range(100)], 
+    # 'test':  [f'{i:03d}' for i in range(100)], 
+    'train': [f'{i:03d}' for i in range(111)], 
+    'val':   [f'{i:03d}' for i in range(10)], 
+    'test':  [f'{i:03d}' for i in range(10)], 
 }
 
 ict_data_split = {
