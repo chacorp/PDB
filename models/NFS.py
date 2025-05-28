@@ -69,7 +69,7 @@ class NFS(nn.Module):
         self.use_decimate = self.opts.use_decimate if opts is not None else False
         
         ### mesh autoencoder
-        in_shape_dict = {'cents&norms':6, 'cents':3, 'cents&norms&seg':7}
+        in_shape_dict = {'cents&norms':6, 'cents':3, 'cents&norms&seg':7, 'wks':128}
         out_shape_dict = {'vert': 3, 'disp': 3, 'jacob': 9}
         
         if self.design == 'nfr':
