@@ -33,22 +33,22 @@ from utils.ckpt_utils import *
 def Options():
     parser = argparse.ArgumentParser(description='NFS train')
     parser.add_argument('-c', '--config', default='config/train2.yml', help='config file path')
-    parser.add_argument("--feat_dim",     type=int,   default=128,    help='64 for vocaset; 128 for BIWI')
-    parser.add_argument("--rig_dim",      type=int,   default=128,    help='rig dim')
-    parser.add_argument("--seg_dim",      type=int,   default=20,     help='rig dim')
+    # parser.add_argument("--feat_dim",     type=int,   default=128,    help='64 for vocaset; 128 for BIWI')
+    # parser.add_argument("--rig_dim",      type=int,   default=128,    help='rig dim')
+    # parser.add_argument("--seg_dim",      type=int,   default=20,     help='rig dim')
     parser.add_argument("--device",       type=str,   default="cuda:0")
     parser.add_argument("--fps",          type=int,   default=30)
     
-    parser.add_argument("--audio_type",   type=str,   default="wav2vec2", help="wav2vec2 or hubert")
-    parser.add_argument("--feat_level",   type=str,   default="05",   help="wav2vec or hubert")
+    # parser.add_argument("--audio_type",   type=str,   default="wav2vec2", help="wav2vec2 or hubert")
+    # parser.add_argument("--feat_level",   type=str,   default="05",   help="wav2vec or hubert")
     parser.add_argument("--input_dim",    type=int,   default=768,    help='1024 for hubert; 768 for wav2vec2; 21 for logits features')
 
     parser.add_argument("--tb",           action='store_true')
     parser.add_argument("--log_dir",      type=str,   default="ckpts_new")
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
-    parser.add_argument("--lambda_recon", type=float, default=1.0,    help='recon lambda for encoder')
-    parser.add_argument("--lambda_temp",  type=float, default=0.0,    help='temp lambda for encoder')
+    # parser.add_argument("--lambda_recon", type=float, default=1.0,    help='recon lambda for encoder')
+    # parser.add_argument("--lambda_temp",  type=float, default=0.0,    help='temp lambda for encoder')
     parser.add_argument("--lr",           type=float, default=0.0001, help='learning rate')
     
     parser.add_argument("--window_size",  type=int,   default=8,      help='window size')
@@ -105,6 +105,11 @@ class Trainer():
         self.opts = opts
         self.set_seed(self.opts)
         self.device = opts.device
+
+        self.opts.warmup = True
+        
+        # if self.opts.warmup:
+        #     print("parser argument --warmup is no longer used!, train it seperately")
                 
         if 'exp' in self.opts.design:
             from models.NFS import Exp
@@ -150,9 +155,10 @@ class Trainer():
         enc_ckpt = replace_key(enc_ckpt, key_pair)
         self.model.load_state_dict(enc_ckpt, strict=False)
     
-    def train_stage1(self, epochs):
+    def train_stage1(self, epochs,stage=1):
         # define loss lamdba -------------------------------------------------------------------------------------
         self.loss_lambda = {
+            "l": 1.0, # dummy
             "recon": self.opts.lambda_vert,
             "vert": 1.0,
             "norm":  self.opts.lambda_normal,
@@ -166,8 +172,8 @@ class Trainer():
             self.optimizer = torch.optim.Adam(self.model.mesh_decoder.parameters(), lr=self.opts.lr, betas=(0.5, 0.999))
             updated_optim=False
         else:
-            #self.optimizer = torch.optim.Adam(self.model.get_mesh_autoencoder_parameters(), lr=self.opts.lr, betas=(0.5, 0.999))
-            self.optimizer = torch.optim.AdamW(self.model.get_mesh_autoencoder_parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
+            self.optimizer = torch.optim.AdamW(self.model.get_mesh_autoencoder_parameters(), lr=self.opts.lr, betas=(0.5, 0.999))
+            # self.optimizer = torch.optim.AdamW(self.model.get_mesh_autoencoder_parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
         
         if self.opts.design == 'nfr' or self.opts.use_scheduler:
             self.scheduler = torch.optim.lr_scheduler.StepLR(
@@ -212,8 +218,6 @@ class Trainer():
             num_workers=0
         )
         
-        if self.opts.warmup:
-            print("parser argument --warmup is no longer used!, train it seperately")
         ## pass 
         #self.model.ict_basedir = self.train_dataset.ict_basedir
         self.model.set_neutral_ict(self.train_dataset.ict_basedir)
@@ -273,14 +277,6 @@ class Trainer():
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
             
             running_losses = {
-                "recon_vDec": 0,
-                "vert_rEEnc": 0,
-                "vert_rIEnc": 0,
-                "vert_vICT":0,
-                "vert_rot":0,
-                "norm_vDec":0,
-                "jacob_vDec":0,
-                "nll_vSeg":0,
                 "total": 0
             }
             self.model.train()
@@ -299,7 +295,7 @@ class Trainer():
                 loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
                     batch, 
                     return_all=True, 
-                    stage=1 if not self.opts.design == 'exp'else 11, 
+                    stage=stage, 
                     epoch=epoch
                 )
                 
@@ -309,7 +305,11 @@ class Trainer():
                     key_ = key.split("_")[0]
                     tmp = value*self.loss_lambda[key_]
                     loss += tmp
-                    running_losses[key] += tmp
+                    # running_losses[key] += tmp
+                    if key in running_losses.keys():
+                        running_losses[key] += tmp
+                    else:
+                        running_losses[key] = tmp
                 loss_dict["total"] = loss 
 
                 # running loss
@@ -327,6 +327,7 @@ class Trainer():
                 # for visualization
                 gt_id_coeff = batch.id_coeff.cpu()
                 gt_rig = batch.gt_rig_params.cpu()
+                gt_rig = gt_rig[:, :self.opts.rig_dim]
                 vertices = batch.vertices.cpu().squeeze()
                 faces = batch.faces.cpu()
                 mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
@@ -379,7 +380,11 @@ class Trainer():
                 if self.opts.debug:
                     break
                 # ------------------------------------------------------------------------------------------------
-            
+            ## write log in txtfile
+            t_l = running_losses["total"]/train_counter
+            train_log_ = f"[{epoch:03d}/{epochs:03d}][Train] Avg Loss: {t_l}\n"
+            self.logger.write(train_log_)
+
             # scheduler
             if self.opts.design == 'nfr' or self.opts.use_scheduler:
                 self.scheduler.step()
@@ -395,16 +400,7 @@ class Trainer():
             # validation -----------------------------------------------------------------------------------------
             self.model.eval()
             print(f"[{epoch:03d}/{epochs:03d}][Valid]")
-            running_losses = {
-                "recon_vDec": 0,
-                "vert_rEEnc": 0,
-                "vert_rIEnc": 0,
-                "vert_rA-rE": 0,
-                "vert_vICT":0,
-                "vert_rot":0,
-                "norm_vDec":0,
-                "jacob_vDec":0,
-                "nll_vSeg":0,
+            running_losses_val = {
                 "total": 0
             }
             counter = 0
@@ -417,7 +413,7 @@ class Trainer():
                     with torch.no_grad():
                         loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
                             batch, 
-                            stage=1 if not self.opts.design == 'exp'else 11, 
+                            stage=stage,
                             return_all=True
                         )
 
@@ -427,16 +423,21 @@ class Trainer():
                         key_ = key.split("_")[0]
                         tmp = value.item()*self.loss_lambda[key_]
                         loss += tmp
-                        running_losses[key] += tmp
+                        # running_losses[key] += tmp
+                        if key in running_losses_val.keys():
+                            running_losses_val[key] += tmp
+                        else:
+                            running_losses_val[key] = tmp
                     loss_dict["total"] = loss 
 
                     # running loss
-                    running_losses["total"] += loss_dict["total"]
+                    running_losses_val["total"] += loss_dict["total"]
                     # ------------------------------------------------------------------------------------------------
 
                     # for visualization
                     gt_id_coeff = batch.id_coeff.cpu()
                     gt_rig = batch.gt_rig_params.cpu()
+                    gt_rig = gt_rig[:, :self.opts.rig_dim]
                     vertices = batch.vertices.cpu().squeeze()
                     faces = batch.faces.cpu()
                     mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
@@ -445,7 +446,7 @@ class Trainer():
                     if index % interv == 0:
                     # if index % 2 == 0:
                         log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
-                        for key, value in running_losses.items():
+                        for key, value in running_losses_val.items():
                             log_text += f"{key}: {value:.6f} "
                         self.logger.write(log_text+"\n")
 
@@ -488,13 +489,18 @@ class Trainer():
                                 )
                     if self.opts.debug:
                         break
+                ## write log
+                v_l = running_losses_val["total"]/counter
+                train_log_ = f"[{epoch:03d}/{epochs:03d}][Valid] Avg Loss: {v_l}\n"
+                self.logger.write(train_log_)
+
                 # log
                 if self.opts.tb:
-                    self.log_loss(self.writer_valid, running_losses, epoch, counter)
+                    self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
                 
                 # best loss
-                if running_losses["total"]/counter < BEST_LOSS:
-                    BEST_LOSS = running_losses["total"]/counter
+                if running_losses_val["total"]/counter < BEST_LOSS:
+                    BEST_LOSS = running_losses_val["total"]/counter
                     BEST_EPOCH = epoch
                     print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
                     self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
@@ -600,8 +606,6 @@ class Trainer():
             num_workers=0
         )
         
-        if self.opts.warmup:
-            print("parser argument --warmup is no longer used!, train it seperately")
         ## pass 
         #self.model.ict_basedir = self.train_dataset.ict_basedir
         self.model.set_neutral_ict(self.train_dataset.ict_basedir)
@@ -942,6 +946,8 @@ if __name__ == "__main__":
     if opts.design == "new3":
         trainer.train_ULRSSM(epochs=opts.max_epoch, stage=8)
         # trainer.train_ULRSSM(epochs=opts.max_epoch, stage=9)
+    if opts.design == "new5":
+        trainer.train_stage1(epochs=opts.max_epoch, stage=21)
     else:
-        trainer.train_stage1(epochs=opts.max_epoch)
+        trainer.train_stage1(epochs=opts.max_epoch, stage=1)
     

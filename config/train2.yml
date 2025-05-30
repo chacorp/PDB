@@ -13,7 +13,8 @@ audio_type: 'wav2vec2'
 feat_level: '05'
 
 # feature_type: 'wks' # 128
-enc_feature_type: 'cents&norms&disp' # 9
+# enc_feature_type: 'cents&norms&disp' # 9
+enc_feature_type: 'cents&norms' # 6
 dec_feature_type: 'cents&norms' # 6
 # feature_type: 'cents&norms&seg'
 
@@ -23,8 +24,12 @@ rig_dim: 64 # 'rig (expression code) dim'
 id_dim: 128 # 'identity code dim'
 seg_dim: 20 # face segmentation dim
 ltn_dim: 128 # dim for mesh autoencoder latent
+corr_dim: 2048 # dim for correspondence feature
 img_feat_dim: 128 # dim for image feature
 
+###############################################
+use_canon: True
+###############################################
 
 warmup: True
 continue_ckpt: True
@@ -58,6 +63,9 @@ lambda_w_lap: 1.0E-3
 # lambda_w_bij: 1.0E-1
 # lambda_w_orth: 1.0E-1
 # lambda_w_lap: 1.0E-4
+
+lambda_orth: 1.0
+lambda_norm: 1.0
 
 no_BR: False
 no_BP: False
