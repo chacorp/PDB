@@ -27,6 +27,7 @@ if [[ $MODE == "1" ]]; then
     pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.6"
     pip install easydict protobuf==3.20.0
 elif [[ $MODE == "3" ]]; then
+    pip install h5py
     cp cpp_extension.py /opt/conda/lib/python3.10/site-packages/torch/utils/cpp_extension.py
     pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.6"
 else
