@@ -8,6 +8,9 @@ abs_path = str(Path(__file__).parents[1].absolute())
 sys.path+=[abs_path, f'{abs_path}/third_party/diffusion-net/src']
 import diffusion_net
 
+# from models.lib.quantizer import VectorQuantizer, VectorBases
+from models.lib.quantizer import VectorBases
+
 class BaseDecoder(nn.Module):
     """
     Decoder from NFR
@@ -137,14 +140,44 @@ class SkinningDecoder(nn.Module):
         return out
     
 
+def cosine_similarity(a, b):
+    if len(a) > 30000:
+        return cosine_similarity_batch(a, b, batch_size=30000)
+    dot_product = torch.mm(a, b.t())
+    norm_a = torch.norm(a, dim=1, keepdim=True)
+    norm_b = torch.norm(b, dim=1, keepdim=True)
+    similarity = dot_product / (norm_a * norm_b.t())
+
+    return similarity
+
+
+def cosine_similarity_batch(a, b, batch_size=30000):
+    num_a, dim_a = a.size()
+    num_b, dim_b = b.size()
+    similarity_matrix = torch.empty(num_a, num_b, device="cpu")
+    for i in tqdm(range(0, num_a, batch_size)):
+        a_batch = a[i:i+batch_size]
+        for j in range(0, num_b, batch_size):
+            b_batch = b[j:j+batch_size]
+            dot_product = torch.mm(a_batch, b_batch.t())
+            norm_a = torch.norm(a_batch, dim=1, keepdim=True)
+            norm_b = torch.norm(b_batch, dim=1, keepdim=True)
+            similarity_batch = dot_product / (norm_a * norm_b.t())
+            similarity_matrix[i:i+batch_size, j:j+batch_size] = similarity_batch.cpu()
+    return similarity_matrix
+    
 class BaseDiffusionNetDecoder(nn.Module):
     # reference: https://github.com/dafei-qin/NFR_pytorch/blob/e3553faa77f65240ec20167aec6e814473233890/mymodel.py#L17
-    def __init__(self, in_shape=6, out_shape=128, 
-                 id_dim=100, exp_dim=128, seg_dim=20,
+    def __init__(self, 
+                 #in_shape=6, 
+                 out_shape=128, emb_dim=2048, id_dim=128, exp_dim=64,
                  hid_shape=256, pre_computes=None, N_block=4, 
-                 outputs_at='global_mean', with_grad=True, last_activation=None):
+                 outputs_at='vertices', with_grad=True, last_activation=None, 
+                 use_canon=False, device='cpu', opts=None):
         super(BaseDiffusionNetDecoder, self).__init__()
         
+        in_shape = emb_dim + id_dim + exp_dim
+
         self.dfn = diffusion_net.DiffusionNet(
             C_in=in_shape, 
             C_out=out_shape, 
@@ -158,19 +191,12 @@ class BaseDiffusionNetDecoder(nn.Module):
             self.update_precomputes(pre_computes)
         else:
             print("[DiffusionNet] warning: no pre_computes provided!")
-            
-        self.InstNorm1d = nn.InstanceNorm1d(hid_shape)
-        skinning_layer = [
-            nn.Linear(seg_dim, hid_shape, bias=False),
-            self.act,
-            self.InstNorm1d,
-            nn.Linear(hid_shape, hid_shape, bias=False),
-            self.act,
-            self.InstNorm1d,
-            nn.Linear(hid_shape, exp_dim, bias=False),
-        ]
-        self.skinning_layer = nn.Sequential(*skinning_layer)
-    
+        
+        self.use_canon=use_canon
+        if self.use_canon:
+            # linear? need to backprop grad.... 
+            self.canonical_bases = VectorBases(n_e=128, e_dim=2048, tau=10.0, device=device, opts=opts)
+        
     def update_precomputes(self, pre_computes):
         #import pdb;pdb.set_trace()
         if len(pre_computes[0].shape) > 1:
@@ -216,7 +242,9 @@ class BaseDiffusionNetDecoder(nn.Module):
         return focused_exp
     
     def forward(self,
-                inputs, id_code, exp_code, seg_code,
+                inputs, # corr_feature 
+                id_code, 
+                exp_code, 
                 batch_mass=None,
                 batch_L_val=None,
                 batch_evals=None,
@@ -226,11 +254,14 @@ class BaseDiffusionNetDecoder(nn.Module):
                ):
         """
         Args:
-            inputs (torch.tensor): [vertex position, vertex normal]
+            inputs (torch.tensor): shape matching feature
+            id_code (torch.tensor): identity feature
+            exp_code (torch.tensor): expression feature
         """
-        
-        focused_exp = self.apply_skinning(exp_code, seg_code) # [B, V, exp]
-        inputs = torch.cat([inputs, focused_exp, id_code], dim=-1) #[B, V, C+exp+ID]
+        ## get canonical feature
+        if self.use_canon:
+            inputs = self.canonical_bases(inputs)
+        inputs = torch.cat([inputs, exp_code, id_code], dim=-1) #[B, V, C+exp+ID]
         
         self.L = torch.sparse_coo_tensor(self.L_ind, self.L_val, self.L_size, device=inputs.device)
         batch_size = inputs.shape[0]
