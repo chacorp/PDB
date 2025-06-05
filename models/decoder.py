@@ -171,7 +171,7 @@ class BaseDiffusionNetDecoder(nn.Module):
     def __init__(self, 
                  #in_shape=6, 
                  out_shape=128, emb_dim=2048, id_dim=128, exp_dim=64,
-                 hid_shape=256, pre_computes=None, N_block=4, 
+                 hid_shape=256, pre_computes=None, N_block=4, num_emb=1024,
                  outputs_at='vertices', with_grad=True, last_activation=None, 
                  use_canon=False, device='cpu', opts=None):
         super(BaseDiffusionNetDecoder, self).__init__()
@@ -190,12 +190,13 @@ class BaseDiffusionNetDecoder(nn.Module):
         if pre_computes:
             self.update_precomputes(pre_computes)
         else:
-            print("[DiffusionNet] warning: no pre_computes provided!")
-        
+            print("[DiffusionNet] causion: no pre_computes provided!")
+            
+        self.opts=opts
         self.use_canon=use_canon
         if self.use_canon:
             # linear? need to backprop grad.... 
-            self.canonical_bases = VectorBases(n_e=128, e_dim=2048, tau=10.0, device=device, opts=opts)
+            self.canonical_bases = VectorBases(n_e=self.opts.n_corr, e_dim=2048, tau=10.0, device=device, opts=opts)
         
     def update_precomputes(self, pre_computes):
         #import pdb;pdb.set_trace()

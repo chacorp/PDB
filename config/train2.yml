@@ -28,7 +28,8 @@ corr_dim: 2048 # dim for correspondence feature
 img_feat_dim: 128 # dim for image feature
 
 ###############################################
-use_canon: True
+use_canon: False
+n_corr: 1024
 ###############################################
 
 warmup: True
@@ -73,6 +74,7 @@ no_BP: False
 fps: 30
 window_size: 1
 batch_size: 1
+validate_epoch: 10
 
 # Data directory
 data_dir: "/data/ICT-audio2face/split_set"
@@ -89,14 +91,14 @@ data_rand_trans: True
 data_cfg: 'Real_Synth' # 'Real', 'Synth', 'Real_Synth' 
 selection: 20 # ICT-all (ICT-capture + ICT-synthetic) + Multiface
 
-use_ict_real: False # checked
+use_ict_real: True # checked
 use_ict_synth: True # checked
 use_ict_synth_single: False # checked
-use_mf_SEN: False # checked
-use_mf_ROM: False # checked
-use_voca: False # TBD
-use_coma: False # TBD
-use_biwi: False # TBD
+use_mf_SEN: True # checked
+use_mf_ROM: True # checked
+use_voca: True # TBD
+use_coma: True # TBD
+use_biwi: True # TBD
 
 style_emb: False # (not used)
 recon_type: 'baseline' # "baseline, distill, hybrid"

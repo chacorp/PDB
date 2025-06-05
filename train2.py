@@ -25,7 +25,7 @@ from dataloader_mesh import (
     collate_wrapper_ID
 )
 
-from utils.mesh_utils import Renderer #, calc_cent
+from utils.mesh_utils import Renderer
 from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
 
@@ -85,6 +85,10 @@ def Options():
     parser.set_defaults(use_scheduler=False)
 
     parser.set_defaults(is_train=True)
+    
+    
+    parser.add_argument("--use_canon",dest='use_canon', action='store_true')
+    parser.set_defaults(use_canon=False)
     
     
     # Ablation Study (w/o Decoder loss, w/o NLL loss)
@@ -398,13 +402,13 @@ class Trainer():
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
             
             # validation -----------------------------------------------------------------------------------------
-            self.model.eval()
-            print(f"[{epoch:03d}/{epochs:03d}][Valid]")
-            running_losses_val = {
-                "total": 0
-            }
-            counter = 0
-            if epoch % 10 == 0:
+            if epoch % self.opts.validate_epoch == 0:
+                self.model.eval()
+                print(f"[{epoch:03d}/{epochs:03d}][Valid]")
+                running_losses_val = {
+                    "total": 0
+                }
+                counter = 0
                 for index, batch in tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100):
                     counter += 1
                     # ------------------------------------------------------------------------------------------------

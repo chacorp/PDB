@@ -729,8 +729,11 @@ class MeshDataset(data.Dataset):
         # get audio feature + slice w/ window
         dummy = torch.zeros(1)
 
-        ## dummy correspondence feature
-        corr_feat = torch.zeros(template.shape[0], 2048)
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        precompute_dir = self.ict_synth_precompute
+        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()[:v_num]
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -798,8 +801,11 @@ class MeshDataset(data.Dataset):
         
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
-        ## dummy correspondence feature
-        corr_feat = torch.zeros(template.shape[0], 2048)
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        precompute_dir = self.ict_synth_precompute
+        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()[:v_num]
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -848,8 +854,10 @@ class MeshDataset(data.Dataset):
         dummy = torch.zeros(1)
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
-        ## dummy correspondence feature
-        corr_feat = torch.zeros(template.shape[0], 2048)
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -912,8 +920,10 @@ class MeshDataset(data.Dataset):
         # v_normal = calc_norm_torch(vertices, faces, at='v')
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
-        ## dummy correspondence feature
-        corr_feat = torch.zeros(template.shape[0], 2048)
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -959,9 +969,11 @@ class MeshDataset(data.Dataset):
         
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
-        ## dummy correspondence feature
-        corr_feat = torch.zeros(template.shape[0], 2048)
-        
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        corr_feat_file = os.path.join(self.voca_coma_precompute_path, f"{id_name}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()
+
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
         
@@ -1006,8 +1018,10 @@ class MeshDataset(data.Dataset):
         
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
-        ## dummy correspondence feature
-        corr_feat = torch.zeros(template.shape[0], 2048)
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        corr_feat_file = os.path.join(self.voca_coma_precompute_path, f"{id_name}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -1054,8 +1068,10 @@ class MeshDataset(data.Dataset):
         
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
-        ## dummy correspondence feature
-        corr_feat = torch.zeros(template.shape[0], 2048)
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        corr_feat_file = os.path.join(self.biwi_precompute_path, f"{id_name}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -1106,15 +1122,18 @@ class MeshDataset(data.Dataset):
         return torch.matmul(pts, R)
     
     def random_trans_scale(self, template, vertices):
+        """
+            not used
+        """
         ## Random Augmentation ---------------------------------------------------------
-        trans, scale = 0.0, 1.0
-        if self.opts.data_rand_trans:
-            t_range = 0.1
-            trans = (torch.rand((1, 3))*t_range - t_range*0.5)
+        # trans, scale = 0.0, 1.0
+        # if self.opts.data_rand_trans:
+        #     t_range = 0.1
+        #     trans = (torch.rand((1, 3))*t_range - t_range*0.5)
         # if self.opts.data_rand_scale:
         #     scale = torch.rand((1)).repeat(3) * 0.4 + 0.8
-        template = template * scale + trans
-        vertices = vertices * scale + trans
+        # template = template * scale + trans
+        # vertices = vertices * scale + trans
         ## -----------------------------------------------------------------------------
         
         return template, vertices
@@ -1615,15 +1634,18 @@ class IDMeshDataset(data.Dataset):
         return torch.matmul(pts, R)
     
     def random_trans_scale(self, template):
+        """
+            not used
+        """
         ## Random Augmentation ---------------------------------------------------------
-        trans, scale = 0.0, 1.0
-        if self.opts.data_rand_trans:
-            t_range = 0.25
-            trans = (torch.rand((1, 3))*t_range - t_range*0.5)
+        # trans, scale = 0.0, 1.0
+        # if self.opts.data_rand_trans:
+        #     t_range = 0.25
+        #     trans = (torch.rand((1, 3))*t_range - t_range*0.5)
         # if self.opts.data_rand_scale:
         #     scale = torch.rand((1)).repeat(3) * 0.4 + 0.8
         #template = template * scale + trans
-        template = template + trans
+        # template = template + trans
         ## -----------------------------------------------------------------------------
         
         return template
@@ -2563,6 +2585,10 @@ class MeshSampler(data.Sampler):
             _indices = np.arange(SS, SS+id_len_list, dtype=int)
             id_len_list_tmp = id_len_list
             
+            if m_data == 0: # ict
+                tile_n = 3 # (full head / face only / narrow face)
+                _indices = np.tile(_indices, tile_n)
+                id_len_list_tmp = id_len_list_tmp * tile_n
             if m_data == 1: # voca or coma
                 tile_n = 10
                 _indices = np.tile(_indices, tile_n)

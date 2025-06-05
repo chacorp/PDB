@@ -1,5 +1,5 @@
 ## Code adapted from [Esser, Rombach 2021]: https://compvis.github.io/taming-transformers/
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -104,7 +104,7 @@ class VectorBases(nn.Module):
     def __init__(self,
                 n_e=128,
                 e_dim=2048,
-                tau=10.0,
+                tau=0.1,
                 device='cpu',
                 opts=None
         ):
@@ -118,19 +118,43 @@ class VectorBases(nn.Module):
         
         self.device = device
 
+        self.opts = opts
         self.criterion = nn.MSELoss()
-        self.lambda_orth = opts.lambda_orth if opts is not None else 1.0
-        self.lambda_norm = opts.lambda_norm if opts is not None else 1.0
+        self.lambda_orth = opts.lambda_orth if self.opts is not None else 1.0
+        self.lambda_norm = opts.lambda_norm if self.opts is not None else 1.0
+
+    def init_from_mesh_feature(self, mesh, example_feature):
+        """
+            mesh (trimesh.Trimesh): mesh
+            example_feature (torch.tensor): per vertex feature 
+        """
+        import trimesh
+        # import pdb;pdb.set_trace()
+        _, face_index = trimesh.sample.sample_surface_even(mesh, count=self.opts.n_corr)
+        # Vs = mesh.vertices[mesh.faces[face_index]] #[Num verts, triangle indices (3), val (3)]
+        weight = example_feature[mesh.faces[face_index]].mean(1).float().requires_grad_()
+        #print(self.embedding.weight.mean())
+        self.embedding = nn.Embedding.from_pretrained(weight)
+        #print(self.embedding.weight.mean())
+        # self.embedding.weight.copy_(weight)       
 
     def forward(self, z):
         """
             z (torch.tensor): shape matching feature (will not be optimized!)
         """
+        # [B, N, C] -> [B*N, C]
         z_flattened = z.view(-1, self.e_dim)
-
+        
         ## no need to pass gradient to feature!
         d = torch.matmul(z_flattened, self.embedding.weight.t())
-        d = F.softmax(d * self.tau, dim=1)
+        norm_a = torch.norm(z_flattened, dim=1, keepdim=True)
+        norm_b = torch.norm(self.embedding.weight, dim=1, keepdim=True)
+        d = d / (norm_a * norm_b.t())
+
+        N,M = d.shape
+        temperature = np.sqrt(N*M*1.0) * self.tau
+        
+        d = F.softmax(d * temperature, dim=1)
         d = d.detach()
 
         # soft correspondence
