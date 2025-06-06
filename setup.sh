@@ -21,7 +21,7 @@ done
 # ln -s /data/sihun/NFR_data/ict_face_pt/ ./ict_face_pt
 # cd third_party && git clone https://github.com/vsitzmann/siren
 
-if [[ $MODE == "1" ]]; then
+if [[ $MODE == "0" ]]; then
     pip install easydict h5py protobuf==3.20.0
 elif [[ $MODE == "1" ]]; then
     pip install -r requirements.txt
@@ -33,6 +33,7 @@ elif [[ $MODE == "1" ]]; then
     ## For the case when you have error installing pytorch3d ...
     cp cpp_extension.py /usr/local/lib/python3.8/dist-packages/torch/utils/cpp_extension.py
     pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.6"
+    pip install easydict h5py protobuf==3.20.0
 elif [[ $MODE == "3" ]]; then
     pip install h5py
     cp cpp_extension.py /opt/conda/lib/python3.10/site-packages/torch/utils/cpp_extension.py

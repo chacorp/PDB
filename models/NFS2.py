@@ -335,6 +335,16 @@ class NFS(nn.Module):
         self.local_feat_ict=None
         print('loading cache (ict neutral mesh)')
             
+    def get_mesh_encoder_parameters(self):
+        param_list = [
+            *self.mesh_id_encoder.parameters(), 
+            *self.mesh_exp_encoder.parameters(),
+        ]
+        
+        if 'new2' in self.design:
+            param_list = param_list + [*self.mesh_seg_encoder.parameters()]
+        return param_list
+    
     def get_mesh_decoder_parameters(self):
         return self.mesh_decoder.parameters()
         
@@ -345,6 +355,8 @@ class NFS(nn.Module):
             *self.mesh_exp_encoder.parameters(),
             *self.mesh_decoder.parameters(), 
         ]
+        if 'new2' in self.design:
+            param_list = param_list + [*self.mesh_seg_encoder.parameters()]
         return param_list
     
     def get_mesh_ae_parameters(self):
