@@ -47,7 +47,7 @@ sc_gamma: 0.85
 
 # loss
 # lambda_vert: 10.0
-lambda_vert: 1.0E+2
+lambda_vert: 10
 lambda_normal: 1.0
 lambda_jacob: 1.0
 
