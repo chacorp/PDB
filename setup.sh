@@ -15,6 +15,12 @@ do
     esac
 done
 
+# ln -s /data/sihun/NFR_data/data ./data
+# ln -s /data/sihun/NFR_data/test-mesh/ ./test-mesh
+# ln -s /data/sihun/NFR_data/experiments/ ./experiments
+# ln -s /data/sihun/NFR_data/ict_face_pt/ ./ict_face_pt
+# cd third_party && git clone https://github.com/vsitzmann/siren
+
 if [[ $MODE == "1" ]]; then
     pip install easydict h5py protobuf==3.20.0
 elif [[ $MODE == "1" ]]; then
