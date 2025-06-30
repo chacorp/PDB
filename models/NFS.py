@@ -120,7 +120,38 @@ class NFS(nn.Module):
                 seg_dim=self.seg_dim,
                 out_shape=out_shape_dict[self.out_key],
             )
-        elif self.design == 'new2': # added segment encoder, skinning block (MLP)
+        elif self.design == 'new1dn': # segment encoder, skinning block (MLP)
+            self.mesh_id_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key],
+                pre_computes=mesh_dfn_info,
+                out_shape=self.id_dim,
+            )
+            self.mesh_exp_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key],
+                pre_computes=mesh_dfn_info,
+                out_shape=self.rig_dim,
+            )
+            self.mesh_seg_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key],
+                pre_computes = mesh_dfn_info,
+                out_shape=self.seg_dim,
+                outputs_at='vertices',
+            )
+            self.mesh_decoder = BaseDiffusionNetDecoder(
+                in_shape=in_shape_dict[self.in_key], 
+                emb_dim=0, # not used here!
+                id_dim=self.id_dim, 
+                exp_dim=self.rig_dim,
+                seg_dim=self.seg_dim,
+                pre_computes=None,
+                out_shape=out_shape_dict[self.out_key],
+                outputs_at='vertices',
+                use_skin=True,
+                device=self.device,
+                opts=self.opts
+            )
+            
+        elif self.design == 'new2': # segment encoder, skinning block (MLP), w/ image feature
             self.img_encoder = TextureEncoder()
             self.img_fc = nn.Linear(128, self.img_feat_dim)
             
@@ -147,6 +178,71 @@ class NFS(nn.Module):
                 seg_dim=self.seg_dim,
                 out_shape=out_shape_dict[self.out_key],
             )
+        elif self.design == 'new2dn': # segment encoder, skinning block (MLP), w/ image feature, use DiffusionNet decoder
+            self.img_encoder = TextureEncoder()
+            self.img_fc = nn.Linear(128, self.img_feat_dim)
+            
+            self.mesh_id_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes=mesh_dfn_info,
+                out_shape=self.id_dim,
+            )
+            self.mesh_exp_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes=mesh_dfn_info,
+                out_shape=self.rig_dim,
+            )
+            self.mesh_seg_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes = mesh_dfn_info,
+                out_shape=self.seg_dim,
+                outputs_at='vertices',
+            )
+            self.mesh_decoder = BaseDiffusionNetDecoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim, 
+                emb_dim=0, # not used here!
+                id_dim=self.id_dim, 
+                exp_dim=self.rig_dim,
+                seg_dim=self.seg_dim,
+                pre_computes=None,
+                out_shape=out_shape_dict[self.out_key],
+                outputs_at='vertices',
+                use_skin=True,
+                device=self.device,
+                opts=self.opts
+            )
+        elif self.design == 'new2dn_mk2': # surface encoder, w/ image feature, use DiffusionNet decoder
+            self.img_encoder = TextureEncoder()
+            self.img_fc = nn.Linear(128, self.img_feat_dim)
+            
+            self.mesh_id_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes=mesh_dfn_info,
+                out_shape=self.id_dim,
+            )
+            self.mesh_exp_encoder = BaseDiffusionNetEncoder(
+                in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
+                pre_computes=mesh_dfn_info,
+                out_shape=self.rig_dim,
+            )
+            self.mesh_seg_encoder = AdaINDiffusionNetEncoder(
+                C_in=in_shape_dict[self.in_key]+self.img_feat_dim,
+                C_out=3,
+                id_dim=self.id_dim, 
+                pre_computes=None,
+                outputs_at='vertices',
+            )
+            self.mesh_decoder = AdaINDiffusionNetDecoder(
+                C_in=3+self.img_feat_dim, 
+                C_out=out_shape_dict[self.out_key],
+                emb_dim=0, # not used here!
+                id_dim=self.id_dim, 
+                exp_dim=self.rig_dim,
+                pre_computes=None,
+                outputs_at='vertices',
+                opts=self.opts
+            )
+            
         elif self.design == 'new4':
             self.mesh_id_encoder = BaseDiffusionNetEncoder(
                 in_shape=in_shape_dict[self.in_key],
@@ -272,17 +368,38 @@ class NFS(nn.Module):
         
     def get_mesh_autoencoder_parameters(self):
         """no audio encoder"""
-        param_list= [
-            *self.mesh_decoder.parameters(), 
-            *self.img_encoder.parameters(), 
-            *self.img_fc.parameters()
-        ]
-        param_list = param_list + [
-            *self.mesh_id_encoder.parameters(), 
-            *self.mesh_exp_encoder.parameters()
-        ]
-        if 'new2' in self.design:
-            param_list = param_list + [*self.mesh_seg_encoder.parameters()]
+        if 'nfr' in self.design:
+            param_list= [
+                *self.mesh_decoder.parameters(), 
+                *self.img_encoder.parameters(), 
+                *self.img_fc.parameters(),
+                *self.mesh_id_encoder.parameters(), 
+                *self.mesh_exp_encoder.parameters()
+            ]
+        elif 'new1' in self.design:
+            param_list= [
+                *self.mesh_decoder.parameters(),
+                *self.mesh_id_encoder.parameters(), 
+                *self.mesh_exp_encoder.parameters(),
+                *self.mesh_seg_encoder.parameters(),
+            ]
+        elif 'new2' in self.design:
+            param_list= [
+                *self.mesh_decoder.parameters(), 
+                *self.img_encoder.parameters(), 
+                *self.img_fc.parameters(),
+                *self.mesh_id_encoder.parameters(), 
+                *self.mesh_exp_encoder.parameters(),
+                *self.mesh_seg_encoder.parameters(),
+            ]
+        elif 'new4' in self.design:
+            param_list= [
+                *self.mesh_decoder.parameters(), 
+                *self.mesh_id_encoder.parameters(), 
+                *self.mesh_exp_encoder.parameters(),
+            ]
+        else:
+            raise NotImplementedError("no corresponding version!")
         return param_list
     
     def get_img_feat(self, img):
@@ -290,11 +407,14 @@ class NFS(nn.Module):
         Args:
             img (torch.tensor): rendered image [1,H,W,C] or [H,W,C]
         Returns:
-            image feature
+            image feature [1, 1, N]
         """
+        if 'new1' in self.design:
+            return None
+        
         if len(img.shape) < 4:
             img = img[None]
-        return self.img_fc(self.img_encoder(img[..., :3].permute(0, 3, 1, 2)))
+        return self.img_fc(self.img_encoder(img[..., :3].permute(0, 3, 1, 2))).unsqueeze(1) 
           
     def get_img_feat_from_mesh(self, tgt_mesh, return_feat=False):
         """
@@ -308,7 +428,7 @@ class NFS(nn.Module):
         """
         tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
         if return_feat:
-            tgt_img_feat = self.get_img_feat(tgt_img).unsqueeze(1) #------------------- [1, 1, 128]
+            tgt_img_feat = self.get_img_feat(tgt_img)#.unsqueeze(1) #------------------- [1, 1, 128]
             return tgt_img_feat
         else:
             return tgt_img
@@ -375,7 +495,7 @@ class NFS(nn.Module):
         one_hot = one_hot * (1 - smoothing) + (1 - one_hot) * smoothing / (n_class - 1)
         return one_hot
         
-    def get_local_feature(self, vertices, faces, img_feat, at='verts'):
+    def get_local_feature(self, vertices, faces, img_feat=None, at='verts'):
         """
         Args
         ----------
@@ -386,23 +506,30 @@ class NFS(nn.Module):
         ----------
             local_feat (torch.tensor) [B, V, 6] / [B, F, 6]
         """
+            
         if at=='verts':
             verts_pos = vertices # [1, V, 3]
             verts_nrm = self.calc_norm_torch(verts_pos, faces, at='verts') # [1, V, 3]
-            
-            B, V, _ = vertices.shape
-            verts_img_feat = img_feat.repeat(1, V, 1) # [1, V, 128]
-            local_feat = torch.cat([verts_pos, verts_nrm, verts_img_feat], dim=-1) # [1, V, 3+3+128]
+            if 'new1' in self.design:
+                local_feat = torch.cat([verts_pos, verts_nrm], dim=-1) # [1, V, 3+3+128]
+            else:
+                B, V, _ = vertices.shape
+                verts_img_feat = img_feat.repeat(1, V, 1) # [1, V, 128]
+                local_feat = torch.cat([verts_pos, verts_nrm, verts_img_feat], dim=-1) # [1, V, 3+3+128]
         else:
             verts_pos = vertices # [1, V, 3]
             tri_centr = self.calc_cent(verts_pos.squeeze(0), faces, mode='torch').unsqueeze(0)
             tri_norms = self.calc_norm_torch(verts_pos, faces)
-
-            B, F = vertices.shape[0], faces.shape[0]
-            tri_img_feat = img_feat.repeat(1, F, 1)
-            local_feat = torch.cat([tri_centr, tri_norms, tri_img_feat], dim=-1) # [1, V, 3+3+128]
+            if 'new1' in self.design:
+                local_feat = torch.cat([tri_centr, tri_norms], dim=-1) # [1, V, 3+3+128]
+            else:
+                B, F = vertices.shape[0], faces.shape[0]
+                tri_img_feat = img_feat.repeat(1, F, 1)
+                local_feat = torch.cat([tri_centr, tri_norms, tri_img_feat], dim=-1) # [1, V, 3+3+128]
             
         return local_feat
+    
+    
         
     def encode_id(self, vert_feat, dfn_info, verbose=False):
         """batch size is 1
@@ -449,7 +576,7 @@ class NFS(nn.Module):
             exp_code = torch.vstack(exp_code) #------------- [W, Rig]
         return exp_code
     
-    def encode_seg(self, vert_feat, dfn_info):
+    def encode_seg(self, vert_feat, dfn_info, id_in=None):
         """batch size is 1
         Args
         ----------
@@ -461,7 +588,10 @@ class NFS(nn.Module):
             seg_code (torch.tensor): [B, Exp] segment code per batch
         """
         self.mesh_seg_encoder.update_precomputes(dfn_info)
-        seg_code = self.mesh_seg_encoder(vert_feat) # [1, ID]
+        if  'mk2' in self.design:
+            seg_code = self.mesh_seg_encoder(vert_feat, id_in=id_in) # [1, ID]
+        else:
+            seg_code = self.mesh_seg_encoder(vert_feat) # [1, ID]
         return seg_code
     
     def get_inputs_ict(self, pred_exp_coeff, region=0, v_num=None, faces_ict=None):
@@ -471,7 +601,7 @@ class NFS(nn.Module):
             region (int): label for ict face region [0: face to shoulder, 1: face to neck, 2: narrow face]
         
         Returns:
-            inputs_ict (tuple): inputs for decoder
+            inputs_ict, dfn_info_ict (tuple): inputs for decoder
         """
         
         if v_num is None or faces_ict is None:
@@ -492,33 +622,43 @@ class NFS(nn.Module):
             neu_img = self.neu_nf_img
             operators_ict = self.neu_nf_operators
             dfn_info_ict = self.neu_nf_dfn_info
-            
-        img_feat_ict = self.get_img_feat(neu_img).unsqueeze(1) # [B, 1, 128]
+        
+        # will return None if design == nfr
+        img_feat_ict = self.get_img_feat(neu_img) # [B, 1, 128]
         
         local_feat_ict = self.get_local_feature(template_ict, faces_ict, img_feat_ict)
         B = pred_exp_coeff.shape[0]
         
         with torch.no_grad(): ## no need to pass it to id encoder
-            pred_id_coeff_ict = self.encode_id(local_feat_ict, dfn_info_ict).repeat(B, 1)# [1, ID]
+            pred_id_coeff_ict = self.encode_id(local_feat_ict, dfn_info_ict)# [1, ID]
         
-        if 'new2' in self.design:
-            pred_seg_coeff_ict = self.encode_seg(local_feat_ict, dfn_info_ict)# [1, V, Seg]
-        else:
+        if 'nfr' in self.design:
             pred_seg_coeff_ict = None
+        else:
+            if 'mk2' in self.design:
+                pred_seg_coeff_ict = self.encode_seg(local_feat_ict, dfn_info_ict, id_in=pred_id_coeff_ict)# [1, V, Seg]
+            else:
+                pred_seg_coeff_ict = self.encode_seg(local_feat_ict, dfn_info_ict)# [1, V, Seg]
         
         if self.opts.dec_type=='jacob':
             local_feat_ict = self.get_local_feature(template_ict, faces_ict, img_feat_ict, at='faces')
+        else:
+            local_feat_ict = local_feat_ict
+            if 'mk2' in self.opts.design:
+                B, V, _ = template_ict.shape
+                verts_img_feat = img_feat_ict.repeat(1, V, 1) # [1, V, 128]
+                local_feat_ict = torch.cat([pred_seg_coeff_ict, verts_img_feat], dim=-1) # [B, V, 3+128]
             
         return (
             local_feat_ict.repeat(B, 1, 1), 
             pred_exp_coeff, 
-            pred_id_coeff_ict, 
+            pred_id_coeff_ict.repeat(B, 1), 
             pred_seg_coeff_ict.repeat(B, 1, 1), 
             None, # style_emb #(not used)
             template_ict.repeat(B, 1, 1), 
             faces_ict, 
             operators_ict,
-        )
+        ), dfn_info_ict
     
     @torch.no_grad()
     def encode_mesh(self,
@@ -535,7 +675,7 @@ class NFS(nn.Module):
         
         ## target mesh local feature
         tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
-        tgt_img_feat = self.get_img_feat(tgt_img).unsqueeze(1) #------------------- [1, 1, 128]
+        tgt_img_feat = self.get_img_feat(tgt_img)#.unsqueeze(1) #------------------- [1, 1, 128]
         tgt_dfn_info = get_dfn_info(tgt_mesh, map_location=self.device)
         tgt_verts = torch.from_numpy(tgt_mesh.vertices)[None].to(self.device).float()
         tgt_faces = torch.from_numpy(tgt_mesh.faces).to(self.device)
@@ -545,7 +685,10 @@ class NFS(nn.Module):
             pred_id_coeff = self.encode_id(vert_feat, tgt_dfn_info)
 
             if 'new2' in self.design:
-                pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info)# [1, V, Seg]
+                if 'mk2' in self.design:
+                    pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info, id_in=pred_id_coeff)# [1, V, Seg]
+                else:
+                    pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info)# [1, V, Seg]
             else:
                 pred_seg_coeff = None
         
@@ -557,7 +700,7 @@ class NFS(nn.Module):
         ## source mesh local feature
         gt_vertices = gt_vertices.to(self.device)
         src_img = self.renderer.render_img(src_mesh).float().to(self.device)
-        src_img_feat = self.get_img_feat(src_img).unsqueeze(1) #------------------- [1, 1, 128]
+        src_img_feat = self.get_img_feat(src_img)#.unsqueeze(1) #------------------- [1, 1, 128]
         src_dfn_info = get_dfn_info(src_mesh, map_location=self.device)
         src_faces = torch.from_numpy(src_mesh.faces).to(self.device)
         
@@ -590,8 +733,11 @@ class NFS(nn.Module):
         pred_id_coeff = self.encode_id(vert_feat, dfn_info) # [1, ID]
         pred_exp_coeff = self.encode_exp(vert_feat_exp, dfn_info) # [W, Rig]
         
-        if 'new2' in self.design:
-            pred_seg_coeff = self.encode_seg(vert_feat, dfn_info) # [1, V, Seg]
+        if self.design != 'nfr':
+            if 'mk2' in self.design:
+                pred_seg_coeff = self.encode_seg(vert_feat, dfn_info, id_in=pred_id_coeff)# [1, V, Seg]
+            else:
+                pred_seg_coeff = self.encode_seg(vert_feat, dfn_info) # [1, V, Seg]
                 
         return pred_id_coeff, pred_exp_coeff, pred_seg_coeff
     
@@ -834,8 +980,8 @@ class NFS(nn.Module):
         ##------------------------------------------------------------------------------
         
         ## Encoding --------------------------------------------------------------------
-        ## source & target mesh image feature
-        img_feat = self.get_img_feat(img).unsqueeze(1) # [1, 1, 128]
+        ## source & target mesh image feature (not used if design 'new1')
+        img_feat = self.get_img_feat(img)# [1, 1, 128]
         # source expression face
         vert_feat_exp = self.get_local_feature(gt_vertices, faces, img_feat)  # [W, V, 6]
         # target neutral face
@@ -852,7 +998,15 @@ class NFS(nn.Module):
             local_feat = faces_feat # [1, V, 3+3+128]
         else: # dec_type=='disp'
             local_feat = vert_feat # [1, V, 3+3+128]
-        
+            
+            if 'mk2' in self.opts.design:
+                B, V, _ = gt_vertices.shape
+                verts_img_feat = img_feat.repeat(1, V, 1) # [1, V, 128]
+                local_feat = torch.cat([pred_seg_coeff, verts_img_feat], dim=-1) # [B, V, 3+128]
+            
+        # TODO:
+        # - [ ] mk2: addd loss for canon :: pred_seg_coeff - canon_vertices
+            
         style_emb = None # -> not used!
         
         # target inputs
@@ -861,6 +1015,9 @@ class NFS(nn.Module):
         else:
             inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff, style_emb, template, faces, operators)
         # inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff, style_emb, template, faces, operators)
+        if 'dn' in self.design:
+            self.mesh_decoder.update_precomputes(dfn_info)
+        
         pred_outputs, pred_jacobians = self.decode_grad(inputs)
         ##------------------------------------------------------------------------------
         
@@ -889,20 +1046,23 @@ class NFS(nn.Module):
                 loss["vert_vICT"] = self.criterion(gt_vertices, pred_ICT_recon)
         
             if not self.opts.no_BR:
-                inputs_ict = self.get_inputs_ict(pred_exp_coeff.detach(), region=region_num, v_num=v_num, faces_ict=faces)
+                inputs_ict, dfn_info_ict = self.get_inputs_ict(pred_exp_coeff.detach(), region=region_num, v_num=v_num, faces_ict=faces)
                 gt_recon_ICT = self.ict_face_model.apply_coeffs_batch_torch(inputs_ict[2][:, :100], pred_exp_coeff[:, :53].detach(), region=region_num)
+                if 'dn' in self.design:
+                    self.mesh_decoder.update_precomputes(dfn_info_ict)
                 pred_outputs_ict, _ = self.decode_grad(inputs_ict)
                 loss["vert_vICT"] = self.criterion(gt_recon_ICT, pred_outputs_ict)
 
             if 'new2' in self.design:
-                pred_seg_log = F.log_softmax(pred_seg_coeff, dim=-1) ## [V, Seg]
-                loss["nll_vSeg"] = 0
-                for pred_s_l in pred_seg_log:
-                    loss["nll_vSeg"] += F.nll_loss(pred_s_l, ict_seg)
-                loss["nll_vSeg"] = loss["nll_vSeg"] / pred_seg_log.shape[0]
+                if not 'mk2' in self.design:
+                    pred_seg_log = F.log_softmax(pred_seg_coeff, dim=-1) ## [V, Seg]
+                    loss["nll_vSeg"] = 0
+                    for pred_s_l in pred_seg_log:
+                        loss["nll_vSeg"] += F.nll_loss(pred_s_l, ict_seg)
+                    loss["nll_vSeg"] = loss["nll_vSeg"] / pred_seg_log.shape[0]
         else:
             # if not self.opts.no_BR:
-            #     inputs_ict = self.get_inputs_ict(pred_exp_coeff.detach(), region=region_num, v_num=v_num, faces_ict=faces)
+            #     inputs_ict, dfn_info_ict = self.get_inputs_ict(pred_exp_coeff.detach(), region=region_num, v_num=v_num, faces_ict=faces)
             #     gt_recon_ICT = self.ict_face_model.apply_coeffs_batch_torch(inputs_ict[2][:, :100], pred_exp_coeff[:, :53].detach(), region=region_num)
             #     pred_outputs_ict, _ = self.decode_grad(inputs_ict)
             #     loss["vert_vICT"] = self.criterion(gt_recon_ICT, pred_outputs_ict)
@@ -954,13 +1114,18 @@ class NFS(nn.Module):
         
         ## Decoding --------------------------------------------------------------------
         style_emb, pred_seg_coeff = None, None
-        img_feat = self.get_img_feat(img).unsqueeze(1) # [1, 1, 128]
+        img_feat = self.get_img_feat(img)# [1, 1, 128]
         # target local features
         if self.opts.dec_type=='jacob':
             faces_feat = self.get_local_feature(template, faces, img_feat, at='faces')
             local_feat = faces_feat # [1, V, 3+3+128]
         else: # dec_type=='disp'
             local_feat = self.get_local_feature(template, faces, img_feat) # [1, V, 3+3+128]
+            
+            if 'mk2' in self.opts.design:
+                B, V, _ = vertices.shape
+                verts_img_feat = img_feat.repeat(1, V, 1) # [1, V, 128]
+                local_feat = torch.cat([pred_seg_coeff, verts_img_feat], dim=-1) # [B, V, 3+128]
         
         # target inputs
         inputs = (local_feat, gt_rig_params, gt_id_coeff, pred_seg_coeff, style_emb, template, faces, operators)
@@ -1031,14 +1196,17 @@ class NFS(nn.Module):
         
         ## Encoding --------------------------------------------------------------------
         ## source & target mesh local feature
-        img_feat = self.get_img_feat(img).unsqueeze(1) #--------------------------------------- [1, 1, 128]
+        img_feat = self.get_img_feat(img)#--------------------------------------- [1, 1, 128]
         vert_feat = self.get_local_feature(template, faces, img_feat)#------------------ [1, V, 3+3+128]
         vert_feat_exp = self.get_local_feature(gt_vertices, faces, img_feat)#----------- [W, V, 3+3+128]
         
         with torch.no_grad():
             pred_id_coeff = self.encode_id(vert_feat, dfn_info)#---------------- [1, ID]
             if 'new2' in self.design:
-                pred_seg_coeff = self.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+                if 'mk2' in self.design:
+                    pred_seg_coeff = self.encode_seg(vert_feat, dfn_info, id_in=pred_id_coeff)# [1, V, Seg]
+                else:
+                    pred_seg_coeff = self.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
             else:
                 pred_seg_coeff = None
         torch.cuda.empty_cache()
@@ -1057,6 +1225,10 @@ class NFS(nn.Module):
                 local_feat = faces_feat #----------------------------------------------- [1, V, 3+3+128]
             else:
                 local_feat = vert_feat #------------------------------------------------ [1, V, 3+3+128]
+                if 'mk2' in self.opts.design:
+                    B, V, _ = vertices.shape
+                    verts_img_feat = img_feat.repeat(1, V, 1) # [1, V, 128]
+                    local_feat = torch.cat([pred_seg_coeff, verts_img_feat], dim=-1) # [B, V, 3+128]
         
             #operators = pickle.load(open(operators[0], mode='rb'))
             style_emb = None
@@ -1142,11 +1314,11 @@ class NFS(nn.Module):
         
         ## Encoding --------------------------------------------------------------------
         ## target mesh feature
-        tgt_img_feat = self.get_img_feat(tgt_img).unsqueeze(1) #------------------------------- [1, 1, 128]
+        tgt_img_feat = self.get_img_feat(tgt_img)#.unsqueeze(1) #------------------------------- [1, 1, 128]
         vert_feat = self.get_local_feature(tgt_template, faces, tgt_img_feat)#---------- [1, V, 3+3+128]
         
         ## source mesh feature
-        img_feat = self.get_img_feat(img).unsqueeze(1) #--------------------------------------- [1, 1, 128]
+        img_feat = self.get_img_feat(img)#--------------------------------------- [1, 1, 128]
         vert_feat_exp = self.get_local_feature(gt_vertices, faces, img_feat)#----------- [W, V, 3+3+128]
 
         with torch.no_grad():
@@ -1155,7 +1327,10 @@ class NFS(nn.Module):
 
             # target seg_code
             if 'new2' in self.design:
-                pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info)# [1, V, Seg]
+                if 'mk2' in self.design:
+                    pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info, id_in=pred_id_coeff)# [1, V, Seg]
+                else:
+                    pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info)# [1, V, Seg]
 
             # source exp_code
             pred_exp_coeff = self.encode_exp(vert_feat_exp, dfn_info, batch_process=batch_process)# [W, Rig]
@@ -1169,6 +1344,11 @@ class NFS(nn.Module):
                 local_feat = faces_feat #--------------------------------------------------- [1, V, 3+3+128]
             else:
                 local_feat = vert_feat #---------------------------------------------------- [1, V, 3+3+128]
+                
+                if 'mk2' in self.opts.design:
+                    B, V, _ = vertices.shape
+                    verts_img_feat = img_feat.repeat(1, V, 1) # [1, V, 128]
+                    local_feat = torch.cat([pred_seg_coeff, verts_img_feat], dim=-1) # [B, V, 3+128]
             
                 operators = pickle.load(open(operators[0], mode='rb'))
                 style_emb = None
@@ -1262,11 +1442,18 @@ class NFS(nn.Module):
         if self.opts.dec_type=='jacob':
             tgt_operators = self.get_mesh_operators(tgt_mesh)
             tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
-            tgt_img_feat = self.get_img_feat(tgt_img).unsqueeze(1) #------------------- [1, 1, 128]
+            tgt_img_feat = self.get_img_feat(tgt_img)#.unsqueeze(1) #------------------- [1, 1, 128]
             faces_feat = self.get_local_feature(tgt_verts, tgt_faces, tgt_img_feat, at='faces')
             local_feat = faces_feat # [1, F, 3+3+128]
         else:
             local_feat = vert_feat # [1, V, 3+3+128]
+            
+            if 'mk2' in self.opts.design:
+                tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
+                tgt_img_feat = self.get_img_feat(tgt_img)#.unsqueeze(1) #------------------- [1, 1, 128]
+                B, V, _ = vertices.shape
+                verts_img_feat = tgt_img_feat.repeat(1, V, 1) # [1, V, 128]
+                local_feat = torch.cat([pred_seg_coeff, verts_img_feat], dim=-1) # [B, V, 3+128]
 
         style_emb = None # depricated 
         inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff, style_emb, tgt_verts, tgt_faces, tgt_operators)

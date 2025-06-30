@@ -72,10 +72,10 @@ use_ict_real: False # checked
 use_ict_synth: True # checked
 use_ict_synth_single: False # checked
 use_mf_SEN: False # checked
-use_mf_ROM: True # checked
+use_mf_ROM: False # checked
 use_voca: False # TBD
-use_coma: True # TBD
-use_biwi: True # TBD
+use_coma: False # TBD
+use_biwi: False # TBD
 
 style_emb: False # (not used)
 recon_type: 'baseline' # "baseline, distill, hybrid"

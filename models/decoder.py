@@ -5,11 +5,14 @@ import torch.nn.functional as F
 import sys
 from pathlib import Path
 abs_path = str(Path(__file__).parents[1].absolute())
-sys.path+=[abs_path, f'{abs_path}/third_party/diffusion-net/src']
+diffusionnet_path=f'{abs_path}/third_party/diffusion-net/src'
+if not diffusionnet_path in sys.path:
+    sys.path+=[diffusionnet_path]
 import diffusion_net
 
 # from models.lib.quantizer import VectorQuantizer, VectorBases
 from models.lib.quantizer import VectorBases
+from models.blocks import *
 
 class BaseDecoder(nn.Module):
     """
@@ -169,14 +172,15 @@ def cosine_similarity_batch(a, b, batch_size=30000):
 class BaseDiffusionNetDecoder(nn.Module):
     # reference: https://github.com/dafei-qin/NFR_pytorch/blob/e3553faa77f65240ec20167aec6e814473233890/mymodel.py#L17
     def __init__(self, 
-                 #in_shape=6, 
-                 out_shape=128, emb_dim=2048, id_dim=128, exp_dim=64,
+                 in_shape=6, 
+                 out_shape=128, emb_dim=2048, id_dim=128, exp_dim=64, seg_dim=20,
                  hid_shape=256, pre_computes=None, N_block=4, num_emb=1024,
                  outputs_at='vertices', with_grad=True, last_activation=None, 
-                 use_canon=False, device='cpu', opts=None):
+                 use_canon=False, use_skin=False, act='relu',
+                 device='cpu', opts=None):
         super(BaseDiffusionNetDecoder, self).__init__()
         
-        in_shape = emb_dim + id_dim + exp_dim
+        in_shape = in_shape + emb_dim + id_dim + exp_dim
 
         self.dfn = diffusion_net.DiffusionNet(
             C_in=in_shape, 
@@ -194,9 +198,31 @@ class BaseDiffusionNetDecoder(nn.Module):
             
         self.opts=opts
         self.use_canon=use_canon
-        if self.use_canon:
+        self.use_skin=use_skin
+        
+        if self.use_canon and self.use_skin:
+            raise NotImplementedError("literally not implemented bro, just select one")
+            
+        if self.use_canon and not self.use_skin:
             # linear? need to backprop grad.... 
             self.canonical_bases = VectorBases(n_e=self.opts.n_corr, e_dim=2048, tau=10.0, device=device, opts=opts)
+            
+        if self.use_skin and not self.use_canon:
+            if act == 'none':
+                self.act = lambda x: x
+            elif act == 'relu':
+                self.act = nn.ReLU()
+            elif act == 'lrelu':
+                self.act = nn.LeakyReLU()
+                
+            skinning_layer = [
+                nn.Linear(seg_dim, hid_shape),
+                self.act,
+                nn.Linear(hid_shape, hid_shape),
+                self.act,
+                nn.Linear(hid_shape, exp_dim),
+            ]
+            self.skinning_layer = nn.Sequential(*skinning_layer)
         
     def update_precomputes(self, pre_computes):
         #import pdb;pdb.set_trace()
@@ -244,14 +270,16 @@ class BaseDiffusionNetDecoder(nn.Module):
     
     def forward(self,
                 inputs, # corr_feature 
-                id_code, 
                 exp_code, 
+                id_code, 
+                seg_code,
                 batch_mass=None,
                 batch_L_val=None,
                 batch_evals=None,
                 batch_evecs=None,
                 batch_gradX=None,
-                batch_gradY=None
+                batch_gradY=None,
+                eps=1e-12,
                ):
         """
         Args:
@@ -262,6 +290,8 @@ class BaseDiffusionNetDecoder(nn.Module):
         ## get canonical feature
         if self.use_canon:
             inputs = self.canonical_bases(inputs)
+        if self.use_skin:
+            exp_code = self.apply_skinning(exp_code, seg_code)
         inputs = torch.cat([inputs, exp_code, id_code], dim=-1) #[B, V, C+exp+ID]
         
         self.L = torch.sparse_coo_tensor(self.L_ind, self.L_val, self.L_size, device=inputs.device)
@@ -289,105 +319,20 @@ class BaseDiffusionNetDecoder(nn.Module):
         ## device???
         outputs = self.dfn(inputs, batch_mass, L=batch_L, evals=batch_evals, evecs=batch_evecs, gradX=gradX, gradY=gradY, faces=self.faces)
         return outputs
- 
-class AdaINDiffusionNetBlock(nn.Module):
-    """
-    Inputs and outputs are defined at vertices
-    """
-    def __init__(self, C_width, mlp_hidden_dims, 
-                 ID_dims=128, 
-                 dropout=True, 
-                 diffusion_method='spectral',
-                 with_gradient_features=True, 
-                 with_gradient_rotations=True):
-        super(AdaINDiffusionNetBlock, self).__init__()
 
-        # Specified dimensions
-        self.C_width = C_width
-        self.mlp_hidden_dims = mlp_hidden_dims
-
-        self.dropout = dropout
-        self.with_gradient_features = with_gradient_features
-        self.with_gradient_rotations = with_gradient_rotations
-
-        # Diffusion block
-        self.diffusion = diffusion_net.LearnedTimeDiffusion(self.C_width, method=diffusion_method)
-        self.gradient_features = diffusion_net.SpatialGradientFeatures(self.C_width, with_gradient_rotations=self.with_gradient_rotations)
-        
-        self.MLP_C = 3 * self.C_width
-        
-        # MLPs
-        self.mlp = diffusion_net.MiniMLP([self.MLP_C] + self.mlp_hidden_dims + [self.C_width], dropout=self.dropout)
-        
-        # AdaIN
-        self.id_mlp = diffusion_net.MiniMLP([self.C_width+ID_dims] + [self.C_width] + [self.C_width*2], dropout=self.dropout)
-        self.id_w = nn.Linear(self.C_width, self.C_width)
-        self.id_b = nn.Linear(self.C_width, self.C_width)
-        
-        # self.exp_mlp = diffusion_net.MiniMLP([self.C_width+EXP_dims] + [self.C_width] + [self.C_width*2], dropout=self.dropout)
-        # self.exp_w = nn.Linear(self.C_width, self.C_width)
-        # self.exp_b = nn.Linear(self.C_width, self.C_width)
-        
-    def forward(self, id_in, x_in, mass, L, evals, evecs, gradX, gradY):
-        
-        # Manage dimensions
-        B = x_in.shape[0] # batch dimension
-        if x_in.shape[-1] != self.C_width:
-            raise ValueError(
-                "Tensor has wrong shape = {}. Last dim shape should have number of channels = {}".format(
-                    x_in.shape, self.C_width))
-        
-        # Diffusion block 
-        x_diffuse = self.diffusion(x_in, L, mass, evals, evecs)
-        if type(gradX) != list:
-            gradX = [gradX for i in range(B)]
-            gradY = [gradY for i in range(B)]
-        # Compute gradient features, if using
-        if self.with_gradient_features:
-
-            # Compute gradients
-            x_grads = [] # Manually loop over the batch (if there is a batch dimension) since torch.mm() doesn't support batching
-            for b in range(B):
-                # gradient after diffusion
-                x_gradX = torch.mm(gradX[b], x_diffuse[b,...])
-                x_gradY = torch.mm(gradY[b], x_diffuse[b,...])
-                # x_gradX = torch.mm(gradX[b, ...], x_diffuse[b,...])
-                # x_gradY = torch.mm(gradY[b, ...], x_diffuse[b,...])
-
-                x_grads.append(torch.stack((x_gradX, x_gradY), dim=-1))
-            x_grad = torch.stack(x_grads, dim=0)
-
-            # Evaluate gradient features
-            x_grad_features = self.gradient_features(x_grad) 
-
-            # Stack inputs to mlp
-            feature_combined = torch.cat((x_in, x_diffuse, x_grad_features), dim=-1)
-        else:
-            # Stack inputs to mlp
-            feature_combined = torch.cat((x_in, x_diffuse), dim=-1)
-        
-        # Apply the mlp
-        x0_out = self.mlp(feature_combined)
-
-        ## AdaIN ---------------------
-        # ID
-        id_mu_sigma = self.id_mlp(torch.cat((x0_out, id_in), dim=-1))
-        id_mu    = self.id_w(id_mu_sigma[..., :self.C_width])
-        id_sigma = self.id_b(id_mu_sigma[..., self.C_width:])
-        
-        # modulate feature
-        x0_out = id_sigma * x0_out + id_mu
-        ## ---------------------------
-                
-        # Skip connection
-        x0_out = x0_out + x_in
-
-        return x0_out
 
 class AdaINDiffusionNetDecoder(nn.Module):
-    def __init__(self, C_in, C_out, C_width=128, ID_dims=128,  N_block=4, 
-                 last_activation=None, outputs_at='vertices', mlp_hidden_dims=None, dropout=True, 
-                 with_gradient_features=True, with_gradient_rotations=True, diffusion_method='spectral'):
+    def __init__(self, #C_in, C_out, C_width=128, ID_dims=128,  N_block=4, 
+                 C_in=6, C_out=128, C_width=256, 
+                 emb_dim=2048, id_dim=128, exp_dim=64, seg_dim=20,
+                 pre_computes=None, N_block=4, 
+                 last_activation=None, outputs_at='vertices', 
+                 mlp_hidden_dims=None, dropout=True, 
+                 with_gradient_features=True, 
+                 with_gradient_rotations=True, 
+                 diffusion_method='spectral',
+                 opts=None
+                 ):
         super(AdaINDiffusionNetDecoder, self).__init__()
         """
         Construct a DiffusionNet.
@@ -405,8 +350,6 @@ class AdaINDiffusionNetDecoder(nn.Module):
             with_gradient_features (bool):  if True, use gradient features (default: True)
             with_gradient_rotations (bool): if True, use gradient also learn a rotation of each gradient. Set to True if your surface has consistently oriented normals, and False otherwise (default: True)
         """
-
-
         ## Store parameters
 
         # Basic parameters
@@ -419,7 +362,9 @@ class AdaINDiffusionNetDecoder(nn.Module):
         self.last_activation = last_activation
         self.outputs_at = outputs_at
         if outputs_at not in ['vertices', 'edges', 'faces', 'global_mean']: raise ValueError("invalid setting for outputs_at")
-
+        
+        self.opts = opts
+        
         # MLP options
         if mlp_hidden_dims == None:
             mlp_hidden_dims = [C_width, C_width]
@@ -435,17 +380,23 @@ class AdaINDiffusionNetDecoder(nn.Module):
         self.with_gradient_rotations = with_gradient_rotations
         
         ## Set up the network
-
+        # self.adain_in = nn.Sequential(
+        #     nn.Linear(C_in,      id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
+        #     nn.Linear(id_dim//2, id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
+        #     nn.Linear(id_dim//2, id_dim),
+        # )
+        # self.act = nn.ReLU()
+        
         # First and last affine layers
         self.first_lin = nn.Linear(C_in, C_width)
         self.last_lin = nn.Linear(C_width, C_out)
-       
+        
         # DiffusionNet blocks
         self.blocks = nn.ModuleList()
         for i_block in range(self.N_block):
             block = AdaINDiffusionNetBlock(C_width = C_width,
                                     mlp_hidden_dims = mlp_hidden_dims, # list
-                                    ID_dims = ID_dims,
+                                    ID_dims = id_dim,
                                     dropout = dropout,
                                     diffusion_method = diffusion_method,
                                     with_gradient_features = with_gradient_features, 
@@ -453,6 +404,9 @@ class AdaINDiffusionNetDecoder(nn.Module):
 
             self.blocks.append(block)
             self.add_module("block_"+str(i_block), self.blocks[-1])
+            
+        if pre_computes:
+            self.update_precomputes(pre_computes)
 
     def update_precomputes(self, pre_computes):
         if len(pre_computes[0].shape) > 1:
@@ -489,7 +443,14 @@ class AdaINDiffusionNetDecoder(nn.Module):
 
             self.faces = nn.Parameter(pre_computes[6].unsqueeze(0).long(), requires_grad=False)
     
-    def forward(self, x_in, id_in, mass=None, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):
+    def forward(self, x_in, exp_code, id_code, seg_code=None, #mass=None, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):
+                batch_mass=None,
+                batch_L_val=None,
+                batch_evals=None,
+                batch_evecs=None,
+                batch_gradX=None,
+                batch_gradY=None
+                ):
         """
         A forward pass on the DiffusionNet.
 
@@ -505,6 +466,9 @@ class AdaINDiffusionNetDecoder(nn.Module):
 
         Parameters:
             x_in (tensor):      Input features, dimension [N,C] or [B,N,C]
+            exp_code (tensor):
+            id_code (tensor):
+            seg_code (tensor):  ignored!!!   
             mass (tensor):      Mass vector, dimension [N] or [B,N]
             L (tensor):         Laplace matrix, sparse tensor with dimension [N,N] or [B,N,N]
             evals (tensor):     Eigenvalues of Laplace matrix, dimension [K_EIG] or [B,K_EIG]
@@ -515,24 +479,32 @@ class AdaINDiffusionNetDecoder(nn.Module):
         Returns:
             x_out (tensor):    Output with dimension [N,C_out] or [B,N,C_out]
         """
+        
+        if True:
+            inputs = x_in
+            self.L = torch.sparse_coo_tensor(self.L_ind, self.L_val, self.L_size, device=inputs.device)
+            batch_size = inputs.shape[0]
+            if batch_mass is not None:
+                batch_L = [torch.sparse_coo_tensor(self.L_ind, batch_L_val[i], self.L_size, device=inputs.device) for i in range(len(batch_L_val))]
+            else:
+                batch_L = [self.L for b in range(batch_size)]
+                if batch_size > 1:
+                    batch_mass = self.mass.expand(batch_size, -1)
+                    batch_evals = self.evals.expand(batch_size, -1)
+                    batch_evecs = self.evecs.expand(batch_size, -1, -1)
+                else:
+                    batch_mass = self.mass.unsqueeze(0).expand(batch_size, -1)
+                    batch_evals = self.evals.unsqueeze(0).expand(batch_size, -1)
+                    batch_evecs = self.evecs.unsqueeze(0).expand(batch_size, -1, -1)
 
-        self.L = torch.sparse_coo_tensor(self.L_ind, self.L_val, self.L_size, device=x_in.device)
-        batch_size = x_in.shape[0]
-        L = [self.L for b in range(batch_size)]
-        faces = self.faces
-        mass = self.mass
-        if batch_size > 1:
-            mass = self.mass.expand(batch_size, -1)
-            evals = self.evals.expand(batch_size, -1)
-            evecs = self.evecs.expand(batch_size, -1, -1)
-        else:
-            mass = self.mass.unsqueeze(0).expand(batch_size, -1)
-            evals = self.evals.unsqueeze(0).expand(batch_size, -1)
-            evecs = self.evecs.unsqueeze(0).expand(batch_size, -1, -1)
-
-        gradX = [torch.sparse_coo_tensor(self.grad_X_ind, self.grad_X_val, self.grad_X_size, device=x_in.device) for b in range(batch_size)]
-        gradY = [torch.sparse_coo_tensor(self.grad_Y_ind, self.grad_Y_val, self.grad_Y_size, device=x_in.device) for b in range(batch_size)]
-
+            if batch_gradX is not None:
+                gradX = [torch.sparse_coo_tensor(self.grad_X_ind, gX, self.grad_X_size, device=inputs.device) for gX in batch_gradX ]
+                gradY = [torch.sparse_coo_tensor(self.grad_Y_ind, gY, self.grad_Y_size, device=inputs.device) for gY in batch_gradY ]
+            else:
+                gradX = [torch.sparse_coo_tensor(self.grad_X_ind, self.grad_X_val, self.grad_X_size, device=inputs.device) for b in range(batch_size)]
+                gradY = [torch.sparse_coo_tensor(self.grad_Y_ind, self.grad_Y_val, self.grad_Y_size, device=inputs.device) for b in range(batch_size)]
+            mass = batch_mass; L=batch_L; evals=batch_evals; evecs=batch_evecs; gradX=gradX; gradY=gradY; faces=self.faces
+            
         ## Check dimensions, and append batch dimension if not given
         if x_in.shape[-1] != self.C_in: 
             raise ValueError("DiffusionNet was constructed with C_in={}, but x_in has last dim={}".format(self.C_in,x_in.shape[-1]))
@@ -558,10 +530,14 @@ class AdaINDiffusionNetDecoder(nn.Module):
         
         # Apply the first linear layer
         x = self.first_lin(x_in)
-      
+
+        #id_code = self.act(self.adain_in(x_in)).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
+        if len( id_code.shape ) < 3:
+            id_code = id_code.unsqueeze(-2)
+            
         # Apply each of the blocks
         for b in self.blocks:
-            x = b(id_in, x, mass, L, evals, evecs, gradX, gradY)
+            x = b(id_code, x, mass, L, evals, evecs, gradX, gradY)
         
         # Apply the last linear layer
         x = self.last_lin(x)
@@ -597,6 +573,6 @@ class AdaINDiffusionNetDecoder(nn.Module):
         # Remove batch dim if we added it
         if appended_batch_dim:
             x_out = x_out.squeeze(0)
-
-        return x_out
+        #import pdb;pdb.set_trace()
+        return x_out - x_in[...,:3]
 

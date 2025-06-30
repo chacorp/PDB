@@ -6,15 +6,20 @@ import torch.utils.data
 import sys
 from pathlib import Path
 abs_path = str(Path(__file__).parents[1].absolute())
-sys.path+=[abs_path, f'{abs_path}/third_party/diffusion-net/src']
+diffusionnet_path=f'{abs_path}/third_party/diffusion-net/src'
+siren_path = f'{abs_path}/third_party/siren'
+
+if not diffusionnet_path in sys.path:
+    sys.path+=[diffusionnet_path]
 import diffusion_net
 
-sys.path+=[f'{abs_path}/third_party/siren']
+if not siren_path in sys.path:
+    sys.path+=[siren_path]
 import modules
 from meta_modules import HyperNetwork
 
-from torchmeta.modules import (MetaModule, MetaSequential)
-
+# from torchmeta.modules import (MetaModule, MetaSequential)
+from models.blocks import *
 
 class BaseDiffusionNetEncoder(nn.Module):
     # reference: https://github.com/dafei-qin/NFR_pytorch/blob/e3553faa77f65240ec20167aec6e814473233890/mymodel.py#L17
@@ -144,89 +149,19 @@ class MLP(nn.Sequential):
             out = self.act(self.norms[i](tmp))#.transpose(-1, -2)
         out = self.layers[-1](out)
         return out
-    
-class DiffusionNetBlock(nn.Module):
-    """
-    Inputs and outputs are defined at vertices
-    """
-
-    def __init__(self, C_width, mlp_hidden_dims,
-                 dropout=True, 
-                 diffusion_method='spectral',
+        
+class AdaINDiffusionNetEncoder(nn.Module):
+    def __init__(self, C_in, C_out, C_width=128, id_dim=128,
+                 pre_computes=None, N_block=4, 
+                 last_activation=None, outputs_at='vertices', 
+                 mlp_hidden_dims=None, dropout=True, 
                  with_gradient_features=True, 
-                 with_gradient_rotations=True):
-        super(DiffusionNetBlock, self).__init__()
-
-        # Specified dimensions
-        self.C_width = C_width
-        self.mlp_hidden_dims = mlp_hidden_dims
-
-        self.dropout = dropout
-        self.with_gradient_features = with_gradient_features
-        self.with_gradient_rotations = with_gradient_rotations
-
-        # Diffusion block
-        self.diffusion = diffusion_net.LearnedTimeDiffusion(self.C_width, method=diffusion_method)
-        
-        self.MLP_C = 2*self.C_width
-      
-        if self.with_gradient_features:
-            self.gradient_features = diffusion_net.SpatialGradientFeatures(self.C_width, with_gradient_rotations=self.with_gradient_rotations)
-            self.MLP_C += self.C_width
-        
-        # MLPs
-        self.mlp = diffusion_net.MiniMLP([self.MLP_C] + self.mlp_hidden_dims + [self.C_width], dropout=self.dropout)
-
-
-    def forward(self, x_in, mass, L, evals, evecs, gradX, gradY, return_residual=True):
-        # Manage dimensions
-        B = x_in.shape[0] # batch dimension
-        if x_in.shape[-1] != self.C_width:
-            raise ValueError(
-                "Tensor has wrong shape = {}. Last dim shape should have number of channels = {}".format(
-                    x_in.shape, self.C_width))
-        
-        # Diffusion block 
-        x_diffuse = self.diffusion(x_in, L, mass, evals, evecs)
-        if type(gradX) != list:
-            gradX = [gradX for i in range(B)]
-            gradY = [gradY for i in range(B)]
-        # Compute gradient features, if using
-        if self.with_gradient_features:
-
-            # Compute gradients
-            x_grads = [] # Manually loop over the batch (if there is a batch dimension) since torch.mm() doesn't support batching
-            for b in range(B):
-                # gradient after diffusion
-                x_gradX = torch.mm(gradX[b], x_diffuse[b,...])
-                x_gradY = torch.mm(gradY[b], x_diffuse[b,...])
-                x_grads.append(torch.stack((x_gradX, x_gradY), dim=-1))
-            x_grad = torch.stack(x_grads, dim=0)
-
-            # Evaluate gradient features
-            x_grad_features = self.gradient_features(x_grad) 
-
-            # Stack inputs to mlp
-            feature_combined = torch.cat((x_in, x_diffuse, x_grad_features), dim=-1)
-        else:
-            # Stack inputs to mlp
-            feature_combined = torch.cat((x_in, x_diffuse), dim=-1)
-        
-        # Apply the mlp
-        x0_out = self.mlp(feature_combined)
-        
-        if return_residual:
-            return x0_out, x0_out + x_in
-        else:
-            return x0_out + x_in
-    
-class DiffusionNetEncoder(nn.Module):
-    def __init__(self, C_in, C_out, C_width=128, N_block=4, ID_out=128,
-                 last_activation=None, mlp_hidden_dims=None, dropout=True, 
-                 with_gradient_features=True, with_gradient_rotations=True, diffusion_method='spectral'):
-        super(DiffusionNetEncoder, self).__init__()
+                 with_gradient_rotations=True, 
+                 diffusion_method='spectral'
+                 ):
+        super(AdaINDiffusionNetEncoder, self).__init__()
         """
-        Construct a DiffusionNet.
+        Construct a DiffusionNet with AdaIN.
 
         Parameters:
             C_in (int):                     input dimension 
@@ -253,7 +188,9 @@ class DiffusionNetEncoder(nn.Module):
 
         # Outputs
         self.last_activation = last_activation
-        
+        self.outputs_at = outputs_at
+        if outputs_at not in ['vertices', 'edges', 'faces', 'global_mean']: raise ValueError("invalid setting for outputs_at")
+
         # MLP options
         if mlp_hidden_dims == None:
             mlp_hidden_dims = [C_width, C_width]
@@ -277,8 +214,9 @@ class DiffusionNetEncoder(nn.Module):
         # DiffusionNet blocks
         self.blocks = nn.ModuleList()
         for i_block in range(self.N_block):
-            block = DiffusionNetBlock(C_width = C_width,
+            block = AdaINDiffusionNetBlock(C_width = C_width,
                                     mlp_hidden_dims = mlp_hidden_dims, # list
+                                    ID_dims = id_dim,
                                     dropout = dropout,
                                     diffusion_method = diffusion_method,
                                     with_gradient_features = with_gradient_features, 
@@ -286,14 +224,9 @@ class DiffusionNetEncoder(nn.Module):
 
             self.blocks.append(block)
             self.add_module("block_"+str(i_block), self.blocks[-1])
-        
-        # MLP for face identity (shape)
-        self.id_mlps = nn.ModuleList()
-        for i_mlp in range(self.N_block):
-            mlp = MLP([self.C_width]+self.mlp_hidden_dims+[self.C_width], dropout=self.dropout)
-            self.id_mlps.append(mlp)
-            self.add_module("id_mlp_"+str(i_mlp), self.id_mlps[-1])
-        self.last_id_mlp = nn.Linear(C_width, ID_out)
+            
+        if pre_computes:
+            self.update_precomputes(pre_computes)
         
     def update_precomputes(self, pre_computes):
         if len(pre_computes[0].shape) > 1:
@@ -330,7 +263,14 @@ class DiffusionNetEncoder(nn.Module):
 
             self.faces = nn.Parameter(pre_computes[6].unsqueeze(0).long(), requires_grad=False)
     
-    def forward(self, x_in, mass=None, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):
+    def forward(self, x_in, id_in, #mass=None, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):        
+                batch_mass=None,
+                batch_L_val=None,
+                batch_evals=None,
+                batch_evecs=None,
+                batch_gradX=None,
+                batch_gradY=None
+                ):
         """
         A forward pass on the DiffusionNet.
 
@@ -356,25 +296,31 @@ class DiffusionNetEncoder(nn.Module):
         Returns:
             x_out (tensor):    Output with dimension [N,C_out] or [B,N,C_out]
         """
+        if True:
+            inputs = x_in
+            self.L = torch.sparse_coo_tensor(self.L_ind, self.L_val, self.L_size, device=inputs.device)
+            batch_size = inputs.shape[0]
+            if batch_mass is not None:
+                batch_L = [torch.sparse_coo_tensor(self.L_ind, batch_L_val[i], self.L_size, device=inputs.device) for i in range(len(batch_L_val))]
+            else:
+                batch_L = [self.L for b in range(batch_size)]
+                if batch_size > 1:
+                    batch_mass = self.mass.expand(batch_size, -1)
+                    batch_evals = self.evals.expand(batch_size, -1)
+                    batch_evecs = self.evecs.expand(batch_size, -1, -1)
+                else:
+                    batch_mass = self.mass.unsqueeze(0).expand(batch_size, -1)
+                    batch_evals = self.evals.unsqueeze(0).expand(batch_size, -1)
+                    batch_evecs = self.evecs.unsqueeze(0).expand(batch_size, -1, -1)
 
-        self.L = torch.sparse_coo_tensor(self.L_ind, self.L_val, self.L_size, device=x_in.device)
-        batch_size = x_in.shape[0]
-        L = [self.L for b in range(batch_size)]
-        faces = self.faces
-        mass = self.mass
-        if batch_size > 1:
-            mass = self.mass.expand(batch_size, -1)
-            evals = self.evals.expand(batch_size, -1)
-            evecs = self.evecs.expand(batch_size, -1, -1)
-        else:
-            mass = self.mass.unsqueeze(0).expand(batch_size, -1)
-            evals = self.evals.unsqueeze(0).expand(batch_size, -1)
-            evecs = self.evecs.unsqueeze(0).expand(batch_size, -1, -1)
-
-        gradX = [torch.sparse_coo_tensor(self.grad_X_ind, self.grad_X_val, self.grad_X_size, device=x_in.device) for b in range(batch_size)]
-        gradY = [torch.sparse_coo_tensor(self.grad_Y_ind, self.grad_Y_val, self.grad_Y_size, device=x_in.device) for b in range(batch_size)]
-
-
+            if batch_gradX is not None:
+                gradX = [torch.sparse_coo_tensor(self.grad_X_ind, gX, self.grad_X_size, device=inputs.device) for gX in batch_gradX ]
+                gradY = [torch.sparse_coo_tensor(self.grad_Y_ind, gY, self.grad_Y_size, device=inputs.device) for gY in batch_gradY ]
+            else:
+                gradX = [torch.sparse_coo_tensor(self.grad_X_ind, self.grad_X_val, self.grad_X_size, device=inputs.device) for b in range(batch_size)]
+                gradY = [torch.sparse_coo_tensor(self.grad_Y_ind, self.grad_Y_val, self.grad_Y_size, device=inputs.device) for b in range(batch_size)]
+            mass = batch_mass; L=batch_L; evals=batch_evals; evecs=batch_evecs; gradX=gradX; gradY=gradY; faces=self.faces
+            
         ## Check dimensions, and append batch dimension if not given
         if x_in.shape[-1] != self.C_in: 
             raise ValueError("DiffusionNet was constructed with C_in={}, but x_in has last dim={}".format(self.C_in,x_in.shape[-1]))
@@ -401,23 +347,15 @@ class DiffusionNetEncoder(nn.Module):
         # Apply the first linear layer
         x = self.first_lin(x_in)
 
-        x_id = 0
-        x_exp = 0
+        if len( id_in.shape ) < 3:
+            id_in = id_in.unsqueeze(-2)
+            
         # Apply each of the blocks
-        denom = 1 / torch.sum(mass, dim=-1, keepdim=True).unsqueeze(-1)
-        for b, id_mlp, exp_mlp in zip(self.blocks, self.id_mlps, self.exp_mlps):
-            #x = b(x, mass, L, evals, evecs, gradX, gradY)
-            x, res = b(x, mass, L, evals, evecs, gradX, gradY)
-            
-            res_mean = torch.sum(res * mass.unsqueeze(-1), dim=-2).unsqueeze(1) * denom
-            x_id = id_mlp(res_mean) + x_id
-            
-            
+        for b in self.blocks:
+            x = b(id_in, x, mass, L, evals, evecs, gradX, gradY)
         
         # Apply the last linear layer
         x_out = self.last_lin(x)
-        x_id = self.last_id_mlp(x_id).squeeze(1)
-        x_exp = self.last_id_mlp(x_exp).squeeze(1)
         
         # Apply last nonlinearity if specified
         if self.last_activation != None:
@@ -427,7 +365,7 @@ class DiffusionNetEncoder(nn.Module):
         if appended_batch_dim:
             x_out = x_out.squeeze(0)
 
-        return x_out, x_id, x_exp
+        return x_out
     
 class DoubleDiffusionNetEncoder(nn.Module):
     def __init__(self, C_in, C_out, C_width=128, N_block=4, ID_out=128, EXP_out=128,
@@ -624,7 +562,7 @@ class DoubleDiffusionNetEncoder(nn.Module):
         denom = 1 / torch.sum(mass, dim=-1, keepdim=True).unsqueeze(-1)
         for b, id_mlp, exp_mlp in zip(self.blocks, self.id_mlps, self.exp_mlps):
             #x = b(x, mass, L, evals, evecs, gradX, gradY)
-            x, res = b(x, mass, L, evals, evecs, gradX, gradY)
+            res, x = b(x, mass, L, evals, evecs, gradX, gradY,return_residual=True)
             
             res_mean = torch.sum(res * mass.unsqueeze(-1), dim=-2).unsqueeze(1) * denom
             x_id = id_mlp(res_mean) + x_id
