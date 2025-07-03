@@ -952,6 +952,8 @@ if __name__ == "__main__":
         # trainer.train_ULRSSM(epochs=opts.max_epoch, stage=9)
     if opts.design == "new5":
         trainer.train_stage1(epochs=opts.max_epoch, stage=21)
+    if opts.design == "new_enc":
+        trainer.train_stage1(epochs=opts.max_epoch, stage=21)
     else:
         trainer.train_stage1(epochs=opts.max_epoch, stage=1)
     

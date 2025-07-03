@@ -1750,7 +1750,8 @@ class NFSDataset(data.Dataset):
     def __init__(self, 
                  opts,
                  ict_basedir='/data/sihun/ICT-audio2face/split_set/', 
-                 mf_basedir="/data/sihun/multiface/audio2face",
+                 #mf_basedir="/data/sihun/multiface/audio2face",
+                 mf_basedir="/data/sihun/multiface_align",
                  return_audio_dir=False,
                  audio_feat_type: str ='wav2vec2',
                  audio_feat_level: str = "05",
@@ -1833,17 +1834,20 @@ class NFSDataset(data.Dataset):
         ## Multiface ----------------------------------------------------------------------
         if self.use_mf_SEN or self.use_mf_ROM:
             self.mf_trimesh = trimesh.load('./utils/mf/mf_aligned_mean.obj', process=False, maintain_order=True)
-            self.mf_precompute_path = os.path.join(mf_basedir, 'precomputes_std')
+            #self.mf_precompute_path = os.path.join(mf_basedir, 'precomputes_std')
+            self.mf_precompute_path = os.path.join(mf_basedir, 'precomputes')
             self.mf_std = np.load(f'./utils/mf/standardization.npy', allow_pickle=True).item()
             
             self.mf_basedir = os.path.join(mf_basedir)
             self.mf_id_v = self.get_mf_id_verts(self.mf_basedir)
-            
+            #import pdb;pdb.set_trace()
             self.mf_audio_wav = []
             self.mf_ROM = []
             for id_ in self.mf_data_split[self.mode]:
                 self.mf_audio_wav+=sorted(glob.glob(f'{self.mf_basedir}/wav/{id_}*.wav'))
                 self.mf_ROM +=sorted(glob.glob(f'{self.mf_basedir}/vertices_npy_exp/{id_}/*.npy'))
+                #self.mf_audio_wav+=sorted(glob.glob(f'{self.mf_basedir}/SEN/{self.mode}/vertices_npy/{id_}*.wav'))
+                #self.mf_ROM +=sorted(glob.glob(f'{self.mf_basedir}/ROM/{self.mode}/vertices_npy/{id_}/*.npy'))
         ## --------------------------------------------------------------------------------
         
         self.len_ict_synth = 0
@@ -1973,6 +1977,14 @@ class NFSDataset(data.Dataset):
         dummy = torch.zeros(self.WS, 768)
         
         v_normal = calc_norm_torch(vertices, faces, at='v').float()
+        
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        precompute_dir = self.ict_precompute_path
+        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
+        v_num = vertices.shape[0]
+        corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, sent
         
     def get_ICTsynthetic(self, index):
@@ -2016,8 +2028,17 @@ class NFSDataset(data.Dataset):
         dummy = torch.zeros(self.WS, 768)
         
         v_normal = calc_norm_torch(vertices, faces, at='v')
-
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, ''
+        
+        ## correspondence feature
+        # corr_feat = torch.zeros(template.shape[0], 2048)
+        precompute_dir = self.ict_synth_precompute
+        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
+        v_num = vertices.shape[0]
+        corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        
+        # v_normal = calc_norm_torch(vertices, faces, at='v').float()
+        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, ''
         
     def get_multiface_SEN(self, index):
         f_splits = self.mf_audio_wav[index].split('/')
@@ -2076,8 +2097,13 @@ class NFSDataset(data.Dataset):
         id_coeff = torch.zeros(128).float()
         
         v_normal = calc_norm_torch(vertices, faces, at='v').float()
-
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, audio_path
+        
+        corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()
+        
+        # v_normal = calc_norm_torch(vertices, faces, at='v').float()
+        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, audio_path
     
     def get_multiface_ROM(self, index):
         """
@@ -2123,7 +2149,13 @@ class NFSDataset(data.Dataset):
         dummy = torch.zeros(self.WS, 768)
         
         v_normal = calc_norm_torch(vertices, faces, at='v')
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, npy_file    
+        
+        corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
+        corr_feat = torch.load(corr_feat_file).float()
+        
+        # v_normal = calc_norm_torch(vertices, faces, at='v').float()
+        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, npy_file    
     
     def get_mf_id_verts(self, basedir):
         #id_verts_dir = f'{basedir}/id_verts.npy'
@@ -2134,7 +2166,8 @@ class NFSDataset(data.Dataset):
         else:
             id_verts=[]
             for id_ in self.mf_data_split[self.mode]:
-                template_= trimesh.load(os.path.join(self.mf_precompute_path, f"{id_}_mesh.obj"), process=False, maintain_order=True)
+                #template_= trimesh.load(os.path.join(self.mf_precompute_path, f"{id_}_mesh.obj"), process=False, maintain_order=True)
+                template_= trimesh.load(os.path.join(self.mf_basedir, f"obj/{id_}_mesh.obj"), process=False, maintain_order=True)
                 id_verts.append(template_.vertices)
             id_verts = np.array(id_verts)
             print(f'saving cache at: {id_verts_dir}')
@@ -2586,19 +2619,19 @@ class MeshSampler(data.Sampler):
             id_len_list_tmp = id_len_list
             
             if m_data == 0: # ict
-                tile_n = 3 # (full head / face only / narrow face)
+                tile_n = 60 # (full head / face only / narrow face)
                 _indices = np.tile(_indices, tile_n)
                 id_len_list_tmp = id_len_list_tmp * tile_n
             if m_data == 1: # voca or coma
-                tile_n = 10
+                tile_n = 200
                 _indices = np.tile(_indices, tile_n)
                 id_len_list_tmp = id_len_list_tmp * tile_n
             if m_data == 2: # biwi
-                tile_n = 7
+                tile_n = 140
                 _indices = np.tile(_indices, tile_n)
                 id_len_list_tmp = id_len_list_tmp * tile_n
             if m_data == 3: # mf
-                tile_n = 2
+                tile_n = 40
                 _indices = np.tile(_indices, tile_n)
                 id_len_list_tmp = id_len_list_tmp * tile_n
             
@@ -2655,9 +2688,14 @@ class MeshSampler(data.Sampler):
         
         #batch = indices.tolist()
         # self.length = len(batch)
-        select = np.tile(
-            np.random.randint(3, size=indices.shape[0]), self.batch_size
-        ).reshape(self.batch_size,-1).transpose()
+        
+        # select = np.tile(
+        #     np.random.randint(3, size=indices.shape[0]), self.batch_size
+        # ).reshape(self.batch_size,-1).transpose()
+        
+        select = np.zeros_like(indices) # fullhead
+        # select = np.ones_like(indices) # face_only
+        
         batch = np.concatenate([select[:,:,None], indices[:,:,None]], axis=-1)
         batch = batch.tolist()
         

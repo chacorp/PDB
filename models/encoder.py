@@ -206,6 +206,12 @@ class AdaINDiffusionNetEncoder(nn.Module):
         self.with_gradient_rotations = with_gradient_rotations
         
         ## Set up the network
+        self.adain_in = nn.Sequential(
+            nn.Linear(id_dim,      id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
+            nn.Linear(id_dim//2, id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
+            nn.Linear(id_dim//2, id_dim),
+        )
+        self.act = nn.ReLU()
 
         # First and last affine layers
         self.first_lin = nn.Linear(C_in, C_width)
@@ -262,14 +268,34 @@ class AdaINDiffusionNetEncoder(nn.Module):
             self.grad_Y_size = pre_computes[5].size()
 
             self.faces = nn.Parameter(pre_computes[6].unsqueeze(0).long(), requires_grad=False)
-    
-    def forward(self, x_in, id_in, #mass=None, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):        
+
+    def from_6D_to_rotation_matrix_torch(self, in_6d, eps=1e-12):
+        """
+        6D representation (B, 6) → rotation matrix (B, 3, 3) *following Zhou et al. (CVPR 2019)
+        Args:
+            in_6d (torch.Tensor): (B, 6)
+        Returns:
+            R (torch.Tensor): (B, 3, 3)
+        """
+        a1, a2 = in_6d[..., :3], in_6d[..., 3:]
+        
+        b1 = torch.nn.functional.normalize(a1, dim=-1, eps=eps)
+        
+        b2 = a2 - (b1 * a2).sum(-1, keepdim=True) * b1
+        b2 = torch.nn.functional.normalize(b2, dim=-1, eps=eps)
+        
+        b3 = torch.cross(b1, b2, dim=-1)
+        
+        return torch.stack((b1, b2, b3), dim=-2)
+        
+    def forward(self, x_in, id_in, #mass=None, L=None, evals=None, evecs=None, gradX=None, gradY=None, edges=None, faces=None):
                 batch_mass=None,
                 batch_L_val=None,
                 batch_evals=None,
                 batch_evecs=None,
                 batch_gradX=None,
-                batch_gradY=None
+                batch_gradY=None,
+                batch_faces=None,
                 ):
         """
         A forward pass on the DiffusionNet.
@@ -319,7 +345,10 @@ class AdaINDiffusionNetEncoder(nn.Module):
             else:
                 gradX = [torch.sparse_coo_tensor(self.grad_X_ind, self.grad_X_val, self.grad_X_size, device=inputs.device) for b in range(batch_size)]
                 gradY = [torch.sparse_coo_tensor(self.grad_Y_ind, self.grad_Y_val, self.grad_Y_size, device=inputs.device) for b in range(batch_size)]
+        
             mass = batch_mass; L=batch_L; evals=batch_evals; evecs=batch_evecs; gradX=gradX; gradY=gradY; faces=self.faces
+        else:
+            mass = batch_mass; L=batch_L_val; evals=batch_evals; evecs=batch_evecs; gradX=batch_gradX; gradY=batch_gradY; faces=batch_faces
             
         ## Check dimensions, and append batch dimension if not given
         if x_in.shape[-1] != self.C_in: 
@@ -349,7 +378,8 @@ class AdaINDiffusionNetEncoder(nn.Module):
 
         if len( id_in.shape ) < 3:
             id_in = id_in.unsqueeze(-2)
-            
+        id_in = self.act(self.adain_in(id_in))#.mean(-2, keepdims=True)# + out.mean(-2, keepdims=True)
+        
         # Apply each of the blocks
         for b in self.blocks:
             x = b(id_in, x, mass, L, evals, evecs, gradX, gradY)
@@ -364,6 +394,18 @@ class AdaINDiffusionNetEncoder(nn.Module):
         # Remove batch dim if we added it
         if appended_batch_dim:
             x_out = x_out.squeeze(0)
+            
+            
+        if self.C_out == 3:
+            # directly predict displacement
+            x_out = x_in[...,:3] - x_out
+        elif self.C_out == 6:
+            x_out = self.from_6D_to_rotation_matrix_torch(x_out)
+            x_out = torch.einsum('bnck,bnk->bnc', x_out, x_in[...,:3])
+        elif self.C_out == 9:
+            # predict transformation
+            x_out = x_out.reshape(x_in.shape[0], x_in.shape[1], 3, 3)
+            x_out = torch.einsum('bnck,bnk->bnc', x_out, x_in[...,:3])
 
         return x_out
     

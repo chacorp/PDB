@@ -380,12 +380,12 @@ class AdaINDiffusionNetDecoder(nn.Module):
         self.with_gradient_rotations = with_gradient_rotations
         
         ## Set up the network
-        # self.adain_in = nn.Sequential(
-        #     nn.Linear(C_in,      id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
-        #     nn.Linear(id_dim//2, id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
-        #     nn.Linear(id_dim//2, id_dim),
-        # )
-        # self.act = nn.ReLU()
+        self.adain_in = nn.Sequential(
+            nn.Linear(id_dim,      id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
+            nn.Linear(id_dim//2, id_dim//2), nn.ReLU(), nn.LayerNorm(id_dim//2), 
+            nn.Linear(id_dim//2, id_dim),
+        )
+        self.act = nn.ReLU()
         
         # First and last affine layers
         self.first_lin = nn.Linear(C_in, C_width)
@@ -531,9 +531,9 @@ class AdaINDiffusionNetDecoder(nn.Module):
         # Apply the first linear layer
         x = self.first_lin(x_in)
 
-        #id_code = self.act(self.adain_in(x_in)).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
         if len( id_code.shape ) < 3:
             id_code = id_code.unsqueeze(-2)
+        id_code = self.act(self.adain_in(id_code))#.mean(-2, keepdims=True) #+ out.mean(-2, keepdims=True)
             
         # Apply each of the blocks
         for b in self.blocks:
@@ -573,6 +573,6 @@ class AdaINDiffusionNetDecoder(nn.Module):
         # Remove batch dim if we added it
         if appended_batch_dim:
             x_out = x_out.squeeze(0)
-        #import pdb;pdb.set_trace()
-        return x_out - x_in[...,:3]
+        
+        return x_out
 

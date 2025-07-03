@@ -22,6 +22,7 @@ import torch.nn.functional as F
 from torch_scatter import scatter_add
 from collections import defaultdict
 
+
 import sys
 from pathlib import Path
 abs_path = str(Path(__file__).parents[1].absolute())
@@ -40,7 +41,7 @@ from pointnet_utils import PointNetEncoder, feature_transform_reguliarzer, STN3d
 from pointnet_part_seg import get_model, get_loss
 from utils.remesh_utils import ICT_face_model
 
-
+    
 def get_colors(vertices):
     min_coord,max_coord = np.min(vertices,axis=0,keepdims=True),np.max(vertices,axis=0,keepdims=True)
     cmap = (vertices-min_coord)/(max_coord-min_coord)

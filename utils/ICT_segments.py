@@ -77,15 +77,15 @@ clavicle = [10648, 10649, 10650, 10651, 10652, 10653, 10654, 10655, 10656, 10657
 
 if __name__ == "__main__":
     from pathlib import Path
-    import sys; sys.path.append(str(Path(__file__).parents[0]))
-    
+    import sys; sys.path.append(str(Path(__file__).parents[1].absolute()))
+    #import pdb;pdb.set_trace()
     #from _matplotlib_rnd import *
     from utils import *
     
     mesh_scale = 0.1
-    ict_face_model = ICT_face_model(face_only=False, scale=mesh_scale, base_dir='/source/sihun/MAASA')
+    ict_face_model = ICT_face_model(face_only=False, scale=mesh_scale)
 
-    std_mesh, std_mesh_v_idx = ict_face_model.get_mesh()
+    std_mesh, std_mesh_v_idx = ict_face_model.get_mesh(return_idx=True)
     std_mesh_vertices = torch.from_numpy(std_mesh.vertices)
     std_mesh_faces    = torch.from_numpy(std_mesh.faces)
     print(std_mesh_vertices.shape)
@@ -151,9 +151,52 @@ if __name__ == "__main__":
         #plot_points_image_array_seg(v_list, LDM, rot_list=rot_list, size=5, save=True, name='ICT_segment')
         plot_points_image_array_seg(v_list, LDM, rot_list=rot_list, size=5, save=True, name='ICT_segment')
     
+    elif True:
+        ## seg 20 (mouth split: top bottom)
+        one_hot = np.zeros((std_mesh_vertices.shape[0], 24))
+        one_hot[np.array(backhead), 1-1] = 1
+        one_hot[np.array(forehead), 2-1] = 1
+        one_hot[np.array(eye_left_top), 3-1] = 1
+        one_hot[np.array(eye_left_bottom), 4-1] = 1
+        
+        one_hot[np.array(eye_right_top), 5-1] = 1
+        one_hot[np.array(eye_right_bottom), 6-1] = 1
+        one_hot[np.array(procerus), 7-1] = 1
+        one_hot[np.array(temporalis_left), 8-1] = 1
+        one_hot[np.array(temporalis_right), 9-1] = 1
+        one_hot[np.array(nose), 10-1] = 1
+        one_hot[np.array(levator_labii_right), 11-1] = 1
+        one_hot[np.array(levator_labii_left), 12-1] = 1
+        one_hot[np.array(masseter_right), 13-1] = 1
+        one_hot[np.array(masseter_left), 14-1] = 1
+        
+        one_hot[np.array(orbicularis_oris_top), 15-1] = 1
+        one_hot[np.array(lips_top), 15-1] = 1
+                
+        one_hot[np.array(orbicularis_oris_bottom), 16-1] = 1
+        one_hot[np.array(lips_bottom), 16-1] = 1
+        
+        one_hot[np.array(jaw), 17-1] = 1
+        one_hot[np.array(back_neck), 18-1] = 1
+        one_hot[np.array(platysma), 19-1] = 1
+        one_hot[np.array(ear_left), 20-1] = 1
+        one_hot[np.array(ear_right), 21-1] = 1
+        one_hot[np.array(clavicle), 22-1] = 1
+
+        np.save('./utils/ict/ICT_segment_onehot_22_new.npy', one_hot)
+        zzz = np.load('./utils/ict/ICT_segment_onehot_22_new.npy')
+        zzz = zzz.argmax(1)
+
+        v_list = [std_mesh_vertices*.6]*2
+        rot_list = [[0,0,0],[0,90,0]]
+
+        f_list = [std_mesh_faces]*len(v_list)
+        LDM   = [ zzz ]*len(v_list)
+
+        #plot_points_image_array_seg(v_list, LDM, rot_list=rot_list, size=5, save=True, name='ICT_segment')
+        plot_points_image_array_seg(v_list, LDM, rot_list=rot_list, size=5, save=True, name='ICT_segment_22_new')
     
     else: # seg dim 24
-        import pdb;pdb.set_trace()
         one_hot = np.zeros((std_mesh_vertices.shape[0], 24))
         one_hot[np.array(backhead), 1-1] = 1
         one_hot[np.array(forehead), 2-1] = 1

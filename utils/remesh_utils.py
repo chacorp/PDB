@@ -12,64 +12,76 @@ from matplotlib_rnd import *
 import trimesh
 import random
 
-def load_obj_mesh(obj_file):
-    """
-    Custom obj reader
 
-    Args
-    -------
-        obj_file (str): file path
-    
-    Returns
-    -------
-        obj (EasyDict)
-    """
-    try:
-        from easydict import EasyDict
-    except:
-        raise ImportError("no easydict installed!")
-        # pip install easydict
-        # from easydict import EasyDict
+class load_obj_mesh():
+    def __init__(self, obj_file, to_torch=False, device='cpu'):
+        self.device=device
+        self._load_obj_mesh(obj_file, to_torch)
+        if to_torch:
+            self.to_torch()
+            
+    def to_torch(self):
+        self.vertices = torch.tensor(self.vertices).float().to(self.device)
+        self.vn = torch.tensor(self.vn).float().to(self.device)
+        self.vt = torch.tensor(self.vt).float().to(self.device)
+        self.f  = torch.tensor(self.f).long().to(self.device)
+        self.ft = torch.tensor(self.ft).long().to(self.device)
+        self.fn = torch.tensor(self.fn).long().to(self.device)
         
-    mesh = EasyDict()
-    vertex_position = []
-    vertex_normal = []
-    vertex_UV = []
-    face_indices = []
-    face_normal = []
-    face_UV = []
-    for line in open(obj_file, "r"):
-        if line.startswith('#'):
-            continue
-        values = line.split()
-        if not values:
-            continue
-        if values[0] == 'v':
-            v = list(map(float, values[1:]))
-            vertex_position.append(v)
-        if values[0] == 'vn':
-            vn = list(map(float, values[1:]))
-            vertex_normal.append(vn)
-        if values[0] == 'vt':
-            vt = list(map(float, values[1:]))
-            vertex_UV.append(vt)
-        if values[0] == 'f':
-            f = list(map(lambda x: int(x.split('/')[0]),  values[1:]))
-            face_indices.append(f)
-            if len(values[1].split('/')) >=2:
-                ft = list(map(lambda x: int(x.split('/')[1]),  values[1:]))
-                face_UV.append(ft)
-            if len(values[1].split('/')) >=3:
-                ft = list(map(lambda x: int(x.split('/')[2]),  values[1:]))
-                face_normal.append(ft)
-    mesh.vertices = np.array(vertex_position)
-    mesh.vn = np.array(vertex_normal)
-    mesh.vt = np.array(vertex_UV)
+    def _load_obj_mesh(self, obj_file, to_torch):
+        """
+        Custom obj reader
     
-    mesh.faces = np.array(face_indices) -1
-    mesh.ft = np.array(face_UV) -1
-    mesh.fn = np.array(face_normal) -1
-    return mesh
+        Args
+        -------
+            obj_file (str): file path
+        
+        Returns
+        -------
+            obj (EasyDict)
+        """
+        vertex_position = []
+        vertex_normal = []
+        vertex_UV = []
+        face_indices = []
+        face_normal = []
+        face_UV = []
+        for line in open(obj_file, "r"):
+            if line.startswith('#'):
+                continue
+            values = line.split()
+            if not values:
+                continue
+            if values[0] == 'v':
+                v = list(map(float, values[1:]))
+                vertex_position.append(v)
+            if values[0] == 'vn':
+                vn = list(map(float, values[1:]))
+                vertex_normal.append(vn)
+            if values[0] == 'vt':
+                vt = list(map(float, values[1:]))
+                vertex_UV.append(vt)
+            if values[0] == 'f':
+                f = list(map(lambda x: int(x.split('/')[0]),  values[1:]))
+                face_indices.append(f)
+                if len(values[1].split('/')) >=2:
+                    ft = list(map(lambda x: int(float(x.split('/')[1])),  values[1:]))
+                    face_UV.append(ft)
+                if len(values[1].split('/')) >=3:
+                    ft = list(map(lambda x: int(float(x.split('/')[2])),  values[1:]))
+                    face_normal.append(ft)
+                    
+        self.vertices = np.array(vertex_position)
+        self.vn = np.array(vertex_normal)
+        self.vt = np.array(vertex_UV)
+        self.f  = np.array(face_indices)
+        self.ft = np.array(face_UV)
+        self.fn = np.array(face_normal)
+        
+        if self.f.min() > 0:
+            self.f  = self.f  - 1
+            self.ft = self.ft - 1
+            self.fn = self.fn - 1
 
 def find_common_indices(array1, array2):
     common_indices = np.intersect1d(array1, array2)
@@ -732,11 +744,12 @@ class ICT_face_model():
 
 if __name__ == '__main__':
     # original mesh
-    ict_mesh = trimesh.load('/source/sihun/MAASA/tmp/eccv_ict_recon.obj')
+    pass
+#     ict_mesh = trimesh.load('/source/sihun/NFS/tmp/eccv_ict_recon.obj')
     
-    # decimated mesh
-    ict_mesh_decimate = trimesh.load('/source/sihun/MAASA/tmp/eccv_ict_recon-decimate_tri.obj')
+#     # decimated mesh
+#     ict_mesh_decimate = trimesh.load('/source/sihun/NFS/tmp/eccv_ict_recon-decimate_tri.obj')
     
-    # mesh subdivision
-    ict_mesh_subdivide = trimesh.remesh.subdivide(ict_mesh.vertices, ict_mesh.faces, return_index=True)
+#     # mesh subdivision
+#     ict_mesh_subdivide = trimesh.remesh.subdivide(ict_mesh.vertices, ict_mesh.faces, return_index=True)
     

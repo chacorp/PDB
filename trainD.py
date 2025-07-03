@@ -25,7 +25,7 @@ from dataloader_mesh import (
 from utils.mesh_utils import Renderer #, calc_cent
 from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
-
+# from accelerate import Accelerator
 
 def Options():
     parser = argparse.ArgumentParser(description='NFS train')
@@ -80,6 +80,9 @@ def Options():
     
     parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
     parser.set_defaults(use_scheduler=False)
+    
+    parser.add_argument("--norm_canon",dest='norm_canon', action='store_true')
+    parser.set_defaults(norm_canon=False)
 
     parser.set_defaults(is_train=True)
     
@@ -110,7 +113,7 @@ class Trainer():
             from models import Exp
             self.model = Exp(self.opts, None).to(self.device)
         else:
-            from models import NFS_D
+            from models import NFS
             self.model = NFS(self.opts, None).to(self.device)
         
         # load weight
@@ -129,7 +132,12 @@ class Trainer():
             del_key_list=['mass', 'L_ind', 'L_val', 'evals', 'evecs', 'grad_X', 'grad_Y', 'faces']
             if not self.opts.continue_ckpt:
                 del_key_list.append('audio_encoder')
+                del_key_list.append('mesh_decoder')
             ckpt_dict = del_key(ckpt_dict, del_key_list)
+            
+            if 'mk2' in self.opts.design:
+                ckpt_dict = del_key(ckpt_dict, ['mesh_seg_encoder'])
+                
             self.model.load_state_dict(ckpt_dict,strict=False)
 
     def load_nfr_enc_weights(self):
@@ -151,6 +159,11 @@ class Trainer():
         self.model.load_state_dict(enc_ckpt, strict=False)
     
     def train_stage1(self, epochs):
+        # accelerator = Accelerator()
+
+        # device = accelerator.device
+        
+
         # define loss lamdba -------------------------------------------------------------------------------------
         self.loss_lambda = {
             "recon": self.opts.lambda_vert,
@@ -162,12 +175,10 @@ class Trainer():
         }
         
         # define optimizer
-        if self.opts.design == 'new':
-            self.optimizer = torch.optim.Adam(self.model.mesh_decoder.parameters(), lr=self.opts.lr, betas=(0.5, 0.999))
-            updated_optim=False
+        if 'mk2' in self.opts.design:
+            self.optimizer = torch.optim.Adam(self.model.get_mesh_autoencoder_parameters_mk2(), lr=self.opts.lr, betas=(0.5, 0.999))
         else:
-            #self.optimizer = torch.optim.Adam(self.model.get_mesh_autoencoder_parameters(), lr=self.opts.lr, betas=(0.5, 0.999))
-            self.optimizer = torch.optim.AdamW(self.model.get_mesh_autoencoder_parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
+            self.optimizer = torch.optim.Adam(self.model.get_mesh_decoder_parameters(), lr=self.opts.lr, betas=(0.5, 0.999))
         
         if self.opts.design == 'nfr' or self.opts.use_scheduler:
             self.scheduler = torch.optim.lr_scheduler.StepLR(
@@ -271,6 +282,16 @@ class Trainer():
         
         th_eye = torch.eye(self.opts.seg_dim, self.opts.seg_dim)
         gt_seg = th_eye[self.model.ict_vert_segment.cpu().detach()]
+
+        # self.model, self.optimizer, self.train_dataloader = accelerator.prepare(
+        #     self.model, self.optimizer, self.train_dataloader
+        # )
+        if 'exp' in self.opts.design:
+            stage_n = 11
+        elif 'mk2' in self.opts.design:
+            stage_n = 111
+        else:
+            stage_n = 1
         
         check_usage = False
         for epoch in range(start_epoch, epochs):
@@ -287,7 +308,7 @@ class Trainer():
                 "nll_vSeg":0,
                 "total": 0
             }
-            self.model.train()
+            self.model.mesh_decoder.train()
             train_counter = 0
             
             len_train_data = len(self.train_dataloader)
@@ -300,10 +321,11 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 # _, id_coeff, gt_rig_params, template, dfn_info, operators_path, vertices, faces, img, mesh_data = batch
                 
+                
                 loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
-                    batch, 
-                    return_all=True, 
-                    stage=1 if not self.opts.design == 'exp'else 11, 
+                    batch,
+                    return_all=True,
+                    stage=stage_n,
                     epoch=epoch
                 )
                 
@@ -336,8 +358,9 @@ class Trainer():
                     vertices=vertices[None]
                 faces = batch.faces.cpu()
                 mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+
                 
-                interv = round(len_train_data / 10)
+                interv = round(len_train_data / 5)
                 if train_counter % interv == 1:
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
                     for key, value in running_losses.items():
@@ -347,11 +370,16 @@ class Trainer():
                     frame = BS//2
                     v_list = [ v for v in vertices[frame:frame+2] ] + \
                         [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
+                    
+                    if 'mk2' in self.opts.design:
+                        v_list.extend([ v for v in pred_seg[frame:frame+2].cpu().detach() ])
+                        
                     len_v = len(v_list)
                     f_list = [faces] * len_v
                     save_logdir = f"{self.opts.log_dir}/img/train/mesh"
                     save_img_name = f"{epoch:03d}_{index:04d}"
-                    if pred_seg is not None:
+                    
+                    if pred_seg is not None and 'mk2' not in self.opts.design:
                         pred_seg=pred_seg.squeeze(0).cpu().detach()
                         
                         if mesh_data == 'ict':
@@ -362,7 +390,7 @@ class Trainer():
                         plot_image_array_seg(
                             v_list, f_list, c_list, 
                             rot_list=[[0,0,0]] * len_v, 
-                            size=1, bg_black=False, mode='shade', 
+                            size=1, bg_black=False, mode='normal', 
                             logdir=save_logdir, 
                             name=save_img_name, save=True
                         )
@@ -370,14 +398,16 @@ class Trainer():
                         plot_image_array(
                             v_list, f_list, 
                             rot_list=[[0,0,0]] * len_v, 
-                            size=1, bg_black=False, mode='shade',
+                            size=1, bg_black=False, mode='normal',
                             logdir=save_logdir,
                             name=save_img_name, save=True
                         )
                     if mesh_data == 'ict':
                         if pred_exp is not None:
+                            if len(gt_rig.shape) < 3:
+                                gt_rig = gt_rig[None]
                             vis_rig(
-                                torch.cat([pred_exp.cpu().detach()[None], gt_rig.squeeze()[None]], dim=0), 
+                                torch.cat([pred_exp.cpu().detach()[None], gt_rig], dim=0), 
                                 f"{self.opts.log_dir}/img/train/rig/{epoch:03d}_{index:04d}.jpg",
                                 normalize=True
                             )
@@ -399,7 +429,8 @@ class Trainer():
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
             
             # validation -----------------------------------------------------------------------------------------
-            self.model.eval()
+            # self.model.eval()
+            self.model.mesh_decoder.eval()
             print(f"[{epoch:03d}/{epochs:03d}][Valid]")
             running_losses = {
                 "recon_vDec": 0,
@@ -421,8 +452,8 @@ class Trainer():
                     
                 with torch.no_grad():
                     loss_dict, pred_vertices, _, pred_exp, pred_id, pred_seg = self.model(
-                        batch, 
-                        stage=1 if not self.opts.design == 'exp'else 11, 
+                        batch,
+                        stage_n,
                         return_all=True
                     )
 
@@ -446,7 +477,7 @@ class Trainer():
                 faces = batch.faces.cpu()
                 mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                 
-                interv = round(len_valid_data /5)
+                interv = round(len_valid_data /4)
                 if index % interv == 0:
                 # if index % 2 == 0:
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
