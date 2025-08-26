@@ -1,3 +1,7 @@
+"""
+    For experiments only!!!
+    very dirty code...
+"""
 import os
 import pickle
 from glob import glob
@@ -41,6 +45,22 @@ from pointnet_utils import PointNetEncoder, feature_transform_reguliarzer, STN3d
 from pointnet_part_seg import get_model, get_loss
 from utils.remesh_utils import ICT_face_model
 
+class PCA_holder():
+    def __init__(self, npz_file="pca_model.npz"):
+        data = np.load(npz_file)
+        #proj_coords = np.load("proj_coords.npy")
+        
+        self.mean_ = data['mean_']
+        self.components_ = data['components_']
+        self.explained_variance_ = data['explained_variance_']
+        self.n_components_ = data['components_'].shape[0]
+        #recon = proj_coords @ components + mean
+
+
+    def sample_from_pca(self, scale=1.0):
+        z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
+        z = z @ self.components_ + self.mean_
+        return z.reshape(-1,3)
     
 def get_colors(vertices):
     min_coord,max_coord = np.min(vertices,axis=0,keepdims=True),np.max(vertices,axis=0,keepdims=True)
@@ -2172,6 +2192,9 @@ class Model_mk2_2(nn.Module):
         return out, out_l
 
 class Model_mk3(nn.Module):
+    """
+    PointNet architecture
+    """
     def __init__(self, #part_num=50, normal_channel=True):
         in_dim=3, out_dim=9, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False):
         super().__init__()
@@ -2208,10 +2231,12 @@ class Model_mk3(nn.Module):
         self.bns2 = nn.BatchNorm1d(256)
         self.bns3 = nn.BatchNorm1d(128)
 
-    def forward(self, x_in, return_inv=False, return_raw=False):
+    def forward(self, x_in, return_inv=False, return_raw=False, no_rot=False):
         out, trans_feat = self.forward_func(x_in)
         # out = out + 1e-12
         # return self.get_output(out, x_in, return_inv, return_raw)
+        if no_rot:
+            return outs, trans_feat
         outs = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
         return outs, trans_feat
         
@@ -2440,3 +2465,31 @@ class Model_mk4(nn.Module):
         
         out = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
         return out
+
+    
+def normalize_homogeneous(V):
+    return np.concatenate([V, np.ones((V.shape[0], 1))], axis=1)
+
+def save_pca_to_npz(file_name, pca):
+    
+    np.savez(f"{file_name}.npz",
+             mean_=pca.mean_,
+             components_=pca.components_,
+             explained_variance_=pca.explained_variance_)
+
+class PCA_holder():
+    def __init__(self, npz_file="pca_model.npz"):
+        data = np.load(npz_file)
+        #proj_coords = np.load("proj_coords.npy")
+        
+        self.mean_ = data['mean_']
+        self.components_ = data['components_']
+        self.explained_variance_ = data['explained_variance_']
+        self.n_components_ = data['components_'].shape[0]
+        #recon = proj_coords @ components + mean
+
+
+    def sample_from_pca(self, pca, scale=1.0):
+        z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
+        z = z @ self.components_ + self.mean_
+        return z.reshape(-1,3)
