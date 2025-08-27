@@ -2368,6 +2368,8 @@ class Model_mk3_1(nn.Module):
         self.bn3 = nn.BatchNorm1d(128)
         self.bn4 = nn.BatchNorm1d(512)
         self.fstn = STNkd(k=128)
+        
+        self.linear = torch.nn.Linear(512, 512, bias=True)
 
     def forward(self, x_in, return_inv=False, return_raw=False, no_rot=False):
         out, trans_feat = self.forward_func(x_in)
@@ -2375,28 +2377,26 @@ class Model_mk3_1(nn.Module):
         # outs = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
         return out, trans_feat
                 
-    def forward_func(self, point_cloud):                
+    def forward_func(self, point_cloud):
+        """
+        Args:
+            point_cloud (torch.tensor): (B, N, 3) input vertex positions
+        Returns:
+            global feature (B, M)
+        """
         B, N, D = point_cloud.size()
         trans = self.stn(point_cloud.transpose(2, 1))
         
         if D > 3:
-            # point_cloud, feature = point_cloud.split(3, dim=2)
-            if D > 6:
-                point_cloud, point_normal, feature = point_cloud[...,:3], point_cloud[...,3:6], point_cloud[...,6:]
-            else:
-                point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
+            point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
                 
         point_cloud = torch.bmm(point_cloud, trans)
-        if D > 6:
-            point_normal = torch.bmm(point_normal, trans)
             
         if D > 3:
-            # point_cloud = torch.cat([point_cloud, feature], dim=2)
-            if D > 6:
-                point_cloud = torch.cat([point_cloud, point_normal, feature], dim=-1)
-            else:
-                point_cloud = torch.cat([point_cloud, feature], dim=-1)
-
+            point_cloud = torch.cat([point_cloud, feature], dim=-1)
+        
+        #import pdb;pdb.set_trace()
+        #torch.autograd.set_detect_anomaly(True)
         point_cloud = point_cloud.transpose(2, 1) # (B, D, N)
 
         out1 = F.relu(self.bn1(self.conv1(point_cloud)))
@@ -2412,6 +2412,7 @@ class Model_mk3_1(nn.Module):
         out_max = torch.max(out4, 2, keepdim=True)[0]
         out_max = out_max.view(-1, 512)
         
+        out_max = self.linear(out_max)
         return out_max, trans_feat
 
 class Model_mk3_2(nn.Module):

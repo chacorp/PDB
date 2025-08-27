@@ -754,7 +754,8 @@ def compute_MVC(src_v, cage_v, cage_f, eps=1e-8):
         eps (float): numerical stability epsilon
 
     Returns:
-        Tensor: (V, F, 3) weights per face per source point
+        weights per cage triangle (V, F, 3)
+        NOTE: not normalized
     """
     V = src_v.shape[0]
     F = cage_f.shape[0]
@@ -835,6 +836,106 @@ def compute_MVC(src_v, cage_v, cage_f, eps=1e-8):
     # stack weights
     return torch.stack([W0, W1, W2], dim=-1)  # (V, F, 3)
 
+def compute_MVC_vertexwise(src_v, cage_v, cage_f, eps=1e-8):
+    """
+    Compute Mean Value Coordinates per cage vertex for each mesh vertex
+
+    Args:
+        src_v (torch.tensor): (V, 3) source points
+        cage_v (torch.tensor): (Nc, 3) cage/control points
+        cage_f (torch.tensor): (F, 3) triangle indices of cage faces
+        eps (float): numerical stability epsilon
+
+    Returns:
+        weights per cage vertex (V, Nc)
+    """
+    V = src_v.shape[0]
+    Nc = cage_v.shape[0]
+    F = cage_f.shape[0]
+
+    # Get cage face vertices
+    i0, i1, i2 = cage_f[:, 0], cage_f[:, 1], cage_f[:, 2]
+    P0 = cage_v[i0]  # (F, 3)
+    P1 = cage_v[i1]
+    P2 = cage_v[i2]
+
+    X = src_v[:, None, :]  # (V, 1, 3)
+
+    D0 = P0[None, :, :] - X  # (V, F, 3)
+    D1 = P1[None, :, :] - X
+    D2 = P2[None, :, :] - X
+
+    # clamp min by eps to prevent division by 0
+    d0 = D0.norm(dim=-1).clamp(min=eps)
+    d1 = D1.norm(dim=-1).clamp(min=eps)
+    d2 = D2.norm(dim=-1).clamp(min=eps)
+
+    U0 = D0 / d0[..., None]
+    U1 = D1 / d1[..., None]
+    U2 = D2 / d2[..., None]
+
+    # compute angles between normalized directions
+    L0 = (U1 - U2).norm(dim=-1)
+    L1 = (U2 - U0).norm(dim=-1)
+    L2 = (U0 - U1).norm(dim=-1)
+
+    theta0 = 2 * torch.arcsin(torch.clamp(L0 * 0.5, -0.999999, 0.999999))
+    theta1 = 2 * torch.arcsin(torch.clamp(L1 * 0.5, -0.999999, 0.999999))
+    theta2 = 2 * torch.arcsin(torch.clamp(L2 * 0.5, -0.999999, 0.999999))
+    h = 0.5 * (theta0 + theta1 + theta2)
+
+    near_pi = torch.abs(torch.pi - h) < eps
+    not_near_pi = ~near_pi
+
+    s_theta0 = torch.sin(theta0)
+    s_theta1 = torch.sin(theta1)
+    s_theta2 = torch.sin(theta2)
+
+    # added eps to prevent division by 0
+    c0 = (2 * torch.sin(h) * torch.sin(h - theta0)) / (s_theta1 * s_theta2 + eps) - 1
+    c1 = (2 * torch.sin(h) * torch.sin(h - theta1)) / (s_theta2 * s_theta0 + eps) - 1
+    c2 = (2 * torch.sin(h) * torch.sin(h - theta2)) / (s_theta0 * s_theta1 + eps) - 1
+
+    # added eps to prevent sqrt(0)
+    s0 = torch.sqrt(torch.clamp(1 - c0**2, 0, 1)+eps)
+    s1 = torch.sqrt(torch.clamp(1 - c1**2, 0, 1)+eps)
+    s2 = torch.sqrt(torch.clamp(1 - c2**2, 0, 1)+eps)
+
+    # triangle-wise weights (V, F)
+    W0 = torch.zeros((V, F), dtype=src_v.dtype, device=src_v.device)
+    W1 = torch.zeros_like(W0)
+    W2 = torch.zeros_like(W0)
+
+    deg_weight = s_theta0 * d1 * d2
+    W0[near_pi] = deg_weight[near_pi]
+    W1[near_pi] = deg_weight[near_pi]
+    W2[near_pi] = deg_weight[near_pi]
+
+    num0 = (theta0 - c1 * theta2 - c2 * theta1)
+    num1 = (theta1 - c2 * theta0 - c0 * theta2)
+    num2 = (theta2 - c0 * theta1 - c1 * theta0)
+
+    denom0 = 2 * s1 * s_theta2 * d0
+    denom1 = 2 * s2 * s_theta0 * d1
+    denom2 = 2 * s0 * s_theta1 * d2
+
+    # added eps to prevent division by 0
+    W0[not_near_pi] = num0[not_near_pi] / (denom0[not_near_pi] + eps)
+    W1[not_near_pi] = num1[not_near_pi] / (denom1[not_near_pi] + eps)
+    W2[not_near_pi] = num2[not_near_pi] / (denom2[not_near_pi] + eps)
+
+    # Final (V, Nc) weight matrix
+    W_vert = torch.zeros((V, Nc), dtype=src_v.dtype, device=src_v.device)
+    W_vert.index_add_(1, i0, W0)
+    W_vert.index_add_(1, i1, W1)
+    W_vert.index_add_(1, i2, W2)
+
+    # Normalize to ensure partition of unity
+    W_vert = W_vert / (W_vert.sum(dim=1, keepdim=True) + eps)
+
+    return W_vert  # (V, Nc)
+
+
 def apply_MVC_weights(W, cage_f, cage_function, eps=1e-8):
     """
     Args:
@@ -843,7 +944,7 @@ def apply_MVC_weights(W, cage_f, cage_function, eps=1e-8):
         cage_function: (Nc, 3) tensor of control values (e.g., positions or attributes)
     
     Returns:
-        interpolated: (V, 3) tensor
+        deformed target mesh (V, 3)
     """
     V, F, _ = W.shape
     device = W.device
@@ -869,12 +970,12 @@ def apply_MVC_weights_batch(W, cage_f, deformed_cages, eps=1e-8):
     Apply fixed MVC weights (V, F, 3) to batch of deformed cages (B, Nc, 3)
 
     Args:
-        W (Tensor): (V, F, 3) fixed MVC weights
-        cage_f (LongTensor): (F, 3) triangle indices
-        deformed_cages (Tensor): (B, Nc, 3) batch of deformed cage positions
+        W (torch.tensor): (V, F, 3) fixed MVC weights
+        cage_f (torch.LongTensor): (F, 3) triangle indices
+        deformed_cages (torch.tensor): (B, Nc, 3) batch of deformed cage positions
 
     Returns:
-        Tensor: (B, V, 3) deformed target mesh per batch
+        deformed target mesh per batch (B, V, 3)
     """
     B, Nc, _ = deformed_cages.shape
     V, F, _ = W.shape

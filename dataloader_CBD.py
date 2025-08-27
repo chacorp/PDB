@@ -369,13 +369,12 @@ class CBDDataset(data.Dataset):
 
 
 class CBDdataSampler(data.Sampler):
-    def __init__(self, len_list, batch_size, shuffle=False, balance=False, n_sampling=False, n_=4,reverse=False):
+    def __init__(self, len_list, batch_size, shuffle=False, balance=False, n_sampling=False, n_=4, reverse=False):
         self.len_list = len_list
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.reverse = reverse
-        self.balance = balance
-        self.mode = np.array(['ict', 'voca', 'biwi', 'mf'])
+        self.mode = np.array(['voca', 'biwi', 'mf'])
         self.n_sampling = n_sampling
         self.n_ = n_
         self.epoch = 0
@@ -396,10 +395,19 @@ class CBDdataSampler(data.Sampler):
         # m_data == 1: # biwi
         # m_data == 2: # mf
         for len_data, _, mesh_data, id_len_list in self.len_list:
-            # print(len_data)
+            #print(len_data, id_len_list)
             m_data = mesh_data.numpy()
             SS_next = SS+len_data
             _indices = np.arange(SS, SS_next, dtype=int)
+                
+            if m_data == 0: # voca or coma
+                tile_n = 15
+            if m_data == 1: # biwi
+                tile_n = 20
+            if m_data == 2: # mf
+                tile_n = 10
+            _indices = np.tile(_indices, tile_n)
+            len_data = len_data * tile_n
                 
             if self.n_sampling:
                 _remain = len_data % (self.batch_size * self.n_)
@@ -413,7 +421,7 @@ class CBDdataSampler(data.Sampler):
                 indices = np.r_[indices, _indices]
                 labels = np.r_[labels, np.ones(len_data) * m_data]
             SS = SS_next
-        
+                
         if self.n_sampling:
             indices = indices.reshape(-1, self.batch_size, self.n_).transpose(0, 2, 1).reshape(-1, self.batch_size)
             labels = labels.reshape(-1, self.batch_size, self.n_).transpose(0, 2, 1).reshape(-1, self.batch_size)
@@ -426,16 +434,7 @@ class CBDdataSampler(data.Sampler):
         return indices, labels
     
     def __iter__(self):
-        # TODO:
-        # 1. (inner) 각 데이터 길이를 batch size의 배수로 만들기 (일부 중복 추가)
-        # 2. (inner) 각 데이터를 셔플
-        # 3. (inner) batch_size 에 맞게 각 데이터 재 배열
-        # 4. (cross) 데이터 별로 섞기
         
-        # if self.n_sampling:
-        #     idx = np.arange(self.epoch % 3, self.total, 3)
-        # else:
-        #     idx = np.arange(self.indices.shape[0])
         idx = np.arange(self.indices.shape[0])
             
         if self.shuffle:
@@ -478,38 +477,29 @@ class CBDdataSampler(data.Sampler):
         text += f"[Batch size]: {self.batch_size}\n"
         for i, mode in enumerate(self.mode):
             mode_len = len(np.where(self.labels[:,0]==i)[0])
-            if self.balance and (mode == 'biwi' or mode == 'voca'):
-                text += f"[Batched {mode.upper()}]: {mode_len} (multiplied)\n"
-            else:
-                text += f"[Batched {mode.upper()}]: {mode_len}\n"
+            text += f"[Batched {mode.upper()}]: {mode_len}\n"
         text += f"[Batched len]: {len(self.indices)}\n"
         text += "===============================\n"
         return text
     
     def set_epoch(self, epoch):
         self.epoch = epoch
+        
 
 class CBDDataBatch:
     def __init__(self, data):
         """
         Args:
-            audio_feat
-            id_coeff
-            gt_rig_params
-            template
-            dfn_info
-            operators
-            vertices
-            faces
-            img
-            mesh_data
-            audio_path
+            template: source neutral mesh
+            vertices: source deformed mesh
+            faces: source mesh trianlge
+            mesh_data: dataset index (voca / multiface / biwi)
         """
         if data is not None: # essential !
             transposed_data = list(zip(*data))
                         
             #self.template = torch.stack(transposed_data[0], 0)
-            self.template = transposed_data[2][0][None] # [1, V, 3]
+            self.template = transposed_data[0][0][None] # [1, V, 3]
             self.vertices = torch.stack(transposed_data[1], 0) # [B, V, 3]
             self.faces = transposed_data[2][0] # # [F, 3]
             self.mesh_data = transposed_data[3][0] # 1
@@ -588,7 +578,7 @@ if __name__ == "__main__":
     # dataset = MeshDataset(opts, is_train=False, is_valid=True)
     # dataset = MeshDataset(opts, is_train=False, is_valid=False)
     
-    dataset = CBDDataset(opts, is_train=False, is_valid=True)
+    dataset = CBDDataset(opts, is_train=True, is_valid=False)
     
     
     # total_len, id_sent_len = dataset.set_multiface_SEN()
@@ -623,7 +613,7 @@ if __name__ == "__main__":
         #shuffle=True,
         balance=False,
         n_sampling=opts.n_sampling,
-        n_=8,
+        n_=opts.batch_size,
         reverse=True,
     )
     print('n_sampling', opts.n_sampling)
@@ -656,7 +646,8 @@ if __name__ == "__main__":
     
     pbar = tqdm(enumerate(dataloader), total=len_dataloader)
     for idx, batch in pbar:
-        import pdb;pdb.set_trace()
+        #import pdb;pdb.set_trace()
+        print(batch.vertices.shape, batch.template.shape)
         #(audio_feat, id_coeff, gt_rig_params, template, dfn_info, operators, vertices, faces, img), mesh_data, audio_path = batch
         #print(audio_path[0], audio_feat.shape, id_coeff.shape, gt_rig_params.shape, template.shape, vertices.shape)
         
@@ -672,3 +663,4 @@ if __name__ == "__main__":
 #         #     )
 #         #print(template.min(), template.max())
         dataset.vis_mesh(batch.vertices.cpu(), mesh=mode,tag=f"{idx:06d}")
+        dataset.vis_mesh(batch.template.cpu(), mesh=mode,tag=f"{idx:06d}")
