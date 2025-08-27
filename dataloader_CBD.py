@@ -368,7 +368,7 @@ class CBDDataset(data.Dataset):
         )
 
 
-class MeshSampler(data.Sampler):
+class CBDdataSampler(data.Sampler):
     def __init__(self, len_list, batch_size, shuffle=False, balance=False, n_sampling=False, n_=4,reverse=False):
         self.len_list = len_list
         self.batch_size = batch_size
@@ -474,7 +474,7 @@ class MeshSampler(data.Sampler):
         return self.total
     
     def get_sampler_config(self):
-        text = "=========[MeshSampler]=========\n"
+        text = "=========[CBDdataSampler]=========\n"
         text += f"[Batch size]: {self.batch_size}\n"
         for i, mode in enumerate(self.mode):
             mode_len = len(np.where(self.labels[:,0]==i)[0])
@@ -489,7 +489,7 @@ class MeshSampler(data.Sampler):
     def set_epoch(self, epoch):
         self.epoch = epoch
 
-class MeshDataBatch:
+class CBDDataBatch:
     def __init__(self, data):
         """
         Args:
@@ -508,10 +508,11 @@ class MeshDataBatch:
         if data is not None: # essential !
             transposed_data = list(zip(*data))
                         
-            self.template = torch.stack(transposed_data[0], 0)
-            self.vertices = torch.stack(transposed_data[1], 0)
-            self.faces = transposed_data[2][0]
-            self.mesh_data = transposed_data[3][0]
+            #self.template = torch.stack(transposed_data[0], 0)
+            self.template = transposed_data[2][0][None] # [1, V, 3]
+            self.vertices = torch.stack(transposed_data[1], 0) # [B, V, 3]
+            self.faces = transposed_data[2][0] # # [F, 3]
+            self.mesh_data = transposed_data[3][0] # 1
             
     
     @property
@@ -551,8 +552,8 @@ class MeshDataBatch:
     #     self.tgt = self.tgt.pin_memory()
     #     return self
 
-def collate_wrapper(batch, device="cpu"):
-    return MeshDataBatch(batch).to(device)
+def CBD_collate_wrapper(batch, device="cpu"):
+    return CBDDataBatch(batch).to(device)
 
 if __name__ == "__main__":
     """
@@ -563,7 +564,8 @@ if __name__ == "__main__":
     from tqdm import tqdm
     opts_yaml = yaml.load(open('config/train.yml'), Loader=yaml.FullLoader)
     opts_yaml["learn_rig_emb"] = False
-    opts_yaml["device"] = "cuda:0"
+    #opts_yaml["device"] = "cuda:0"
+    opts_yaml["device"] = "cpu"
     opts = argparse.Namespace(**opts_yaml)
     
     # opts.selection = 4 # BIWI
@@ -615,7 +617,7 @@ if __name__ == "__main__":
     # dataset = NFSDataset(opts, is_train=True, return_audio_dir=True)
     # print(dataset.get_data_config())
     
-    sampler = MeshSampler(
+    sampler = CBDdataSampler(
         dataset.len_list, 
         opts.batch_size,
         #shuffle=True,
@@ -630,7 +632,7 @@ if __name__ == "__main__":
     dataloader = torch.utils.data.DataLoader(
         dataset, 
         batch_sampler=sampler, 
-        collate_fn=partial(collate_wrapper, device=opts.device),
+        collate_fn=partial(CBD_collate_wrapper, device=opts.device),
         num_workers=0
     )
     
@@ -638,7 +640,7 @@ if __name__ == "__main__":
 #         dataset, 
 #         batch_size=opts.batch_size, 
 #         shuffle=False,
-#         collate_fn=partial(collate_wrapper, device=opts.device), 
+#         collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
 #         num_workers=0
 #     )
 

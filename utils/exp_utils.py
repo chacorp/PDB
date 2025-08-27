@@ -1728,6 +1728,50 @@ class Model2(nn.Module):
         
         return out_S, out_R
         
+
+class Model_mk1(nn.Module):
+    """
+        simple MLP
+    """
+    def __init__(self, 
+                 in_dim=3+512,
+                 out_dim=3, 
+                 num_layer=4,
+                 act='relu'):
+        super(Model_mk1, self).__init__()
+        
+        if act == 'none':
+            self.act = lambda x: x
+        elif act == 'relu':
+            self.act = nn.ReLU()
+        elif act == 'lrelu':
+            self.act = nn.LeakyReLU()
+        
+        self.linears = []
+        dim_list = [in_dim, 192, 128, 64, out_dim]
+        for i in range(len(dim_list)-1):
+            MLP = nn.Sequential(
+                    nn.Linear(dim_list[i], dim_list[i]//2),
+                    self.act,
+                    nn.LayerNorm(dim_list[i]//2),
+                    nn.Linear(dim_list[i]//2, dim_list[i]//4),
+                    self.act,
+                    nn.LayerNorm(dim_list[i]//4),
+                    nn.Linear(dim_list[i]//4, dim_list[i+1]),
+                )
+            self.linears.append(MLP)
+        self.linears = nn.ModuleList(self.linears)
+
+    def forward(self, x):
+        """
+            x (torch.tensor) [B, N, C]: input
+            out (torch.tensor)
+        """
+        out = x
+        for i in range(len(self.linears)):
+            out = self.linears[i](out)
+        return out
+    
 class Model_mk2(nn.Module):
     def __init__(self, in_dim=3, out_dim=9, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False, out_type='local'):
         super().__init__()
@@ -2297,6 +2341,78 @@ class Model_mk3(nn.Module):
 
         return net, trans_feat
 
+    
+class Model_mk3_1(nn.Module):
+    """
+    PointNet architecture
+    """
+    def __init__(self, #part_num=50, normal_channel=True):
+        in_dim=3, out_dim=512, num_layers=4, mode='rot'):
+        super().__init__()
+        
+        self.mode = mode
+        self.out_dim = out_dim
+                
+        # if normal_channel:
+        #     channel = 6
+        # else:
+        #     channel = 3
+        self.out_dim = out_dim
+        self.stn = STN3d(in_dim)
+        self.conv1 = torch.nn.Conv1d(in_dim, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1)
+        self.conv3 = torch.nn.Conv1d(128, 128, 1)
+        self.conv4 = torch.nn.Conv1d(128, 512, 1)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(128)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.fstn = STNkd(k=128)
+
+    def forward(self, x_in, return_inv=False, return_raw=False, no_rot=False):
+        out, trans_feat = self.forward_func(x_in)
+        
+        # outs = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
+        return out, trans_feat
+                
+    def forward_func(self, point_cloud):                
+        B, N, D = point_cloud.size()
+        trans = self.stn(point_cloud.transpose(2, 1))
+        
+        if D > 3:
+            # point_cloud, feature = point_cloud.split(3, dim=2)
+            if D > 6:
+                point_cloud, point_normal, feature = point_cloud[...,:3], point_cloud[...,3:6], point_cloud[...,6:]
+            else:
+                point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
+                
+        point_cloud = torch.bmm(point_cloud, trans)
+        if D > 6:
+            point_normal = torch.bmm(point_normal, trans)
+            
+        if D > 3:
+            # point_cloud = torch.cat([point_cloud, feature], dim=2)
+            if D > 6:
+                point_cloud = torch.cat([point_cloud, point_normal, feature], dim=-1)
+            else:
+                point_cloud = torch.cat([point_cloud, feature], dim=-1)
+
+        point_cloud = point_cloud.transpose(2, 1) # (B, D, N)
+
+        out1 = F.relu(self.bn1(self.conv1(point_cloud)))
+        out2 = F.relu(self.bn2(self.conv2(out1)))
+        out3 = F.relu(self.bn3(self.conv3(out2)))
+
+        trans_feat = self.fstn(out3)
+        x = out3.transpose(2, 1)
+        net_transformed = torch.bmm(x, trans_feat)
+        net_transformed = net_transformed.transpose(2, 1)
+
+        out4 = self.bn4(self.conv4(net_transformed))
+        out_max = torch.max(out4, 2, keepdim=True)[0]
+        out_max = out_max.view(-1, 512)
+        
+        return out_max, trans_feat
 
 class Model_mk3_2(nn.Module):
     def __init__(self, #part_num=50, normal_channel=True):
@@ -2488,8 +2604,28 @@ class PCA_holder():
         self.n_components_ = data['components_'].shape[0]
         #recon = proj_coords @ components + mean
 
-
-    def sample_from_pca(self, pca, scale=1.0):
+    def sample_from_pca(self, scale=1.0):
         z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
+        z = z @ self.components_ + self.mean_
+        return z.reshape(-1,3)
+
+    def sample_from_pca_one_axis(self, scale=1.0, select=-1, verbose=False):
+        """
+        sample from pca, but within 1/4 explained_variance
+        """
+        z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
+        
+        # masking
+        tmp = np.zeros_like(z)
+        if select > -1 and select < self.n_components_:
+            select = select
+        else:
+            select = np.random.randint(0, self.n_components_//4)
+        
+        if verbose:
+            print(select)
+        tmp[select] = z[select]
+        z=tmp
+        
         z = z @ self.components_ + self.mean_
         return z.reshape(-1,3)

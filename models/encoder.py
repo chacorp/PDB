@@ -400,6 +400,7 @@ class AdaINDiffusionNetEncoder(nn.Module):
             # directly predict displacement
             x_out = x_in[...,:3] - x_out
         elif self.C_out == 6:
+            # predict transformation
             x_out = self.from_6D_to_rotation_matrix_torch(x_out)
             x_out = torch.einsum('bnck,bnk->bnc', x_out, x_in[...,:3])
         elif self.C_out == 9:
