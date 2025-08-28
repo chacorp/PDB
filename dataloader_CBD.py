@@ -5,6 +5,9 @@ import torch
 import torch.utils.data as data
 import random
 import pickle
+
+import igl
+import scipy
 import trimesh
 from functools import partial
 
@@ -17,7 +20,7 @@ from utils import (
 from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, KEYS
 from utils.remesh_utils import map_vertices, decimate_mesh_vertex
 from utils.mesh_utils import get_dfn_info2, get_mesh_operators
-from utils.exp_utils import PCA_holder
+from utils.exp_utils import PCA_holder, adjacency_matrix
 from tqdm import tqdm
 import time
 
@@ -68,7 +71,13 @@ class CBDDataset(data.Dataset):
         with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
             self.voca_mesh = pickle.load(f)
         total_id = total_id + self.voca_len
-        
+
+        # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
+        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+        # self.voca_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+        # self.voca_adj_list = igl.adjacency_list(self.voca_mesh["face"])
+                
         self.len_list.append([self.n_components*self.voca_len, self.get_voca, torch.tensor(0), self.voca_len])
         
         
@@ -87,6 +96,12 @@ class CBDDataset(data.Dataset):
             self.biwi_mesh = pickle.load(f) # meshes
         total_id = total_id + self.biwi_len
         
+        # adj_mat = igl.adjacency_matrix(self.biwi_mesh["face"])
+        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+        # self.biwi_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+        # self.biwi_adj_list = igl.adjacency_list(self.biwi_mesh["face"])
+        
         self.len_list.append([self.n_components*self.biwi_len, self.get_biwi, torch.tensor(1), self.biwi_len])
         
         
@@ -103,6 +118,12 @@ class CBDDataset(data.Dataset):
         with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
             self.mf_mesh = pickle.load(f)
         total_id = total_id + self.mf_len
+        
+        # adj_mat = igl.adjacency_matrix(self.mf_mesh["face"])
+        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+        # self.mf_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+        # self.mf_adj_list = igl.adjacency_list(self.mf_mesh["face"])
         
         self.len_list.append([self.n_components*self.mf_len, self.get_multiface, torch.tensor(2), self.mf_len])
         

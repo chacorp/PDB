@@ -75,41 +75,73 @@ def mvc_loss(mvc_weights):
     neg_loss = torch.nn.functional.relu(-mvc_weights) ** 2
     return torch.mean(neg_loss)
 
-def p2f_loss(before_v, after_v, neighbors_map):
-    """ Point-to-Surface Loss """
-    device = before_v.device
-    def distances(verts):
-        B, V, _ = verts.shape
-        dists = torch.zeros(B, V, device=device)
-        for i, neighbors_idx in enumerate(neighbors_map):
-            if len(neighbors_idx) < 3: continue
+# def p2f_loss(before_v, after_v, neighbors_map):
+def p2f_loss(before_v, after_v, normals_before, normals_after):
+    """ Point-to-Surface Loss
+    Args:
+        before_v: (B, N, 3) vertices source mesh
+        after_v: (B, N, 3) vertices deformed mesh
+        normals_before: (B, N, 3) normals from pca plane in source mesh
+        normals_after: (B, N, 3) normals from pca plane in deformed mesh
+    Returns
+        loss (float)
+    """
+    #device = before_v.device
+    
+    def distance(verts, norms):
+        # B, V, _ = verts.shape
+        # dists = torch.zeros(B, V, device=device)
+        # for i, neighbors_idx in enumerate(neighbors_map):
+        #     if len(neighbors_idx) < 3: continue
             
-            neighborhood = verts[:, neighbors_idx.to(device), :]
-            centroid = torch.mean(neighborhood, dim=1)
-            _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
-            normals = V_svd[:, -1, :]
+        #     neighborhood = verts[:, neighbors_idx.to(device), :]
+        #     centroid = torch.mean(neighborhood, dim=1)
+        #     _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
+        #     normals = V_svd[:, -1, :]
             
-            dist_vec = verts[:, i, :] - centroid
-            dists[:, i] = torch.abs(torch.sum(dist_vec * normals, dim=1))
+        #     dist_vec = verts[:, i, :] - centroid
+        #     dists[:, i] = torch.abs(torch.sum(dist_vec * normals, dim=1))
+        dists = torch.abs(torch.sum(verts * norms, dim=-1))
         return dists
-    return F.mse_loss(distances(before_v), distances(after_v))
 
-def norm_loss(before_v, after_v, neighbors_map):
-    """ PCA Normal Loss """
-    device = before_v.device
-    def pca_normals(verts):
-        B, V, _ = verts.shape
-        all_normals = torch.zeros_like(verts)
-        for i, neighbors_idx in enumerate(neighbors_map):
-            if len(neighbors_idx) < 2: continue
+    before_dist = distance(before_v, normals_before)
+    after_dist = distance(after_v, normals_after)
+    return F.mse_loss(before_dist, after_dist)
 
-            neighborhood = verts[:, neighbors_idx.to(device), :]
-            centroid = torch.mean(neighborhood, dim=1)
-            _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
-            all_normals[:, i, :] = V_svd[:, -1, :]
-        return all_normals
-    normals_before = pca_normals(before_v)
-    normals_after  = pca_normals(after_v)
+def pca_normal_axis(verts, neighbors_map):
+    """
+    Args:
+        verts (torch.tensor): (B, N, 3) vertices
+        neighbors_map (list(int):
+    Returns:
+        normal_axis: (B, N, 3)
+    """
+    B, V, _ = verts.shape
+    
+    normal_axis = torch.zeros_like(verts)
+    for i, neighbors_idx in enumerate(neighbors_map):
+        if len(neighbors_idx) < 2: continue
+
+        neighborhood = verts[:, neighbors_idx, :]
+        centroid = torch.mean(neighborhood, dim=1)
+        _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
+        normal_axis[:, i, :] = V_svd[:, -1, :]
+    return normal_axis
+
+def norm_loss(normals_before, normals_after):
+    """ PCA Normal Loss 
+    Args:
+        before_v: (B, N, 3) vertices source mesh
+        after_v: (B, N, 3) vertices deformed mesh
+        normals_before: (B, N, 3) normals from pca plane in source mesh
+        normals_after: (B, N, 3) normals from pca plane in deformed mesh
+    Returns
+        loss (float)
+    """
+    # device = before_v.device
+    
+    # normals_before = pca_normals(before_v)
+    # normals_after  = pca_normals(after_v)
     return torch.mean(1.0 - F.cosine_similarity(normals_before, normals_after, dim=-1))
 
 class CageNet(nn.Module):
@@ -187,7 +219,8 @@ class CageNet(nn.Module):
         predicted_mesh = mvc @ deform_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3]
         
         return predicted_mesh, mvc
-    
+        
+
 class Trainer():
     def __init__(self, opts):
         # set opts
@@ -376,16 +409,22 @@ class Trainer():
                 
                 
                 ##################################################################################################
-                ### to sua, Loss please..>!!
-                # ------------------------------------------------------------------------------------------------                
+                # ------------------------------------------------------------------------------------------------
+                
+                mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+                                
                 template_expanded = batch.template.expand_as(pred_vertices)
                 neighbors = self.neighbor_maps[batch.mesh_data.item()]
+                                
+                normals_before = pca_normal_axis(template_expanded, neighbors)                
+                normals_after = pca_normal_axis(pred_vertices, neighbors)
+                
                 loss_dict = {} # make it as a dictionary
                                 
                 loss_dict['mvc'] = mvc_loss(mvc_weights)
                 loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, neighbors)
-                loss_dict['norm']  = norm_loss(template_expanded, pred_vertices, neighbors)
+                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
+                loss_dict['norm']  = norm_loss(normals_before, normals_after)
                 # 
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
@@ -416,7 +455,6 @@ class Trainer():
                 vertices = batch.vertices.cpu()
                 faces = batch.faces.cpu()
                 
-                mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                 
                 interv_train = round(len_train_data / 10)
                 if train_counter % interv_train == 1:
@@ -475,21 +513,23 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices = self.model(batch.template, batch.vertices, epoch=epoch)
+                    pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
                 # ------------------------------------------------------------------------------------------------
                 
                 
                 ##################################################################################################
-                ### to sua, Loss please..>!!
                 # ------------------------------------------------------------------------------------------------                
                 template_expanded = batch.template.expand_as(pred_vertices)
                 neighbors = self.neighbor_maps[batch.mesh_data.item()]
-                loss_dict = {} # make it as a dictionary
                                 
+                normals_before = pca_normal_axis(template_expanded, neighbors)                
+                normals_after = pca_normal_axis(pred_vertices, neighbors)
+                
+                loss_dict = {} # make it as a dictionary                                
                 loss_dict['mvc'] = mvc_loss(mvc_weights)
                 loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, neighbors)
-                loss_dict['norm']  = norm_loss(template_expanded, pred_vertices, neighbors)
+                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
+                loss_dict['norm']  = norm_loss(normals_before, normals_after)
                 # 
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################

@@ -45,22 +45,6 @@ from pointnet_utils import PointNetEncoder, feature_transform_reguliarzer, STN3d
 from pointnet_part_seg import get_model, get_loss
 from utils.remesh_utils import ICT_face_model
 
-class PCA_holder():
-    def __init__(self, npz_file="pca_model.npz"):
-        data = np.load(npz_file)
-        #proj_coords = np.load("proj_coords.npy")
-        
-        self.mean_ = data['mean_']
-        self.components_ = data['components_']
-        self.explained_variance_ = data['explained_variance_']
-        self.n_components_ = data['components_'].shape[0]
-        #recon = proj_coords @ components + mean
-
-
-    def sample_from_pca(self, scale=1.0):
-        z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
-        z = z @ self.components_ + self.mean_
-        return z.reshape(-1,3)
     
 def get_colors(vertices):
     min_coord,max_coord = np.min(vertices,axis=0,keepdims=True),np.max(vertices,axis=0,keepdims=True)
@@ -148,7 +132,6 @@ def get_TBN_foreach_vertex(V, F):
 
     # project
     _Vt = np.sum(Vt_nb * Vn, axis=1, keepdims=True)
-        
     Vt = Vt_nb - (_Vt * Vn)
     Vt = Vt/(np.linalg.norm(Vt, axis=1, keepdims=True)+1e-8)
     
@@ -161,6 +144,73 @@ def get_TBN_foreach_vertex(V, F):
         Vn[:,None], 
     ], axis=1)
 
+
+def get_normal_from_one_ring_plane(centroid, vertices, adj_list):
+    """
+    Args:
+        centroid (B, N, 3): centroid of the plane B
+        vertices (B, N, 3): point p for the plane B
+        adj_list (list(int)): adjacent vertex indices
+    Returns:
+        plane normals
+    """
+    
+    batch_p = vertices - centroid
+    batch_p_norm = batch_p / torch.norm(batch_p, dim=-1, keepdim=True)
+    
+    # select just one neighbor
+    nb = [nbrs[0] for nbrs in adj_list]
+    
+    # tangent
+    batch_t = vertices[:, nb] - centroid
+    batch_t /= torch.norm(batch_t, dim=-1, keepdim=True)
+
+    # bitangent
+    batch_b = torch.cross(batch_p_norm, batch_t)
+    batch_b /= torch.norm(batch_b, dim=-1, keepdim=True)
+
+    _Vt = np.sum(batch_b * batch_t, axis=1, keepdims=True)
+    Vt = Vt_nb - (_Vt * batch_t)
+    
+    # normal
+    batch_n = torch.cross(batch_t, batch_b)
+    return batch_n
+
+
+def batch_mm(matrix, matrix_batch):
+    """
+    Reference: https://github.com/pytorch/pytorch/issues/14489#issuecomment-607730242
+    Args:
+        param matrix: Sparse or dense matrix, size (m, n).
+        param matrix_batch: Batched dense matrices, size (b, n, k).
+    Returns: The batched matrix-matrix product, size (m, n) x (b, n, k) = (b, m, k).
+    """
+    batch_size = matrix_batch.shape[0]
+    # Stack the vector batch into columns. (b, n, k) -> (n, b, k) -> (n, b*k)
+    vectors = matrix_batch.transpose(0, 1).reshape(matrix.shape[1], -1)
+
+    # A matrix-matrix product is a batched matrix-vector product of the columns.
+    # And then reverse the reshaping. (m, n) x (n, b*k) = (m, b*k) -> (m, b, k) -> (b, m, k)
+    return matrix.mm(vectors).reshape(matrix.shape[0], batch_size, -1).transpose(1, 0)
+    
+def get_adjacent_info(mesh_data, dataset):
+    """
+    Returns:
+        adj_mat (normed adjacent matrix)
+        adj_list (adjacent vertex indices)
+    """
+    if mesh_data == 'voca':
+        adj_mat = dataset.voca_adj_matrix
+        #adj_list = dataset.voca_adj_list
+    elif mesh_data == 'biwi':
+        adj_mat = dataset.biwi_adj_matrix
+        #adj_list = dataset.biwi_adj_list
+    else:
+        adj_mat = dataset.mf_adj_matrix
+        #adj_list = dataset.mf_adj_list
+    #return adj_mat, adj_list
+    return adj_mat
+    
 def rescale(V1 ,V2):
     """rescale V1 to V2"""
     V1mean = (V1.max(0)+V1.min(0))*0.5
@@ -2604,7 +2654,12 @@ class PCA_holder():
         self.explained_variance_ = data['explained_variance_']
         self.n_components_ = data['components_'].shape[0]
         #recon = proj_coords @ components + mean
-
+    
+    def inverse_transform(self, coeff):
+        z = coeff
+        z = z @ self.components_ + self.mean_
+        return z.reshape(-1,3)
+    
     def sample_from_pca(self, scale=1.0):
         z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
         z = z @ self.components_ + self.mean_
