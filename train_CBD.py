@@ -8,6 +8,7 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 from functools import partial
+import trimesh
 
 import sys
 from pathlib import Path
@@ -67,6 +68,49 @@ def Options():
     args = parser.parse_args()
     return args
 
+# --- Loss Functions ---
+
+def mvc_loss(mvc_weights):
+    """ penalize MVC with negative values """
+    neg_loss = torch.nn.functional.relu(-mvc_weights) ** 2
+    return torch.mean(neg_loss)
+
+def p2f_loss(before_v, after_v, neighbors_map):
+    """ Point-to-Surface Loss """
+    device = before_v.device
+    def distances(verts):
+        B, V, _ = verts.shape
+        dists = torch.zeros(B, V, device=device)
+        for i, neighbors_idx in enumerate(neighbors_map):
+            if len(neighbors_idx) < 3: continue
+            
+            neighborhood = verts[:, neighbors_idx.to(device), :]
+            centroid = torch.mean(neighborhood, dim=1)
+            _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
+            normals = V_svd[:, -1, :]
+            
+            dist_vec = verts[:, i, :] - centroid
+            dists[:, i] = torch.abs(torch.sum(dist_vec * normals, dim=1))
+        return dists
+    return F.mse_loss(distances(before_v), distances(after_v))
+
+def norm_loss(before_v, after_v, neighbors_map):
+    """ PCA Normal Loss """
+    device = before_v.device
+    def pca_normals(verts):
+        B, V, _ = verts.shape
+        all_normals = torch.zeros_like(verts)
+        for i, neighbors_idx in enumerate(neighbors_map):
+            if len(neighbors_idx) < 2: continue
+
+            neighborhood = verts[:, neighbors_idx.to(device), :]
+            centroid = torch.mean(neighborhood, dim=1)
+            _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
+            all_normals[:, i, :] = V_svd[:, -1, :]
+        return all_normals
+    normals_before = pca_normals(before_v)
+    normals_after  = pca_normals(after_v)
+    return torch.mean(1.0 - F.cosine_similarity(normals_before, normals_after, dim=-1))
 
 class CageNet(nn.Module):
     """
@@ -142,7 +186,7 @@ class CageNet(nn.Module):
         
         predicted_mesh = mvc @ deform_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3]
         
-        return predicted_mesh
+        return predicted_mesh, mvc
     
 class Trainer():
     def __init__(self, opts):
@@ -184,6 +228,17 @@ class Trainer():
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
         self.train_dataset = CBDDataset(self.opts, is_train=True)
+
+        self.neighbor_maps = {
+            i: [torch.tensor(n, dtype=torch.long) for n in trimesh.Trimesh(
+                vertices=mesh_info[id_list[0]], faces=mesh_info['face']
+            ).vertex_neighbors]
+            for i, (mesh_info, id_list) in enumerate([
+                (self.train_dataset.voca_mesh, self.train_dataset.voca_id_list),
+                (self.train_dataset.biwi_mesh, self.train_dataset.biwi_id_list),
+                (self.train_dataset.mf_mesh, self.train_dataset.mf_id_list)
+            ])
+        }
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -316,19 +371,21 @@ class Trainer():
                 self.optimizer.zero_grad()
                 
                 # model prediction -------------------------------------------------------------------------------
-                pred_vertices = self.model(batch.template, batch.vertices, epoch=epoch)
+                pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
                 # ------------------------------------------------------------------------------------------------
                 
                 
                 ##################################################################################################
                 ### to sua, Loss please..>!!
                 # ------------------------------------------------------------------------------------------------                
+                template_expanded = batch.template.expand_as(pred_vertices)
+                neighbors = self.neighbor_maps[batch.mesh_data.item()]
                 loss_dict = {} # make it as a dictionary
                                 
-                # loss_dict['mvc'] = mvc_loss(pred_vertices)
+                loss_dict['mvc'] = mvc_loss(mvc_weights)
                 loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                # loss_dict['p2f'] = p2f_loss(...) ## will not use symm loss!!!!
-                # loss_dict['norm'] = norm_loss(...)
+                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, neighbors)
+                loss_dict['norm']  = norm_loss(template_expanded, pred_vertices, neighbors)
                 # 
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
@@ -425,12 +482,14 @@ class Trainer():
                 ##################################################################################################
                 ### to sua, Loss please..>!!
                 # ------------------------------------------------------------------------------------------------                
+                template_expanded = batch.template.expand_as(pred_vertices)
+                neighbors = self.neighbor_maps[batch.mesh_data.item()]
                 loss_dict = {} # make it as a dictionary
-                
-                # loss_dict['mvc'] = mvc_loss(pred_vertices)
+                                
+                loss_dict['mvc'] = mvc_loss(mvc_weights)
                 loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                # loss_dict['p2f'] = p2f_loss(...) ## will not use symm loss!!!!
-                # loss_dict['norm'] = norm_loss(...)
+                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, neighbors)
+                loss_dict['norm']  = norm_loss(template_expanded, pred_vertices, neighbors)
                 # 
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
