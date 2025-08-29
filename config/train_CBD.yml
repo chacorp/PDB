@@ -19,7 +19,7 @@ sc_gamma: 0.85
 
 # loss
 lambda_mvc: 1.0
-lambda_align: 1.0
+lambda_align: 2.0
 lambda_p2f: 0.1
 lambda_norm: 0.1
 
