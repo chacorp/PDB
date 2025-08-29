@@ -454,7 +454,6 @@ class Trainer():
                 loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
                 loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
                 loss_dict['norm']  = norm_loss(normals_before, normals_after)
-                # 
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
                                
@@ -552,12 +551,14 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------ 
                 with torch.no_grad():
                     template_expanded = batch.template.expand_as(pred_vertices)
-                    neighbors = self.neighbor_maps[batch.mesh_data.item()]
+                    #neighbors = self.neighbor_maps[batch.mesh_data.item()]
+                    
+                    idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
+                    normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
+                    normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
 
-                    normals_before = pca_normal_axis(template_expanded, neighbors)                
-                    normals_after = pca_normal_axis(pred_vertices, neighbors)
-
-                    loss_dict = {} # make it as a dictionary                                
+                    loss_dict = {} # make it as a dictionary
+                    
                     loss_dict['mvc'] = mvc_loss(mvc_weights)
                     loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
                     loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
