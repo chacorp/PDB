@@ -390,7 +390,7 @@ class CBDDataset(data.Dataset):
 
 
 class CBDdataSampler(data.Sampler):
-    def __init__(self, len_list, batch_size, shuffle=False, balance=False, n_sampling=False, n_=4, reverse=False):
+    def __init__(self, len_list, batch_size, shuffle=False, balance=False, n_sampling=False, n_=4, reverse=False, is_train=True):
         self.len_list = len_list
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -401,6 +401,7 @@ class CBDdataSampler(data.Sampler):
         self.epoch = 0
         self.indices, self.labels = self._get_indices()
         self.total = self.indices.shape[0]
+        self.is_train = is_train
         
     def _get_indices(self):
         """
@@ -420,15 +421,16 @@ class CBDdataSampler(data.Sampler):
             m_data = mesh_data.numpy()
             SS_next = SS+len_data
             _indices = np.arange(SS, SS_next, dtype=int)
-                
-            if m_data == 0: # voca or coma
-                tile_n = 15
-            if m_data == 1: # biwi
-                tile_n = 20
-            if m_data == 2: # mf
-                tile_n = 10
-            _indices = np.tile(_indices, tile_n)
-            len_data = len_data * tile_n
+            
+            if self.is_train:
+                if m_data == 0: # voca or coma
+                    tile_n = 15
+                if m_data == 1: # biwi
+                    tile_n = 20
+                if m_data == 2: # mf
+                    tile_n = 10
+                _indices = np.tile(_indices, tile_n)
+                len_data = len_data * tile_n
                 
             if self.n_sampling:
                 _remain = len_data % (self.batch_size * self.n_)
