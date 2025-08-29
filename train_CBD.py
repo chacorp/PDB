@@ -300,8 +300,6 @@ class Trainer():
             self.opts.batch_size,
             shuffle=True,
             balance=False,
-            n_sampling=opts.n_sampling,
-            n_=self.opts.batch_size,
             is_train=True
         )
         self.train_dataloader = torch.utils.data.DataLoader(
@@ -320,8 +318,6 @@ class Trainer():
             self.opts.batch_size,
             shuffle=True,
             balance=False,
-            n_sampling=opts.n_sampling,
-            n_=self.opts.batch_size,
             is_train=False
         )
         self.valid_dataloader = torch.utils.data.DataLoader(
@@ -478,14 +474,13 @@ class Trainer():
                 
                 global_step += 1
                 train_counter += 1
-                
-                # for visualization
-                vertices = batch.vertices.cpu()
-                faces = batch.faces.cpu()
-                
-                
+                                
                 interv_train = round(len_train_data / 10)
                 if train_counter % interv_train == 1:
+                    # for visualization
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+                    
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
                     for key, value in running_losses.items():
                         log_text += f"{key}: {value:.6f} "
@@ -494,6 +489,8 @@ class Trainer():
                     frame = BS//2
                     v_list = [ v for v in vertices[frame:frame+2] ] + \
                         [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
+                    
+                    v_list = [v for v in vertices[frame:frame+2]]+[batch.template.cpu()[0]]*2
                     len_v = len(v_list)
                     f_list = [faces] * len_v
                     save_logdir = f"{self.opts.log_dir}/img/train/mesh"
@@ -506,6 +503,7 @@ class Trainer():
                         logdir=save_logdir,
                         name=save_img_name, save=True
                     )
+                    
                 
                 if self.opts.debug:
                     break

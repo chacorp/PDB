@@ -56,7 +56,11 @@ class CBDDataset(data.Dataset):
         total_id = 0
         
         _, voca_data_split, biwi_data_split, mf_data_split, _ = get_data_splits()
+        
+        ## to make no leftover for each mesh id
+        self.min_sample = self.n_components % self.opts.batch_size
         self.len_list=[]
+        
         
         self.voca_pca_holder_list=[]
         self.voca_id_list=[]
@@ -78,7 +82,7 @@ class CBDDataset(data.Dataset):
         # self.voca_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
         # self.voca_adj_list = igl.adjacency_list(self.voca_mesh["face"])
                 
-        self.len_list.append([self.n_components*self.voca_len, self.get_voca, torch.tensor(0), self.voca_len])
+        self.len_list.append([(self.n_components+self.min_sample)*self.voca_len, self.get_voca, torch.tensor(0), self.voca_len])
         
         
         
@@ -102,7 +106,7 @@ class CBDDataset(data.Dataset):
         # self.biwi_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
         # self.biwi_adj_list = igl.adjacency_list(self.biwi_mesh["face"])
         
-        self.len_list.append([self.n_components*self.biwi_len, self.get_biwi, torch.tensor(1), self.biwi_len])
+        self.len_list.append([(self.n_components+self.min_sample)*self.biwi_len, self.get_biwi, torch.tensor(1), self.biwi_len])
         
         
         self.mf_pca_holder_list=[]
@@ -125,12 +129,12 @@ class CBDDataset(data.Dataset):
         # self.mf_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
         # self.mf_adj_list = igl.adjacency_list(self.mf_mesh["face"])
         
-        self.len_list.append([self.n_components*self.mf_len, self.get_multiface, torch.tensor(2), self.mf_len])
+        self.len_list.append([(self.n_components+self.min_sample)*self.mf_len, self.get_multiface, torch.tensor(2), self.mf_len])
         
         
         # 2 for -weight and +weight
-        self.min_sample = 1
-        total_len = self.n_components * total_id * self.min_sample
+        
+        total_len = (self.n_components+self.min_sample) * total_id
         
         self.total_len = total_len
         self.total_id = total_id
@@ -145,7 +149,7 @@ class CBDDataset(data.Dataset):
         text+= f"------------------------------\n"
         text+= f"[total id mesh]: {self.total_id}\n"
         text+= f"[pca n_components]: {self.n_components}\n"
-        text+= f"[sample range]: {self.min_sample} ([-1, +1] x variance) \n"
+        text+= f"[+ remain]: {self.min_sample}\n"
         text+= f"[total pca data]: {self.total_len}\n"
         text+= "===============================\n"
         return text
@@ -173,9 +177,11 @@ class CBDDataset(data.Dataset):
             self.use_decimate = self.opts.use_decimate
             self.WS = self.opts.window_size
             
-    def get_voca(self, index):
+    def get_voca(self, index, id_index):
         #pca_index = index % self.n_components
-        id_index = index // self.n_components
+        #id_index = index // (self.n_components+self.min_sample)
+        #id_index = index // self.n_components
+        #id_index = index % self.voca_len
         
         id_name = self.voca_id_list[id_index]
         pca_holder = self.voca_pca_holder_list[id_index]
@@ -187,15 +193,17 @@ class CBDDataset(data.Dataset):
             vertex = pca_holder.sample_from_pca(scale=1.0)
         template = self.voca_mesh[id_name]
         faces = self.voca_mesh["face"]
-        
+                
         template = torch.tensor(template).float()
         vertex = torch.tensor(vertex).float()
         faces = torch.tensor(faces).long()
         return (template, vertex, faces)
             
-    def get_biwi(self, index):
+    def get_biwi(self, index, id_index):
         #pca_index = index % self.n_components
-        id_index = index // self.n_components
+        #id_index = index // (self.n_components+self.min_sample)
+        #id_index = index // self.n_components
+        #id_index = index % self.biwi_len
         
         id_name = self.biwi_id_list[id_index]
         pca_holder = self.biwi_pca_holder_list[id_index]
@@ -213,9 +221,11 @@ class CBDDataset(data.Dataset):
         faces = torch.tensor(faces).long()
         return (template, vertex, faces)
     
-    def get_multiface(self, index):
+    def get_multiface(self, index, id_index):
         #pca_index = index % self.n_components
-        id_index = index // self.n_components
+        #id_index = index // (self.n_components+self.min_sample)
+        #id_index = index // self.n_components
+        #id_index = index % self.mf_len
         
         id_name = self.mf_id_list[id_index]
         pca_holder = self.mf_pca_holder_list[id_index]
@@ -296,16 +306,25 @@ class CBDDataset(data.Dataset):
         return template, vertices
     
     def __getitem__(self, index):
-        idx = index
+        """
+        Args:
+            index (int,int,int): batched data indicies 
+                idx (int): index for the expression
+                id_mesh (int): mesh identity label
+                mesh_data (int): label for the data, (0: voca-coma, 1: biwi, 2: mf)
+        Returns:
+            data
+        """
+        idx, id_mesh, mesh_data = index
         
-        #select = random.randint(0, 2)
-        for len_data, get_data, mesh_data, id_sent_len in self.len_list:
-        ## for _, get_data, mesh_data, id_sent_len in self.len_list:
-            if idx < len_data:
-                datas = get_data(idx) if mesh_data == 0 else get_data(idx)
-                break
-            else:
-                idx = idx - len_data
+        if mesh_data == 0:
+            datas = self.get_voca(idx, id_mesh)
+        
+        elif mesh_data == 1:
+            datas = self.get_biwi(idx, id_mesh)
+        else:
+            datas = self.get_multiface(idx, id_mesh)
+            
         return (*datas, mesh_data)
     
     def get_slice_idx(self, F_idx, WS):
@@ -351,7 +370,7 @@ class CBDDataset(data.Dataset):
                  mesh='ict', 
                  tag='', 
                  bg_black=False,
-                 size=3,
+                 size=2,
                  render_mode='shade',
                  logdir='_tmp',
                 ):
@@ -401,7 +420,7 @@ class CBDdataSampler(data.Sampler):
         self.epoch = 0
         self.is_train = is_train
         
-        self.indices, self.labels = self._get_indices()
+        self.indices, self.labels, self.id_mesh = self._get_indices()
         self.total = self.indices.shape[0]
         
         
@@ -409,54 +428,50 @@ class CBDdataSampler(data.Sampler):
         """
         Returns:
             indices (np.ndarray): indices array for the data [N, Batch]
-            labels (np.ndarray): labels for the data, just for debugging
+            labels (np.ndarray): labels for the data, (0: voca-coma, 1: biwi, 2: mf)
+            id_mesh (np.ndarray): mesh identity label
         """
+        # just empty arrays
         indices = np.zeros(0, dtype=int)
-        labels = np.zeros(0, dtype=int) # for debugging
-        SS = 0
+        labels  = np.zeros(0, dtype=int)
+        id_mesh = np.zeros(0, dtype=int)
         
-        # m_data == 0: # voca or coma
-        # m_data == 1: # biwi
-        # m_data == 2: # mf
         for len_data, _, mesh_data, id_len_list in self.len_list:
             #print(len_data, id_len_list)
             m_data = mesh_data.numpy()
-            SS_next = SS+len_data
-            _indices = np.arange(SS, SS_next, dtype=int)
+            
+            padd = (len_data // id_len_list) % self.batch_size
+            #SS_next += padd
+            
+            n_expressions = (len_data // id_len_list) +padd
+            
+            _indices = np.tile(np.arange(0, n_expressions, dtype=int), id_len_list)
+            _labels = np.arange(0, id_len_list, dtype=int).repeat(n_expressions)
+            _id_mesh = np.ones_like(_labels)*m_data
             
             if self.is_train:
                 if m_data == 0: # voca or coma
-                    tile_n = 15
+                    tile_n = 3*(self.batch_size//2)
                 if m_data == 1: # biwi
-                    tile_n = 20
+                    tile_n = 4*(self.batch_size//2)
                 if m_data == 2: # mf
-                    tile_n = 10
+                    tile_n = 2*(self.batch_size//2)
                 _indices = np.tile(_indices, tile_n)
-                len_data = len_data * tile_n
-                
-            if self.n_sampling:
-                _remain = len_data % (self.batch_size * self.n_)
-            else:
-                _remain = len_data % self.batch_size
-                
-            if _remain > 0:
-                indices = np.r_[indices, _indices[0:-_remain]]
-                labels = np.r_[labels, np.ones(len_data-_remain) * m_data]
-            else:
-                indices = np.r_[indices, _indices]
-                labels = np.r_[labels, np.ones(len_data) * m_data]
-            SS = SS_next
-                
-        if self.n_sampling:
-            indices = indices.reshape(-1, self.batch_size, self.n_).transpose(0, 2, 1).reshape(-1, self.batch_size)
-            labels = labels.reshape(-1, self.batch_size, self.n_).transpose(0, 2, 1).reshape(-1, self.batch_size)
-        else:
-            indices = indices.reshape(-1, self.batch_size)
-            labels = labels.reshape(-1, self.batch_size)
+                _labels = np.tile(_labels, tile_n)
+                _id_mesh = np.tile(_id_mesh, tile_n)
+            
+            indices = np.r_[indices, _indices]
+            labels = np.r_[labels, _labels]
+            id_mesh = np.r_[id_mesh, _id_mesh]
+
+        indices = indices.reshape(-1, self.batch_size)
+        labels = labels.reshape(-1, self.batch_size)
+        id_mesh = id_mesh.reshape(-1, self.batch_size)
         
         assert indices.shape[0] == labels.shape[0], "miss match!"
+        assert indices.shape[0] == id_mesh.shape[0], "miss match!"
                 
-        return indices, labels
+        return indices, labels, id_mesh
     
     def __iter__(self):
         
@@ -468,15 +483,18 @@ class CBDdataSampler(data.Sampler):
             # self.labels = self.labels[idx]
             indices = self.indices[idx]
             labels = self.labels[idx]
+            id_mesh = self.id_mesh[idx]
         else:
             indices = self.indices
             labels = self.labels
+            id_mesh = self.id_mesh
             
         if self.reverse:
             indices = self.indices[::-1]
             labels = self.labels[::-1]
+            id_mesh = self.id_mesh[::-1]
         
-        batch = indices.tolist()
+        #batch = indices.tolist()
         
         # select = np.tile(
         #     np.random.randint(3, size=indices.shape[0]), self.batch_size
@@ -492,6 +510,8 @@ class CBDdataSampler(data.Sampler):
         
         self.length = len(indices)
         
+        batch = np.concatenate([indices[:,:,None], labels[:,:,None], id_mesh[:,:,None]], axis=-1)
+        batch = batch.tolist()
         return iter(batch)
 
     def __len__(self):
@@ -574,72 +594,45 @@ if __name__ == "__main__":
     """
     python dataloader_CBD.py
     """
-    
     import yaml; import argparse
     from tqdm import tqdm
+    
+    def set_seed(opts):
+        # set seed
+        torch.manual_seed(opts.seed)
+        torch.cuda.manual_seed(opts.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        np.random.seed(opts.seed)
+        random.seed(opts.seed)
+    
+    
     opts_yaml = yaml.load(open('config/train.yml'), Loader=yaml.FullLoader)
     opts_yaml["learn_rig_emb"] = False
     #opts_yaml["device"] = "cuda:0"
     opts_yaml["device"] = "cpu"
     opts = argparse.Namespace(**opts_yaml)
     
-    # opts.selection = 4 # BIWI
-    # opts.selection = 3 # VOCASET
-    opts.selection = 20 # ict and multiface (mf)
-    # opts.selection = 1 # ict-capture
-    # opts.selection = 2
+    set_seed(opts)
     
-    # opts.selection = 5 # mf SEN
-    # opts.selection = 6 # mf ROM
-    
-    opts.window_size = 1
-    print(f'use window_size: {opts.window_size}')
     
     opts.batch_size = 8
     print(f'use batch_size: {opts.batch_size}')
     
-    #dataset = InvRigDataset(opts, is_train=True)
-    #dataset = MeshDataset(opts, is_train=True, is_valid=False)
-    # dataset = MeshDataset(opts, is_train=False, is_valid=True)
-    # dataset = MeshDataset(opts, is_train=False, is_valid=False)
-    
     dataset = CBDDataset(opts, is_train=True, is_valid=False)
-    
-    
-    # total_len, id_sent_len = dataset.set_multiface_SEN()
-    # print(total_len, id_sent_len)
-    
-    # total_len, id_sent_len = dataset.set_multiface_ROM()
-    # print(total_len, id_sent_len)
-    
-    # total_len, id_sent_len = dataset.set_voca()
-    # print(total_len, id_sent_len)
-    
-    # total_len, id_sent_len = dataset.set_coma()
-    # print(total_len, id_sent_len)
-    
-    # total_len, id_sent_len = dataset.set_biwi()
-    # print(total_len, id_sent_len)
-    
-    # dataset.biwi_len_list
-    # total_len, id_sent_len = dataset.set_ict_synth()
-    # print(total_len, id_sent_len)
-    # total_len, id_sent_len = dataset.set_ict_real()
-    # print(total_len, id_sent_len)
     print(dataset.get_data_config())
-    # dataset.ict_real_len_list
     
-    # dataset = NFSDataset(opts, is_train=True, return_audio_dir=True)
-    # print(dataset.get_data_config())
     
     sampler = CBDdataSampler(
         dataset.len_list, 
         opts.batch_size,
-        #shuffle=True,
+        shuffle=False,
         balance=False,
         n_sampling=opts.n_sampling,
         n_=opts.batch_size,
-        reverse=True,
+        #reverse=True,
+        #is_train=True
+        is_train=False
     )
     print('n_sampling', opts.n_sampling)
     print(sampler.get_sampler_config())
@@ -672,20 +665,23 @@ if __name__ == "__main__":
     pbar = tqdm(enumerate(dataloader), total=len_dataloader)
     for idx, batch in pbar:
         #import pdb;pdb.set_trace()
-        print(batch.vertices.shape, batch.template.shape)
-        #(audio_feat, id_coeff, gt_rig_params, template, dfn_info, operators, vertices, faces, img), mesh_data, audio_path = batch
-        #print(audio_path[0], audio_feat.shape, id_coeff.shape, gt_rig_params.shape, template.shape, vertices.shape)
+        #print(batch.vertices.shape, batch.template.shape)
         
         mode = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data]
-#         # print(idx, mode, batch.audio_feat.shape, batch.gt_rig_params.shape, batch.template.shape, batch.vertices.shape, batch.normals.shape)
-#         pbar.set_description(f"{idx}-{mode}")
-#         # plot_image_array(
-#         #         v_list, f_list, 
-#         #         rot_list=[[0,0,0]] * len_v, 
-#         #         size=1, bg_black=False, mode='shade',
-#         #         logdir=save_logdir,
-#         #         name=save_img_name, save=True
-#         #     )
-#         #print(template.min(), template.max())
-        dataset.vis_mesh(batch.vertices.cpu(), mesh=mode,tag=f"{idx:06d}")
-        dataset.vis_mesh(batch.template.cpu(), mesh=mode,tag=f"{idx:06d}")
+        
+        #pbar.set_description(f"{idx}-{mode}")
+        pbar.set_description(f"{idx}-{mode},{batch.vertices.shape}, {batch.template.shape}")
+        # plot_image_array(
+        #         v_list, f_list, 
+        #         rot_list=[[0,0,0]] * len_v, 
+        #         size=1, bg_black=False, mode='shade',
+        #         logdir=save_logdir,
+        #         name=save_img_name, save=True
+        #     )
+        #print(template.min(), template.max())
+        
+        data_cat = torch.cat([batch.template.cpu(), batch.vertices.cpu()],dim=0)
+        dataset.vis_mesh(data_cat, mesh=mode,tag=f"{idx:06d}-cat-ntrl_dfrm")
+        
+        #dataset.vis_mesh(batch.vertices.cpu(), mesh=mode,tag=f"{idx:06d}-dfrm")
+        #dataset.vis_mesh(batch.template.cpu(), mesh=mode,tag=f"{idx:06d}-ntrl")
