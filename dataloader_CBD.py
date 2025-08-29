@@ -324,7 +324,7 @@ class CBDDataset(data.Dataset):
             datas = self.get_biwi(idx, id_mesh)
         else:
             datas = self.get_multiface(idx, id_mesh)
-            
+        mesh_data = torch.tensor(mesh_data)
         return (*datas, mesh_data)
     
     def get_slice_idx(self, F_idx, WS):
@@ -475,12 +475,10 @@ class CBDdataSampler(data.Sampler):
     
     def __iter__(self):
         
-        idx = np.arange(self.indices.shape[0])
-            
         if self.shuffle:
+            idx = np.arange(self.indices.shape[0])
             idx = np.random.permutation(idx)
-            # self.indices = self.indices[idx]
-            # self.labels = self.labels[idx]
+            
             indices = self.indices[idx]
             labels = self.labels[idx]
             id_mesh = self.id_mesh[idx]
@@ -493,20 +491,6 @@ class CBDdataSampler(data.Sampler):
             indices = self.indices[::-1]
             labels = self.labels[::-1]
             id_mesh = self.id_mesh[::-1]
-        
-        #batch = indices.tolist()
-        
-        # select = np.tile(
-        #     np.random.randint(3, size=indices.shape[0]), self.batch_size
-        # ).reshape(self.batch_size,-1).transpose()
-        
-        #------------------------------------
-        # select = np.zeros_like(indices) # fullhead
-        # # select = np.ones_like(indices) # face_only
-        
-        # batch = np.concatenate([select[:,:,None], indices[:,:,None]], axis=-1)
-        # batch = batch.tolist()
-        #------------------------------------
         
         self.length = len(indices)
         

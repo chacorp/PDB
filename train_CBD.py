@@ -170,7 +170,7 @@ class CageNet(nn.Module):
         ## may need a better mesh!
         self.C = test_cage.vertices.shape[0]        
         
-        self.cage_v = torch.tensor(test_cage.vertices * 1.5).float().to(device)
+        self.cage_v = torch.tensor(test_cage.vertices * 1.2).float().to(device)
         if self.optim_cage:
             self.cage_v = nn.Parameter(self.cage_v)
         self.cage_f = torch.tensor(test_cage.faces).long().to(device)
@@ -181,7 +181,6 @@ class CageNet(nn.Module):
         # atlasnet decoder
         self.nc_decoder = Model_mk1(in_dim+hid_dim, out_dim).to(device)
         self.nd_decoder = Model_mk1(in_dim+hid_dim+hid_dim, out_dim).to(device)
-        
         
         
     def forward(self, source_mesh, deform_mesh, epoch):
@@ -548,6 +547,7 @@ class Trainer():
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------ 
                 with torch.no_grad():
+                    mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                     template_expanded = batch.template.expand_as(pred_vertices)
                     #neighbors = self.neighbor_maps[batch.mesh_data.item()]
                     
@@ -579,13 +579,12 @@ class Trainer():
                 pbar.set_description(f"total loss: {loss:.5f}")
                 
                 # ------------------------------------------------------------------------------------------------
-                # for visualization
-                vertices = batch.vertices.cpu()
-                faces = batch.faces.cpu()
-                mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
-                
                 interv_val = round(len_valid_data / 5)
                 if index % interv_val == 0:
+                    # for visualization
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+                
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
                     for key, value in running_losses_val.items():
                         log_text += f"{key}: {value:.6f} "
