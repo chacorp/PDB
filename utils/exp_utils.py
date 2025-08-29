@@ -1798,7 +1798,7 @@ class Model_mk1(nn.Module):
             self.act = nn.LeakyReLU()
         
         self.linears = []
-        dim_list = [in_dim, 192, 128, 64, out_dim]
+        dim_list = [in_dim, 256, 192, 128, 64]
         for i in range(len(dim_list)-1):
             MLP = nn.Sequential(
                     nn.Linear(dim_list[i], dim_list[i]//2),
@@ -1811,6 +1811,11 @@ class Model_mk1(nn.Module):
                 )
             self.linears.append(MLP)
         self.linears = nn.ModuleList(self.linears)
+        
+        # for stability
+        self.linear_out = nn.Linear(64, out_dim)
+        nn.init.constant_(self.linear_out.weight, 0)
+        nn.init.constant_(self.linear_out.bias, 0)
 
     def forward(self, x):
         """
@@ -1820,6 +1825,7 @@ class Model_mk1(nn.Module):
         out = x
         for i in range(len(self.linears)):
             out = self.linears[i](out)
+        out = self.linear_out(out)
         return out
     
 class Model_mk2(nn.Module):

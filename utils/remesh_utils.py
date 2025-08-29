@@ -462,6 +462,68 @@ def map_vertices(original_mesh, decimated_mesh):
     distances, vertex_map = tree.query(decimated_mesh.vertices, k=1)
     return distances, vertex_map
 
+
+def build_padded_neighbors(neighbors_map, device=None):
+    """
+    Args:
+        neighbors_map (list(int)): adjacent vertex indicies
+    Returns:
+        idx_pad: adjacent vertex indices
+        mask: indicates if it is connected
+    """
+    N = len(neighbors_map)
+    M = max((len(v) for v in neighbors_map), default=0)
+    idx_pad = torch.full((N, M), -1, dtype=torch.long, device=device)
+    mask = torch.zeros((N, M), dtype=torch.bool, device=device)
+    for i, idxs in enumerate(neighbors_map):
+        if len(idxs) == 0: 
+            continue
+        L = len(idxs)
+        idx_pad[i, :L] = torch.tensor(idxs, dtype=torch.long, device=device)
+        mask[i, :L] = True
+    return idx_pad, mask
+
+def pca_normal_axis_vectorized(verts, idx_pad, mask, eps=1e-12):
+    """
+    Args:
+        verts (torch.tensor): mesh vertices (B, N, 3)
+        idx_pad (torch.tensor): adjacent vertex indices
+        mask (torch.tensor): indicates if it is connected
+        eps (float, optional): Defaults to 1e-12
+
+    Returns:
+        normal axis (sign might be fliped)
+    """
+    B, N, _ = verts.shape
+    assert idx_pad.dim() == 2 and mask.shape == idx_pad.shape
+    M = idx_pad.shape[1]
+    if M == 0:
+        return torch.zeros_like(verts)
+
+    device, dtype = verts.device, verts.dtype
+
+    safe_idx = idx_pad.clamp(min=0)                 # (N, M)
+    nbrs = verts[:, safe_idx, :]                    # (B, N, M, 3)
+    m = mask.reshape(1, *mask.shape, 1).to(dtype)                  # (1, N, M, 1)
+    cnt = mask.sum(dim=1).clamp_min(1).view(1, N, 1, 1).to(dtype)  # (1, N, 1, 1)
+
+    centroid = (nbrs * m).sum(dim=2, keepdim=True) / cnt           # (B, N, 1, 3)
+    X = (nbrs - centroid) * m                                      # (B, N, M, 3)
+
+    XT = X.transpose(-2, -1)                                       # (B, N, 3, M)
+    Cov = XT @ X                                                   # (B, N, 3, 3)
+    Cov = Cov / cnt
+
+    evals, evecs = torch.linalg.eigh(Cov)                          # (B, N, 3), (B, N, 3, 3)
+    normals = evecs[..., 0]                                        # (B, N, 3)
+    normals = normals / normals.norm(dim=-1, keepdim=True).clamp_min(eps)
+
+    few = (mask.sum(dim=1) < 2)
+    if few.any():
+        normals[:, few, :] = 0
+
+    return normals
+
 class ICT_face_model():
     def __init__(self, 
                  face_only=False, 

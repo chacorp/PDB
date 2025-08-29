@@ -9,6 +9,7 @@ import argparse
 from tqdm import tqdm
 from functools import partial
 import trimesh
+import igl
 
 import sys
 from pathlib import Path
@@ -31,7 +32,7 @@ from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
 
 from utils.exp_utils import Model_mk1, Model_mk3_1
-from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch
+from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
 
 def Options():
     parser = argparse.ArgumentParser(description='neural cage for FA')
@@ -40,7 +41,7 @@ def Options():
     
     parser.add_argument("--tb",           action='store_true')
     parser.add_argument("--log_dir",      type=str,   default="ckpts_CBD")
-    parser.add_argument("--max_epoch",    type=int,   default=1_000,  help='number of epochs')
+    parser.add_argument("--max_epoch",    type=int,   default=100,  help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
     
@@ -63,7 +64,9 @@ def Options():
     parser.set_defaults(is_train=True)
     
     
-    parser.add_argument("--scale_exp", type=float, default=1.0, help='scale expression code (not useed for training)')
+    parser.add_argument("--optim_cage",dest='optim_cage', action='store_true')
+    parser.set_defaults(optim_cage=False)
+    
     
     args = parser.parse_args()
     return args
@@ -75,7 +78,6 @@ def mvc_loss(mvc_weights):
     neg_loss = torch.nn.functional.relu(-mvc_weights) ** 2
     return torch.mean(neg_loss)
 
-# def p2f_loss(before_v, after_v, neighbors_map):
 def p2f_loss(before_v, after_v, normals_before, normals_after):
     """ Point-to-Surface Loss
     Args:
@@ -152,12 +154,14 @@ class CageNet(nn.Module):
                  in_dim=3,
                  hid_dim=512,
                  out_dim=3, 
-                 device='cpu'
+                 device='cpu',
+                 optim_cage=False,
                 ):
         super(CageNet, self).__init__()
         
         # pointnet encoder
         self.device=device
+        self.optim_cage = optim_cage
         self.encoder = Model_mk3_1(in_dim, hid_dim).to(device)
         
         # atlasnet decoder
@@ -170,8 +174,10 @@ class CageNet(nn.Module):
         ## may need a better mesh!
         self.C = test_cage.vertices.shape[0]
         # self.cage_v = nn.Parameter(torch.rand(128, 3))
-        # self.cage_v = nn.Parameter(torch.tensor(test_cage.vertices).float())
+            
         self.cage_v = torch.tensor(test_cage.vertices * 1.5).float().to(device)
+        if self.optim_cage:
+            self.cage_v = nn.Parameter(self.cage_v)
         self.cage_f = torch.tensor(test_cage.faces).long().to(device)
         
     def forward(self, source_mesh, deform_mesh, epoch):
@@ -228,7 +234,7 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
         
-        self.model = CageNet(device=self.device)
+        self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
         
         # load weight
         self.load_weight()
@@ -262,16 +268,25 @@ class Trainer():
         BS = self.opts.batch_size
         self.train_dataset = CBDDataset(self.opts, is_train=True)
 
+        # self.neighbor_maps = {
+        #     i: [torch.tensor(n, dtype=torch.long) for n in trimesh.Trimesh(
+        #         vertices=mesh_info[id_list[0]], faces=mesh_info['face']
+        #     ).vertex_neighbors]
+        #     for i, (mesh_info, id_list) in enumerate([
+        #         (self.train_dataset.voca_mesh, self.train_dataset.voca_id_list),
+        #         (self.train_dataset.biwi_mesh, self.train_dataset.biwi_id_list),
+        #         (self.train_dataset.mf_mesh, self.train_dataset.mf_id_list)
+        #     ])
+        # }
         self.neighbor_maps = {
-            i: [torch.tensor(n, dtype=torch.long) for n in trimesh.Trimesh(
-                vertices=mesh_info[id_list[0]], faces=mesh_info['face']
-            ).vertex_neighbors]
-            for i, (mesh_info, id_list) in enumerate([
-                (self.train_dataset.voca_mesh, self.train_dataset.voca_id_list),
-                (self.train_dataset.biwi_mesh, self.train_dataset.biwi_id_list),
-                (self.train_dataset.mf_mesh, self.train_dataset.mf_id_list)
+            i: igl.adjacency_list(mesh_info['face'])
+            for i, mesh_info in enumerate([
+                self.train_dataset.voca_mesh, self.train_dataset.biwi_mesh, self.train_dataset.mf_mesh
             ])
         }
+        self.neighbor_pad_mask = {}
+        for i in self.neighbor_maps.keys():
+            self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device)
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -414,10 +429,16 @@ class Trainer():
                 mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                                 
                 template_expanded = batch.template.expand_as(pred_vertices)
-                neighbors = self.neighbor_maps[batch.mesh_data.item()]
-                                
-                normals_before = pca_normal_axis(template_expanded, neighbors)                
-                normals_after = pca_normal_axis(pred_vertices, neighbors)
+                #neighbors = self.neighbor_maps[batch.mesh_data.item()]
+                
+                #import pdb;pdb.set_trace()
+                idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
+                normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
+                normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
+                
+                #normals_before_ = pca_normal_axis(template_expanded, neighbors)
+                #normals_after_ = pca_normal_axis(pred_vertices, neighbors)
+                #(normals_before * normals_before_).sum(dim=-1).abs().mean().item()
                 
                 loss_dict = {} # make it as a dictionary
                                 
