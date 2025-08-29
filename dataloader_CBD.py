@@ -399,9 +399,11 @@ class CBDdataSampler(data.Sampler):
         self.n_sampling = n_sampling
         self.n_ = n_
         self.epoch = 0
+        self.is_train = is_train
+        
         self.indices, self.labels = self._get_indices()
         self.total = self.indices.shape[0]
-        self.is_train = is_train
+        
         
     def _get_indices(self):
         """
@@ -496,7 +498,7 @@ class CBDdataSampler(data.Sampler):
         return self.total
     
     def get_sampler_config(self):
-        text = "=========[CBDdataSampler]=========\n"
+        text = "========[CBDdataSampler]========\n"
         text += f"[Batch size]: {self.batch_size}\n"
         for i, mode in enumerate(self.mode):
             mode_len = len(np.where(self.labels[:,0]==i)[0])

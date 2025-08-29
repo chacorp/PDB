@@ -36,7 +36,7 @@ from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, 
 
 def Options():
     parser = argparse.ArgumentParser(description='neural cage for FA')
-    parser.add_argument('-c', '--config', default='config/train.yml', help='config file path')
+    parser.add_argument('-c', '--config', default='config/train_CBD.yml', help='config file path')
     parser.add_argument("--device",       type=str,   default="cuda:0")
     
     parser.add_argument("--tb",           action='store_true')
@@ -162,23 +162,27 @@ class CageNet(nn.Module):
         # pointnet encoder
         self.device=device
         self.optim_cage = optim_cage
+        
+        
+        # self.cage_v = nn.Parameter(torch.rand(128, 3))
+        import trimesh        
+        test_cage = trimesh.load("test_cage.obj") # 512 vertices 988 faces
+        ## may need a better mesh!
+        self.C = test_cage.vertices.shape[0]        
+        
+        self.cage_v = torch.tensor(test_cage.vertices * 1.5).float().to(device)
+        if self.optim_cage:
+            self.cage_v = nn.Parameter(self.cage_v)
+        self.cage_f = torch.tensor(test_cage.faces).long().to(device)
+        
+        # poinnet encoder
         self.encoder = Model_mk3_1(in_dim, hid_dim).to(device)
         
         # atlasnet decoder
         self.nc_decoder = Model_mk1(in_dim+hid_dim, out_dim).to(device)
         self.nd_decoder = Model_mk1(in_dim+hid_dim+hid_dim, out_dim).to(device)
         
-        import trimesh        
-        test_cage = trimesh.load("test_cage.obj") # 512 vertices 988 faces
         
-        ## may need a better mesh!
-        self.C = test_cage.vertices.shape[0]
-        # self.cage_v = nn.Parameter(torch.rand(128, 3))
-            
-        self.cage_v = torch.tensor(test_cage.vertices * 1.5).float().to(device)
-        if self.optim_cage:
-            self.cage_v = nn.Parameter(self.cage_v)
-        self.cage_f = torch.tensor(test_cage.faces).long().to(device)
         
     def forward(self, source_mesh, deform_mesh, epoch):
         """
@@ -281,12 +285,15 @@ class Trainer():
         self.neighbor_maps = {
             i: igl.adjacency_list(mesh_info['face'])
             for i, mesh_info in enumerate([
-                self.train_dataset.voca_mesh, self.train_dataset.biwi_mesh, self.train_dataset.mf_mesh
+                self.train_dataset.voca_mesh,
+                self.train_dataset.biwi_mesh,
+                self.train_dataset.mf_mesh,
             ])
         }
         self.neighbor_pad_mask = {}
         for i in self.neighbor_maps.keys():
-            self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device)
+            # (idx_pad, mask)
+            self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device) 
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -295,6 +302,7 @@ class Trainer():
             balance=False,
             n_sampling=opts.n_sampling,
             n_=self.opts.batch_size,
+            is_train=True
         )
         self.train_dataloader = torch.utils.data.DataLoader(
             self.train_dataset, 
@@ -314,6 +322,7 @@ class Trainer():
             balance=False,
             n_sampling=opts.n_sampling,
             n_=self.opts.batch_size,
+            is_train=False
         )
         self.valid_dataloader = torch.utils.data.DataLoader(
             self.valid_dataset, 
@@ -362,8 +371,8 @@ class Trainer():
         print(valid_sampler.get_sampler_config())
         
         self.logger.write(self.train_dataset.get_data_config())
-        self.logger.write(train_sampler.get_sampler_config())
-        self.logger.write(self.valid_dataset.get_data_config())
+        self.logger.write(train_sampler.get_sampler_config())  
+        self.logger.write(self.valid_dataset.get_data_config())      
         self.logger.write(valid_sampler.get_sampler_config())
         #---------------------------------------------------------------------------------------------------------
         ##########################################################################################################
@@ -378,10 +387,10 @@ class Trainer():
                 
         # define loss lamdba 
         self.loss_lambda = {
-            "mvc": 1.0,
-            "align": 1.0,
-            "p2f": 1.0,
-            "norm": 1.0,
+            "mvc": self.opts.lambda_mvc,
+            "align": self.opts.lambda_align,
+            "p2f": self.opts.lambda_p2f,
+            "norm": self.opts.lambda_norm,
             # symm 
         }
         
@@ -431,7 +440,6 @@ class Trainer():
                 template_expanded = batch.template.expand_as(pred_vertices)
                 #neighbors = self.neighbor_maps[batch.mesh_data.item()]
                 
-                #import pdb;pdb.set_trace()
                 idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
                 normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
                 normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
@@ -528,8 +536,10 @@ class Trainer():
                 "norm": 0.0,
                 "total": 0.0
             }
+            
             counter = 0
-            for index, batch in tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100):
+            pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
+            for index, batch in pbar:
                 counter += 1
                 
                 # model validation -------------------------------------------------------------------------------
@@ -539,19 +549,19 @@ class Trainer():
                 
                 
                 ##################################################################################################
-                # ------------------------------------------------------------------------------------------------                
-                template_expanded = batch.template.expand_as(pred_vertices)
-                neighbors = self.neighbor_maps[batch.mesh_data.item()]
-                                
-                normals_before = pca_normal_axis(template_expanded, neighbors)                
-                normals_after = pca_normal_axis(pred_vertices, neighbors)
-                
-                loss_dict = {} # make it as a dictionary                                
-                loss_dict['mvc'] = mvc_loss(mvc_weights)
-                loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
-                loss_dict['norm']  = norm_loss(normals_before, normals_after)
-                # 
+                # ------------------------------------------------------------------------------------------------ 
+                with torch.no_grad():
+                    template_expanded = batch.template.expand_as(pred_vertices)
+                    neighbors = self.neighbor_maps[batch.mesh_data.item()]
+
+                    normals_before = pca_normal_axis(template_expanded, neighbors)                
+                    normals_after = pca_normal_axis(pred_vertices, neighbors)
+
+                    loss_dict = {} # make it as a dictionary                                
+                    loss_dict['mvc'] = mvc_loss(mvc_weights)
+                    loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
+                    loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
+                    loss_dict['norm']  = norm_loss(normals_before, normals_after)
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
                 
@@ -566,7 +576,8 @@ class Trainer():
 
                 # running loss
                 running_losses_val["total"] += loss_dict["total"]
-
+            
+                pbar.set_description(f"total loss: {loss:.5f}")
                 
                 # ------------------------------------------------------------------------------------------------
                 # for visualization

@@ -1,0 +1,40 @@
+# Test args
+device: 'cuda:0'
+seed: 42
+use_decimate: False
+use_scheduler: False
+id_num: -1
+n_sampling: False
+
+continue_ckpt: False
+
+# optimizer
+lr : 0.0001
+max_epoch: 500
+start_epoch: 1900
+
+# scheduler
+sc_step: 100
+sc_gamma: 0.85
+
+# loss
+lambda_mvc: 1.0
+lambda_align: 1.0
+lambda_p2f: 0.1
+lambda_norm: 0.1
+
+batch_size: 8
+
+# Data directory
+log_dir: "./ckpts_CBD"
+
+ckpt: ''
+
+is_train: True
+tb: True
+ict_face_only: False
+
+data_rand_scale: False
+data_rand_trans: True
+
+debug: False
