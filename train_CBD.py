@@ -336,7 +336,10 @@ class Trainer():
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
         
-        self.opts.log_dir = os.path.join(self.opts.log_dir, now+"-CBD")
+        tag = "-CBD"
+        if self.opts.optim_cage:
+            tag += "-optim_cage"
+        self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
         os.makedirs(self.opts.log_dir, exist_ok=True)
 
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
@@ -614,8 +617,9 @@ class Trainer():
                 self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
             
             # best loss
-            if running_losses_val["total"]/counter < BEST_LOSS:
-                BEST_LOSS = running_losses_val["total"]/counter
+            val_loss = running_losses_val["total"]/counter
+            if val_loss < BEST_LOSS:
+                BEST_LOSS = val_loss
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")

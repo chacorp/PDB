@@ -1626,7 +1626,7 @@ def load_batch_dfn_ino(dfn_info_list, device):
 
 
 class Model(nn.Module):
-    def __init__(self, in_dim=3, out_dim=9, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False, out_type='vertices'):
+    def __init__(self, in_dim=3, out_dim=9, hid_dim=128, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False, out_type='vertices'):
         super().__init__()
         self.mode = mode
         self.out_dim = out_dim
@@ -1637,60 +1637,69 @@ class Model(nn.Module):
         self.out_type = out_type
         
         self.act = nn.ReLU()
-        self.layer_in = nn.Linear(in_dim, 64)
-        self.layer_out = nn.Linear(64, out_dim)
+        self.layer_in = nn.Linear(in_dim, hid_dim)
+        self.layer_out = nn.Linear(hid_dim, out_dim)
 
         self.layers = nn.ModuleList([ 
-            nn.Linear(64, 64) for _ in range(num_layers)
+            nn.Linear(hid_dim, hid_dim) for _ in range(num_layers)
         ])
         self.norms = nn.ModuleList([
-            nn.LayerNorm(64)  for _ in range(num_layers)
+            nn.LayerNorm(hid_dim)  for _ in range(num_layers)
         ])
         
         self.to_out = nn.ModuleList([ 
-            nn.Linear(64, out_dim) for _ in range(num_layers)
+            nn.Linear(hid_dim, out_dim) for _ in range(num_layers)
         ])
 
         # self.adain_in = nn.Linear(in_dim, 64)
         self.adain_in = nn.Sequential(
-                nn.Linear(in_dim, 64), nn.ReLU(), nn.LayerNorm(64), 
-                nn.Linear(64, 64), nn.ReLU(), nn.LayerNorm(64), 
-                nn.Linear(64, 64),
+                nn.Linear(in_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim),
             )
         self.adains_m = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim),
             ),
         ])
         self.adains_s = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(64, 64),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim),
             ),
         ])
+        
+        self.linear_out = nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim),
+            )
 
         self.forward_func = self.forward_default
         
@@ -1701,7 +1710,12 @@ class Model(nn.Module):
         out = self.forward_func(x_in)
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
-        return get_output(self, out, x_in, return_inv, return_raw)
+            
+        # if self.mode=='rot':
+        #     return get_output(self, out, x_in, return_inv, return_raw)
+        # else:
+        #     return out
+        return out
         
     def forward_default(self, x_in, return_inv=False):
         out = self.act(self.layer_in(x_in))
@@ -2036,6 +2050,62 @@ class Model_mk2(nn.Module):
         out = out_l + out
         return out
 
+class Model_mk2_1(nn.Module):
+    def __init__(self, in_dim=3, style_dim=100, hid_dim=128, out_dim=3, num_layers=4, use_style=True):
+        super().__init__()
+                
+        self.in_dim = in_dim
+        self.style_dim = style_dim
+        self.out_dim = out_dim
+        self.use_style=use_style
+        
+        self.act = nn.ReLU()
+                
+        self.layer_in = nn.Linear(in_dim, hid_dim)
+        self.layer_out = nn.Linear(hid_dim, out_dim)
+        
+        self.layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hid_dim, 32), nn.ReLU(), nn.LayerNorm(32),
+                nn.Linear(32, 32), nn.ReLU(), nn.LayerNorm(32), 
+                nn.Linear(32, hid_dim),
+            ) for _ in range(num_layers)
+        ])
+
+        self.adain_in = nn.Sequential(
+                nn.Linear(style_dim if use_style else in_dim, hid_dim), 
+                nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
+            )
+        
+        self.adains_m = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
+            ) for _ in range(num_layers)
+        ])
+        self.adains_s = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
+            ) for _ in range(num_layers)
+        ])        
+
+    def forward(self, x_in, style):
+        out = self.act(self.layer_in(x_in))
+        
+        id_in = self.act(self.adain_in(style))        
+            
+        for l, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
+            out = l(out)
+            out = out * sigma(id_in) + mu(id_in)
+                            
+        out = self.layer_out(out)                
+        return out
+    
 class Model_mk2_2(nn.Module):
     def __init__(self, in_dim=3, out_dim=9, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False, out_type='local'):
         super().__init__()
@@ -2572,6 +2642,97 @@ class Model_mk3_2(nn.Module):
 
         return net, trans_feat
 
+class Model_mk3_3(nn.Module):
+    def __init__(self, 
+        in_dim=3, out_dim=3, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False):
+        super().__init__()
+        
+        self.mode = mode
+        self.out_dim = out_dim
+        
+        self.use_residual = False # (not used)
+        self.use_adain = False # (not used)
+        self.use_to_out = False # (not used)
+        
+        self.out_dim = out_dim
+            
+        self.stn = STN3d(in_dim)
+        self.conv1 = torch.nn.Conv1d(in_dim, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64,   128, 1)
+        self.conv3 = torch.nn.Conv1d(128,  128, 1)
+        self.conv4 = torch.nn.Conv1d(128,  512, 1)
+        self.conv5 = torch.nn.Conv1d(512, 2048, 1)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(128)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.bn5 = nn.BatchNorm1d(2048)
+        self.fstn = STNkd(k=128)
+        
+        self.convs1 = torch.nn.Conv1d(2048, 256, 1)
+        self.convs2 = torch.nn.Conv1d(256,  256, 1)
+        self.convs3 = torch.nn.Conv1d(256,  128, 1)
+        self.convs4 = torch.nn.Conv1d(128, out_dim, 1)
+        self.bns1 = nn.BatchNorm1d(256)
+        self.bns2 = nn.BatchNorm1d(256)
+        self.bns3 = nn.BatchNorm1d(128)
+
+
+    def forward(self, x_in, return_inv=False, return_raw=False):
+        out, trans_feat = self.forward_func(x_in)
+        
+        return outs, trans_feat
+        
+    def forward_func(self, point_cloud):
+        
+        B, N, D = point_cloud.size()
+        trans = self.stn(point_cloud.transpose(2, 1))
+        
+        if D > 3:
+            # point_cloud, feature = point_cloud.split(3, dim=2)
+            if D > 6:
+                point_cloud, point_normal, feature = point_cloud[...,:3], point_cloud[...,3:6], point_cloud[...,6:]
+            else:
+                point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
+                
+        point_cloud = torch.bmm(point_cloud, trans)
+        if D > 6:
+            point_normal = torch.bmm(point_normal, trans)
+            
+        if D > 3:
+            # point_cloud = torch.cat([point_cloud, feature], dim=2)
+            if D > 6:
+                point_cloud = torch.cat([point_cloud, point_normal, feature], dim=-1)
+            else:
+                point_cloud = torch.cat([point_cloud, feature], dim=-1)
+
+        point_cloud = point_cloud.transpose(2, 1) # (B, D, N)
+
+        out1 = F.relu(self.bn1(self.conv1(point_cloud)))
+        out2 = F.relu(self.bn2(self.conv2(out1)))
+        out3 = F.relu(self.bn3(self.conv3(out2)))
+
+        trans_feat = self.fstn(out3)
+        x = out3.transpose(2, 1)
+        net_transformed = torch.bmm(x, trans_feat)
+        net_transformed = net_transformed.transpose(2, 1)
+
+        out4 = F.relu(self.bn4(self.conv4(net_transformed)))
+        out5 = self.bn5(self.conv5(out4))
+        out_max = torch.max(out5, 2, keepdim=True)[0]
+        
+        out_max = out_max.view(-1, 2048, 1).repeat(1, 1, N)
+        
+        net = F.relu(self.bns1(self.convs1(out_max)))
+        net = F.relu(self.bns2(self.convs2(net)))
+        net = F.relu(self.bns3(self.convs3(net)))
+        net = self.convs4(net)
+        net = net.transpose(2, 1).contiguous()
+        # net = F.log_softmax(net.view(-1, self.out_dim), dim=-1)
+        net = net.view(B, N, self.out_dim) # [B, N, out_dim]
+
+        return net, trans_feat
+    
 ## diffusionNet (small)
 class Model_mk4(nn.Module):
     def __init__(self, #part_num=50, normal_channel=True):
