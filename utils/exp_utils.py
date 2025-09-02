@@ -2822,7 +2822,12 @@ class PCA_holder():
     def inverse_transform(self, coeff):
         z = coeff
         z = z @ self.components_ + self.mean_
-        return z.reshape(-1,3)
+        
+        if len(coeff.shape) > 2:
+            z = z.reshape(coeff.shape[0], -1, 3)
+        else:
+            z = z.reshape(-1,3)
+        return z
     
     def sample_from_pca(self, scale=1.0):
         z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
