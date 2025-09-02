@@ -1694,12 +1694,6 @@ class Model(nn.Module):
                 nn.Linear(hid_dim, hid_dim),
             ),
         ])
-        
-        self.linear_out = nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim),
-            )
 
         self.forward_func = self.forward_default
         
@@ -2051,7 +2045,7 @@ class Model_mk2(nn.Module):
         return out
 
 class Model_mk2_1(nn.Module):
-    def __init__(self, in_dim=3, style_dim=100, hid_dim=128, out_dim=3, num_layers=4, use_style=True):
+    def __init__(self, in_dim=3, style_dim=100, out_dim=3, hid_dim=128, num_layers=4, use_style=True):
         super().__init__()
                 
         self.in_dim = in_dim
@@ -2066,15 +2060,18 @@ class Model_mk2_1(nn.Module):
         
         self.layers = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hid_dim, 32), nn.ReLU(), nn.LayerNorm(32),
-                nn.Linear(32, 32), nn.ReLU(), nn.LayerNorm(32), 
-                nn.Linear(32, hid_dim),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
             ) for _ in range(num_layers)
         ])
-
+        adain_dim = style_dim if use_style else in_dim
+        
         self.adain_in = nn.Sequential(
-                nn.Linear(style_dim if use_style else in_dim, hid_dim), 
-                nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(adain_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             )
@@ -2097,7 +2094,7 @@ class Model_mk2_1(nn.Module):
     def forward(self, x_in, style):
         out = self.act(self.layer_in(x_in))
         
-        id_in = self.act(self.adain_in(style))        
+        id_in = self.act(self.adain_in(style if self.use_style else x_in))        
             
         for l, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
             out = l(out)
