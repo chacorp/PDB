@@ -1626,15 +1626,28 @@ def load_batch_dfn_ino(dfn_info_list, device):
 
 
 class Model(nn.Module):
-    def __init__(self, in_dim=3, out_dim=9, hid_dim=128, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False, out_type='vertices'):
+    def __init__(self, 
+                 in_dim=3, out_dim=9, hid_dim=128, num_layers=4, 
+                 mode='rot', use_residual=False, use_adain=False, 
+                 use_to_out=False, out_type='vertices',
+                 use_softmax=False, use_relu=False, use_least_N=False,
+                 tau=1e-2, use_K=False, K_dim=8,
+                ):
         super().__init__()
         self.mode = mode
         self.out_dim = out_dim
+        self._tau = 1 / tau
         
         self.use_residual = use_residual
         self.use_adain = use_adain
         self.use_to_out = use_to_out
+        self.use_softmax=use_softmax
+        self.use_relu=use_relu
+        self.use_least_N = use_least_N
+        
         self.out_type = out_type
+        self.use_K = use_K
+        self.K_dim = K_dim
         
         self.act = nn.ReLU()
         self.layer_in = nn.Linear(in_dim, hid_dim)
@@ -1662,35 +1675,35 @@ class Model(nn.Module):
             )
         self.adains_m = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             ),
         ])
         self.adains_s = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             ),
             nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), #nn.LayerNorm(64), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             ),
         ])
@@ -1700,10 +1713,58 @@ class Model(nn.Module):
         if self.use_adain:
             self.forward_func = self.forward_adain
 
-    def forward(self, x_in, return_inv=False, return_raw=False):
+    def least_N_zeros_gate(self, out, N: int=128, dim: int = -1, tau: float = 0.01):
+        """
+        forward: hard top-(K-N) mask || backward: softmax(tau)
+        
+        Args:
+            out: (*, K)
+            N: least number of zero (keep = K - N)
+        
+        Return
+            mask: range in [0,1] (forward 값은 하드 0/1, backward는 soft)
+        """
+        K = out.size(dim)
+        keep = max(K - N, 0)
+        _tau = 1.0 / tau
+        if keep == 0:
+            soft = torch.softmax(out * _tau, dim=dim)
+            return (torch.zeros_like(soft) - soft).detach() + soft
+    
+        # soft path for gradients
+        soft = torch.softmax(out * _tau, dim=dim) # (*,K)
+    
+        # hard top-(K-N) mask (forward)
+        topk = torch.topk(out, keep, dim=dim)
+        hard = torch.zeros_like(out).scatter(dim, topk.indices, 1.0)
+    
+        # Straight-Through estimator
+        mask = (hard - soft).detach() + soft
+        return mask
+        
+    def forward(self, x_in, N=128, return_inv=False, return_raw=False):
         out = self.forward_func(x_in)
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
+
+        # if self.use_K:
+        #     B, N, C = out.shape
+        #     out = out.reshape(B, self.K_dim, N, C//self.K_dim)
+        
+        if self.use_softmax:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)    
+            out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
+            
+        if self.use_relu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)    
+            out = F.relu(out)
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N:
+            out = F.relu(out)
+            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+            out = out * mask
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         # if self.mode=='rot':
         #     return get_output(self, out, x_in, return_inv, return_raw)
@@ -1718,10 +1779,11 @@ class Model(nn.Module):
             to_out = 0
             
         for n, l, t_o in zip(self.norms, self.layers, self.to_out):
+            l_out = n(self.act(l(out)))
             if self.use_residual:
-                out = n(self.act(l(out))) + out
+                out = l_out + out
             else:
-                out = n(self.act(l(out)))
+                out = l_out
                 
             if self.use_to_out:
                 to_out += t_o(out)
@@ -1740,11 +1802,13 @@ class Model(nn.Module):
             to_out = 0
             
         for n, l, mu, sigma, t_o in zip(self.norms, self.layers, self.adains_m, self.adains_s, self.to_out):
+            l_out = n(self.act(l(out)))
+            l_out = l_out * sigma(id_in) + mu(id_in)
+            
             if self.use_residual:
-                out = n(self.act(l(out))) + out
+                out = l_out + out
             else:
-                out = n(self.act(l(out)))
-            out = out * sigma(id_in) + mu(id_in)
+                out = l_out
             
             if self.use_to_out:
                 to_out += t_o(out)
@@ -2045,13 +2109,21 @@ class Model_mk2(nn.Module):
         return out
 
 class Model_mk2_1(nn.Module):
-    def __init__(self, in_dim=3, style_dim=100, out_dim=3, hid_dim=128, num_layers=4, use_style=True):
+    def __init__(self,
+                 in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
+                 num_layers=4, use_style=True, out_type='vertices',
+                 use_softmax=False, use_K=False, K_dim=8,
+                ):
         super().__init__()
                 
         self.in_dim = in_dim
         self.style_dim = style_dim
         self.out_dim = out_dim
         self.use_style=use_style
+        self.out_type = out_type
+        self.use_softmax = use_softmax
+        self.use_K = use_K
+        self.K_dim = K_dim
         
         self.act = nn.ReLU()
                 
@@ -2092,15 +2164,31 @@ class Model_mk2_1(nn.Module):
         ])        
 
     def forward(self, x_in, style):
+        """
+            x_in: (B, N, 3)
+        """
         out = self.act(self.layer_in(x_in))
         
-        id_in = self.act(self.adain_in(style if self.use_style else x_in))        
-            
+        id_in = self.act(self.adain_in(style if self.use_style else x_in))
+        
         for l, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
-            out = l(out)
-            out = out * sigma(id_in) + mu(id_in)
+            l_out = l(out)
+            s_out = sigma(id_in)
+            m_out = mu(id_in)
+            out = (l_out * s_out + m_out) + out
                             
-        out = self.layer_out(out)                
+        out = self.layer_out(out)
+        
+        if self.out_type == 'global':
+            out = out.mean(-2, keepdims=True)
+
+        if self.use_softmax==True:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            # if self.use_K:
+            #     B, N, C = out.shape
+            #     out = out.reshape(B, self.K_dim, N, C//self.K_dim)
+            out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
+            
         return out
     
 class Model_mk2_2(nn.Module):
