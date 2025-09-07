@@ -13,8 +13,13 @@ import pickle
 import sys
 import time
 from pathlib import Path
-abs_path = str(Path(__file__).parents[1].absolute())
-sys.path+=[abs_path, f"{abs_path}/third_party/diffusion-net/src"]
+__abs_path__ = str(Path(__file__).parents[1].absolute())
+__diffusionnet_path__=f'{__abs_path__}/third_party/diffusion-net/src'
+
+for __util_path__ in [__abs_path__, __diffusionnet_path__]:
+    if not __util_path__ in sys.path:
+        sys.path+=[__util_path__]
+        
 import diffusion_net
 
 from .CNN import TextureEncoder

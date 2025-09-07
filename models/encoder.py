@@ -5,16 +5,19 @@ import torch.utils.data
 
 import sys
 from pathlib import Path
-abs_path = str(Path(__file__).parents[1].absolute())
-diffusionnet_path=f'{abs_path}/third_party/diffusion-net/src'
-siren_path = f'{abs_path}/third_party/siren'
+__abs_path__ = str(Path(__file__).parents[1].absolute())
+__diffusionnet_path__=f'{__abs_path__}/third_party/diffusion-net/src'
+__siren_path__ = f'{__abs_path__}/third_party/siren'
 
-if not diffusionnet_path in sys.path:
-    sys.path+=[diffusionnet_path]
+
+for __util_path__ in [__abs_path__, __diffusionnet_path__, __siren_path__]:
+    if not __util_path__ in sys.path:
+        sys.path+=[__util_path__]
+
+## diffusionnet
 import diffusion_net
 
-if not siren_path in sys.path:
-    sys.path+=[siren_path]
+## siren
 import modules
 from meta_modules import HyperNetwork
 
