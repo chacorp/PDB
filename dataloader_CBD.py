@@ -575,11 +575,11 @@ class CBDDataset2(data.Dataset):
         
         # if index < self.n_components:
         if False:
-            vertex = pca_holder.sample_from_pca_one_axis(scale=1.0, select=index, verbose=False)
+            vertex = pca_holder.sample_from_pca_one_axis(scale=2.0, select=index, verbose=False)
         # else:
-        #     vertex = pca_holder.sample_from_pca(scale=1.0)
+        #     vertex = pca_holder.sample_from_pca(scale=2.0)
         else:
-            __tmp__ = pca_holder.sample_from_pca_delta(scale=1.0)
+            __tmp__ = pca_holder.sample_from_pca_delta(scale=2.0)
             vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
             vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
                 
@@ -611,11 +611,11 @@ class CBDDataset2(data.Dataset):
         
         # if index < self.n_components:
         if False:
-            vertex = pca_holder.sample_from_pca_one_axis(scale=1.0, select=index, verbose=False)
+            vertex = pca_holder.sample_from_pca_one_axis(scale=2.0, select=index, verbose=False)
         # else:
-        #     vertex = pca_holder.sample_from_pca(scale=1.0)
+        #     vertex = pca_holder.sample_from_pca(scale=2.0)
         else:
-            __tmp__ = pca_holder.sample_from_pca_delta(scale=1.0)
+            __tmp__ = pca_holder.sample_from_pca_delta(scale=2.0)
             vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
             vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
         
@@ -647,11 +647,11 @@ class CBDDataset2(data.Dataset):
         
         # if index < self.n_components:
         if False:
-            vertex = pca_holder.sample_from_pca_one_axis(scale=1.0, select=index, verbose=False)
+            vertex = pca_holder.sample_from_pca_one_axis(scale=2.0, select=index, verbose=False)
         # else:
-        #     vertex = pca_holder.sample_from_pca(scale=1.0)
+        #     vertex = pca_holder.sample_from_pca(scale=2.0)
         else:
-            __tmp__ = pca_holder.sample_from_pca_delta(scale=1.0)
+            __tmp__ = pca_holder.sample_from_pca_delta(scale=2.0)
             vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
             vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
         
