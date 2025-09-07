@@ -11,11 +11,11 @@ continue_ckpt: False
 # optimizer
 lr : 0.0001
 max_epoch: 500
-start_epoch: 1900
+start_epoch: 0
 
 # scheduler
-sc_step: 100
-sc_gamma: 0.85
+sc_step: 5
+sc_gamma: 0.9
 
 # loss
 lambda_mvc: 1.0

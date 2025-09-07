@@ -172,7 +172,7 @@ class Trainer():
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
                 hid_dim=256,
-                num_cage_vertices=512,
+                num_cage_vertices=1024,
                 num_layers=4,
                 use_relu=True,
                 is_train=True, device=self.device,
@@ -554,12 +554,12 @@ class Trainer():
         
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
         
-        # if self.opts.use_scheduler:
-        #     self.scheduler = torch.optim.lr_scheduler.StepLR(
-        #         self.optimizer, 
-        #         step_size=self.opts.sc_step, 
-        #         gamma=self.opts.sc_gamma
-        #     )
+        #if self.opts.use_scheduler:
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer, 
+            step_size=self.opts.sc_step, 
+            gamma=self.opts.sc_gamma
+        )
             
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
@@ -697,9 +697,7 @@ class Trainer():
             train_counter = 0
             
             pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
-                                             
             for index, batch in pbar:
-                
                 self.optimizer.zero_grad()
                 
                 # model prediction -------------------------------------------------------------------------------
@@ -708,7 +706,8 @@ class Trainer():
                 
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------
-                mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data = np.array(['voca', 'biwi', 'mf'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
@@ -732,7 +731,7 @@ class Trainer():
 
                 # running loss
                 running_losses["total"] += loss_dict["total"]
-                pbar.set_description(f"total loss: {loss:.5f}")
+                pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
                 # ------------------------------------------------------------------------------------------------
                 # backward
                 loss.backward()
@@ -782,9 +781,8 @@ class Trainer():
                     break
                 # ------------------------------------------------------------------------------------------------
             
-            ### scheduler (not used - for now...)
-            # if self.opts.use_scheduler:
-            #     self.scheduler.step()
+            ### scheduler
+            self.scheduler.step()
             
             # log
             if self.opts.tb:
@@ -821,7 +819,8 @@ class Trainer():
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------ 
                 with torch.no_grad():
-                    mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data = np.array(['voca', 'biwi', 'mf'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
                     HB = batch.vertices.shape[0] // 2
@@ -845,7 +844,7 @@ class Trainer():
                 # running loss
                 running_losses_val["total"] += loss_dict["total"]
             
-                pbar.set_description(f"total loss: {loss:.5f}")
+                pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
                 
                 # ------------------------------------------------------------------------------------------------
                 interv_val = round(len_valid_data / 5)
