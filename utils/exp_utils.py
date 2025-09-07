@@ -1722,7 +1722,7 @@ class Model(nn.Module):
             N: least number of zero (keep = K - N)
         
         Return
-            mask: range in [0,1] (forward 값은 하드 0/1, backward는 soft)
+            mask: range in [0,1] (forward = 0/1, backward = soft)
         """
         K = out.size(dim)
         keep = max(K - N, 0)

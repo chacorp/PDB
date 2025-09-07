@@ -27,7 +27,8 @@ import time
 class CBDDataset(data.Dataset):
     def __init__(self, 
                  opts,
-                 data_basedir='/data/sihun',
+                 #data_basedir='/data/sihun',
+                 data_basedir='/data/sihun/pca',
                  is_train=False,
                  is_valid=False,
                  window_size=8, # batch size
@@ -90,7 +91,11 @@ class CBDDataset(data.Dataset):
         self.biwi_id_list=[]
         for id_name in biwi_data_split[self.mode]:
             self.biwi_id_list.append(id_name)
+            
             npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/vertices_npy/{id_name}_pca.npz"
+            if not os.path.exists(npz_file):
+                npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/{id_name}_pca.npz"
+                
             self.biwi_pca_holder_list.append(PCA_holder(npz_file))
         assert len(self.biwi_pca_holder_list) == len(self.biwi_id_list), "mismatch in biwi"
         
@@ -113,7 +118,11 @@ class CBDDataset(data.Dataset):
         self.mf_id_list=[]
         for id_name in mf_data_split[self.mode]:
             self.mf_id_list.append(id_name)
+            
             npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/vertices_npy/{id_name}_pca.npz"
+            if not os.path.exists(npz_file):
+                npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/{id_name}_pca.npz"
+                
             self.mf_pca_holder_list.append(PCA_holder(npz_file))
         assert len(self.mf_pca_holder_list) == len(self.mf_id_list), "mismatch in mf"
             
