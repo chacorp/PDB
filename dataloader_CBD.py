@@ -579,9 +579,8 @@ class CBDDataset2(data.Dataset):
         # else:
         #     vertex = pca_holder.sample_from_pca(scale=2.0)
         else:
-            __tmp__ = pca_holder.sample_from_pca_delta(scale=2.0)
-            vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
-            vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
+            vertex = pca_holder.sample_from_pca(scale=2.0)
+            vertex2 = vertex - template + template2
                 
         template = torch.tensor(template).float()
         vertex = torch.tensor(vertex).float()
@@ -615,9 +614,8 @@ class CBDDataset2(data.Dataset):
         # else:
         #     vertex = pca_holder.sample_from_pca(scale=2.0)
         else:
-            __tmp__ = pca_holder.sample_from_pca_delta(scale=2.0)
-            vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
-            vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
+            vertex = pca_holder.sample_from_pca(scale=2.0)
+            vertex2 = vertex - template + template2
         
         template = torch.tensor(template).float()
         vertex = torch.tensor(vertex).float()
@@ -651,9 +649,8 @@ class CBDDataset2(data.Dataset):
         # else:
         #     vertex = pca_holder.sample_from_pca(scale=2.0)
         else:
-            __tmp__ = pca_holder.sample_from_pca_delta(scale=2.0)
-            vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
-            vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
+            vertex = pca_holder.sample_from_pca(scale=2.0)
+            vertex2 = vertex - template + template2
         
         template = torch.tensor(template).float()
         vertex = torch.tensor(vertex).float()
