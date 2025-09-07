@@ -67,8 +67,8 @@ class CageNet(nn.Module):
         Return:
             predicted deformed mesh
         """
-        _, V, _ = source_mesh.shape
-        B, V, _ = deform_mesh.shape
+        _, N, _ = source_mesh.shape
+        B, N, _ = deform_mesh.shape
         
         #shares same encoder!
         x = torch.cat([deform_mesh, source_mesh], dim=0) # [B+1, N, 3]

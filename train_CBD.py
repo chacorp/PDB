@@ -25,9 +25,11 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from dataloader_CBD import (
-    CBDDataset,
     CBDdataSampler,
-    CBD_collate_wrapper
+    CBDDataset,
+    CBD_collate_wrapper,
+    CBDDataset2,
+    CBD_collate_wrapper2,
 )
 
 # from utils.mesh_utils import Renderer #, calc_cent
@@ -38,16 +40,21 @@ from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorize
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
 
 from models.baseline import CageNet
+from models.NGBC import NeuralGeneralizedBarycentricCoordinate
+
 sys.path = list(set(sys.path))
 
 def Options():
-    parser = argparse.ArgumentParser(description='neural cage for FA')
+    parser = argparse.ArgumentParser(description='neural generalized barycentric coordinate for FA retargeting')
     parser.add_argument('-c', '--config', default='config/train_CBD.yml', help='config file path')
     parser.add_argument("--device",       type=str,   default="cuda:0")
     
     parser.add_argument("--tb",           action='store_true')
     parser.add_argument("--log_dir",      type=str,   default="ckpts_CBD")
-    parser.add_argument("--max_epoch",    type=int,   default=100,  help='number of epochs')
+
+    parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
+    
+    parser.add_argument("--max_epoch",    type=int,   default=500,  help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
     
@@ -158,8 +165,18 @@ class Trainer():
         self.opts = opts
         self.set_seed(self.opts)
         self.device = opts.device
-        
-        self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+
+        if opts.version==1:
+            self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+        else:
+            self.model = NeuralGeneralizedBarycentricCoordinate(
+                opts, 
+                hid_dim=256,
+                num_cage_vertices=512,
+                num_layers=4,
+                use_relu=True,
+                is_train=True, device=self.device,
+            )
         
         # load weight
         self.load_weight()
@@ -175,9 +192,8 @@ class Trainer():
             self.model.load_state_dict(ckpt_dict)
         else:
             print('no ckpt found, training from scratch!')
-    
-    
-    def train_stage1(self, epochs):
+
+    def train_v1(self, epochs):
         
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
         
@@ -338,36 +354,23 @@ class Trainer():
                                              
             for index, batch in pbar:
                 
-                ## for debugging 
-                # print(batch.vertices.shape, batch.template.shape)
-                #mode = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data]
-                #self.train_dataset.vis_mesh(batch.vertices.cpu(), mesh=mode, tag=f"{index:06d}")
-                #self.train_dataset.vis_mesh(batch.template.cpu(), mesh=mode, tag=f"{index:06d}")
-                
-                
                 self.optimizer.zero_grad()
                 
                 # model prediction -------------------------------------------------------------------------------
-                pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
+                pred_vertices, mvc_weights = self.model(batch.template[0,None], batch.vertices, epoch=epoch)
                 # ------------------------------------------------------------------------------------------------
-                
                 
                 ##################################################################################################
-                # ------------------------------------------------------------------------------------------------
-                
+                # ------------------------------------------------------------------------------------------------                
                 mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                                 
-                template_expanded = batch.template.expand_as(pred_vertices)
+                template_expanded = batch.template#.expand_as(pred_vertices)
                 #neighbors = self.neighbor_maps[batch.mesh_data.item()]
                 
                 idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
                 normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
                 normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
-                
-                #normals_before_ = pca_normal_axis(template_expanded, neighbors)
-                #normals_after_ = pca_normal_axis(pred_vertices, neighbors)
-                #(normals_before * normals_before_).sum(dim=-1).abs().mean().item()
-                
+                                
                 loss_dict = {} # make it as a dictionary
                                 
                 loss_dict['mvc'] = mvc_loss(mvc_weights)
@@ -389,7 +392,7 @@ class Trainer():
 
                 # running loss
                 running_losses["total"] += loss_dict["total"]
-                pbar.set_description(f"total loss: {loss:.5f}")
+                pbar.set_description(f"total loss: {loss:.5e}")
                 # ------------------------------------------------------------------------------------------------
                 # backward
                 loss.backward()
@@ -414,7 +417,7 @@ class Trainer():
                     v_list = [ v for v in vertices[frame:frame+2] ] + \
                         [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
                     
-                    v_list = [v for v in vertices[frame:frame+2]]+[batch.template.cpu()[0]]*2
+                    #v_list = [v for v in vertices[frame:frame+2]]+[batch.template.cpu()[0]]*2
                     len_v = len(v_list)
                     f_list = [faces] * len_v
                     save_logdir = f"{self.opts.log_dir}/img/train/mesh"
@@ -465,7 +468,7 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
+                    pred_vertices, mvc_weights = self.model(batch.template[0,None], batch.vertices, epoch=epoch)
                 # ------------------------------------------------------------------------------------------------
                 
                 
@@ -473,7 +476,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------ 
                 with torch.no_grad():
                     mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
-                    template_expanded = batch.template.expand_as(pred_vertices)
+                    template_expanded = batch.template#.expand_as(pred_vertices)
                     #neighbors = self.neighbor_maps[batch.mesh_data.item()]
                     
                     idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
@@ -501,7 +504,7 @@ class Trainer():
                 # running loss
                 running_losses_val["total"] += loss_dict["total"]
             
-                pbar.set_description(f"total loss: {loss:.5f}")
+                pbar.set_description(f"total loss: {loss:.5e}")
                 
                 # ------------------------------------------------------------------------------------------------
                 interv_val = round(len_valid_data / 5)
@@ -518,6 +521,351 @@ class Trainer():
                     frame = BS//2
                     v_list = [ v for v in vertices[frame:frame+2] ] + \
                         [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
+                    len_v = len(v_list)
+                    f_list=[faces] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                    save_img_name = f"{epoch:03d}_{index:04d}"
+                    
+                    plot_image_array(
+                        v_list, f_list, 
+                        rot_list=[[0,0,0]]*len_v,
+                        size=1, bg_black=False, mode='shade', 
+                        logdir=save_logdir, 
+                        name=save_img_name, save=True
+                    )
+                    
+                # ------------------------------------------------------------------------------------------------
+                if self.opts.debug:
+                    break
+            # log
+            if self.opts.tb:
+                self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
+            
+            # best loss
+            val_loss = running_losses_val["total"]/counter
+            if val_loss < BEST_LOSS:
+                BEST_LOSS = val_loss
+                BEST_EPOCH = epoch
+                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
+                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
+                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+    
+    def train_v2(self, epochs):
+        
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
+        
+        # if self.opts.use_scheduler:
+        #     self.scheduler = torch.optim.lr_scheduler.StepLR(
+        #         self.optimizer, 
+        #         step_size=self.opts.sc_step, 
+        #         gamma=self.opts.sc_gamma
+        #     )
+            
+        ##########################################################################################################
+        # define dataset -----------------------------------------------------------------------------------------
+        BS = self.opts.batch_size
+        self.train_dataset = CBDDataset2(self.opts, is_train=True)
+        
+        self.neighbor_maps = {
+            i: igl.adjacency_list(mesh_info['face'])
+            for i, mesh_info in enumerate([
+                self.train_dataset.voca_mesh,
+                self.train_dataset.biwi_mesh,
+                self.train_dataset.mf_mesh,
+            ])
+        }
+        self.neighbor_pad_mask = {}
+        for i in self.neighbor_maps.keys():
+            # (idx_pad, mask)
+            self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device)
+        
+        train_sampler = CBDdataSampler(
+            self.train_dataset.len_list, 
+            self.opts.batch_size,
+            shuffle=True,
+            balance=False,
+            is_train=True
+        )
+        self.train_dataloader = torch.utils.data.DataLoader(
+            self.train_dataset, 
+            batch_sampler=train_sampler, 
+            # batch_size=8, shuffle=True,
+            collate_fn=partial(CBD_collate_wrapper2, device=opts.device), 
+            num_workers=0,
+        )
+        
+        
+        self.valid_dataset = CBDDataset2(self.opts, is_valid=True)        
+        valid_sampler = CBDdataSampler(
+            self.valid_dataset.len_list, 
+            self.opts.batch_size,
+            shuffle=True,
+            balance=False,
+            is_train=False
+        )
+        self.valid_dataloader = torch.utils.data.DataLoader(
+            self.valid_dataset, 
+            batch_sampler=valid_sampler, 
+            # batch_size=8, shuffle=True,
+            collate_fn=partial(CBD_collate_wrapper2, device=opts.device), 
+            num_workers=0
+        )
+        ##########################################################################################################
+        
+        
+        ###### Logging ###########################################################################################
+        # make logdir --------------------------------------------------------------------------------------------
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        import datetime
+        now = datetime.datetime.now()
+        now = now.strftime("%Y-%m-%d-%H-%M-%S")
+        
+        tag = "-NGBC"
+        if self.opts.optim_cage:
+            tag += "-optim_cage"
+        self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+
+        os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
+        
+        # save options as json -----------------------------------------------------------------------------------
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+            
+        # save train option as yml
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+        
+        if self.opts.tb:
+            train_ = os.path.join(self.opts.log_dir, "train")
+            valid_ = os.path.join(self.opts.log_dir, "valid")
+            self.writer_train = SummaryWriter(log_dir=train_)
+            self.writer_valid = SummaryWriter(log_dir=valid_)
+        
+        # self logger
+        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
+        print(f'Saving log at: {self.opts.log_dir}')
+        
+        print(self.train_dataset.get_data_config())
+        print(train_sampler.get_sampler_config())
+        print(self.valid_dataset.get_data_config())
+        print(valid_sampler.get_sampler_config())
+        
+        self.logger.write(self.train_dataset.get_data_config())
+        self.logger.write(train_sampler.get_sampler_config())  
+        self.logger.write(self.valid_dataset.get_data_config())      
+        self.logger.write(valid_sampler.get_sampler_config())
+        #---------------------------------------------------------------------------------------------------------
+        ##########################################################################################################
+        
+        
+        
+        # training loop ##########################################################################################
+        global_step = 0
+        BEST_LOSS = 100_000_000
+        BEST_EPOCH = 0
+        start_epoch = self.opts.start_epoch
+                        
+        # define loss lamdba 
+        self.loss_lambda = {
+            "recon": self.opts.lambda_vert,
+            "exp-z": self.opts.lambda_vert * 0.5,
+            "exp-v": self.opts.lambda_vert,
+            "shape": self.opts.lambda_vert,
+            # symm 
+        }
+        
+        check_usage = False
+        
+        len_train_data = len(self.train_dataloader)
+        len_valid_data = len(self.valid_dataloader)
+        interv_train = round(len_train_data / 10)
+        for epoch in range(start_epoch, epochs):
+            print(f"[{epoch:03d}/{epochs:03d}][Train]")
+            
+            ## for logging loss!
+            running_losses = {
+                "recon": 0.0,
+                "exp-z": 0.0,
+                "exp-v": 0.0,
+                "shape": 0.0,
+                "total": 0.0
+            }
+            
+            self.model.train()
+            train_counter = 0
+            
+            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
+                                             
+            for index, batch in pbar:
+                
+                self.optimizer.zero_grad()
+                
+                # model prediction -------------------------------------------------------------------------------
+                pred_vertices, recon_vertices, recon_source, exp_z = self.model(batch.template, batch.vertices, batch.mesh_data, epoch=epoch)
+                # ------------------------------------------------------------------------------------------------
+                
+                ##################################################################################################
+                # ------------------------------------------------------------------------------------------------
+                mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+                
+                loss_dict = {} # make it as a dictionary
+                HB = batch.vertices.shape[0] // 2
+                loss_dict['recon'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
+                
+                loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
+                loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
+                loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
+                # ------------------------------------------------------------------------------------------------
+                ##################################################################################################
+                               
+                
+                # get total loss (lambda weights are multiplied here!)
+                loss = 0
+                for key, value in loss_dict.items():
+                    key_ = key.split("_")[0]
+                    tmp = value*self.loss_lambda[key_]
+                    loss += tmp
+                    running_losses[key] += tmp
+                loss_dict["total"] = loss 
+
+                # running loss
+                running_losses["total"] += loss_dict["total"]
+                pbar.set_description(f"total loss: {loss:.5f}")
+                # ------------------------------------------------------------------------------------------------
+                # backward
+                loss.backward()
+                self.optimizer.step()                
+                # ------------------------------------------------------------------------------------------------
+                
+                global_step += 1
+                train_counter += 1
+                                
+                interv_train = round(len_train_data / 10)
+                if train_counter % interv_train == 1:
+                    # for visualization
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+                    
+                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
+                    for key, value in running_losses.items():
+                        log_text += f"{key}: {value:.6e} "
+                    self.logger.write(log_text+"\n")
+                    
+                    frame = HB
+                    v_list = [
+                        vertices[0].cpu().detach(),
+                        vertices[HB].cpu().detach(),
+                        pred_vertices[0].cpu().detach(),
+                        pred_vertices[HB].cpu().detach(),
+                    ]
+                    # v_list = [ v for v in vertices[frame:frame+2] ] + \
+                    #     [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
+                    
+                    #v_list = [v for v in vertices[frame:frame+2]]+[batch.template.cpu()[0]]*2
+                    len_v = len(v_list)
+                    f_list = [faces] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img/train/mesh"
+                    save_img_name = f"{epoch:03d}_{index:04d}"
+
+                    plot_image_array(
+                        v_list, f_list, 
+                        rot_list=[[0,0,0]] * len_v, 
+                        size=1, bg_black=False, mode='shade',
+                        logdir=save_logdir,
+                        name=save_img_name, save=True
+                    )
+                    
+                
+                if self.opts.debug:
+                    break
+                # ------------------------------------------------------------------------------------------------
+            
+            ### scheduler (not used - for now...)
+            # if self.opts.use_scheduler:
+            #     self.scheduler.step()
+            
+            # log
+            if self.opts.tb:
+                self.log_loss(self.writer_train, running_losses, epoch, train_counter)
+
+            # save model
+            if epoch % 100 == 0:
+                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+            
+            
+            
+            # validation -----------------------------------------------------------------------------------------
+            self.model.eval()
+            print(f"[{epoch:03d}/{epochs:03d}][Valid]")
+            running_losses_val = {
+                "recon": 0.0,
+                "exp-z": 0.0,
+                "exp-v": 0.0,
+                "shape": 0.0,
+                "total": 0.0
+            }
+            
+            counter = 0
+            pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
+            for index, batch in pbar:
+                counter += 1
+                
+                # model validation -------------------------------------------------------------------------------
+                with torch.no_grad():
+                    pred_vertices, recon_vertices, recon_source, exp_z = self.model(batch.template, batch.vertices, batch.mesh_data, epoch=epoch)
+                # ------------------------------------------------------------------------------------------------
+                
+                
+                ##################################################################################################
+                # ------------------------------------------------------------------------------------------------ 
+                with torch.no_grad():
+                    mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+                
+                    loss_dict = {} # make it as a dictionary
+                    HB = batch.vertices.shape[0] // 2
+                    loss_dict['recon'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
+                    
+                    loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
+                    loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
+                    loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
+                # ------------------------------------------------------------------------------------------------
+                ##################################################################################################
+                
+                # get total loss
+                loss = 0
+                for key, value in loss_dict.items():
+                    key_ = key.split("_")[0]
+                    tmp = value.item()*self.loss_lambda[key_]
+                    loss += tmp
+                    running_losses_val[key] += tmp
+                loss_dict["total"] = loss 
+
+                # running loss
+                running_losses_val["total"] += loss_dict["total"]
+            
+                pbar.set_description(f"total loss: {loss:.5f}")
+                
+                # ------------------------------------------------------------------------------------------------
+                interv_val = round(len_valid_data / 5)
+                if index % interv_val == 0:
+                    # for visualization
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+                
+                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
+                    for key, value in running_losses_val.items():
+                        log_text += f"{key}: {value:.6e} "
+                    self.logger.write(log_text+"\n")
+                    
+                    frame = HB
+                    v_list = [
+                        vertices[0].cpu().detach(),
+                        vertices[HB].cpu().detach(),
+                        pred_vertices[0].cpu().detach(),
+                        pred_vertices[HB].cpu().detach(),
+                    ]
                     len_v = len(v_list)
                     f_list=[faces] * len_v
                     save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
@@ -589,5 +937,9 @@ if __name__ == "__main__":
     opts = argparse.Namespace(**opts_yaml)
     
     trainer = Trainer(opts)
-    trainer.train_stage1(epochs=opts.max_epoch)
+    
+    if opts.version==1:
+        trainer.train_v1(epochs=opts.max_epoch)
+    else:
+        trainer.train_v2(epochs=opts.max_epoch)
 

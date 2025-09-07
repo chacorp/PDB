@@ -2922,6 +2922,11 @@ class PCA_holder():
         z = z @ self.components_ + self.mean_
         return z.reshape(-1,3)
 
+    def sample_from_pca_delta(self, scale=1.0):
+        z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
+        z = z @ self.components_
+        return z.reshape(-1,3)
+
     def sample_from_pca_one_axis(self, scale=1.0, select=-1, verbose=False):
         """
         sample from pca, but within 1/4 explained_variance

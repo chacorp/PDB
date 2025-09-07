@@ -194,15 +194,15 @@ class CBDDataset(data.Dataset):
         
         id_name = self.voca_id_list[id_index]
         pca_holder = self.voca_pca_holder_list[id_index]
+        template = self.voca_mesh[id_name]
+        faces = self.voca_mesh["face"]
         
         # if index < self.n_components:
         if False:
             vertex = pca_holder.sample_from_pca_one_axis(scale=1.0, select=index, verbose=False)
         else:
             vertex = pca_holder.sample_from_pca(scale=1.0)
-        template = self.voca_mesh[id_name]
-        faces = self.voca_mesh["face"]
-                
+            
         template = torch.tensor(template).float()
         vertex = torch.tensor(vertex).float()
         faces = torch.tensor(faces).long()
@@ -417,17 +417,438 @@ class CBDDataset(data.Dataset):
         )
 
 
+class CBDDataset2(data.Dataset):
+    def __init__(self, 
+                 opts,
+                 #data_basedir='/data/sihun',
+                 data_basedir='/data/sihun/pca',
+                 is_train=False,
+                 is_valid=False,
+                 window_size=8, # batch size
+                 device='cpu',
+                 print_config=False,
+                 ict_face_only=False,
+                 n_components=100, ## mf, voca, biwi all used 100
+                ):
+        super().__init__()
+        # get basenames
+        self.opts = opts
+        self.is_train = is_train
+        self.is_valid = is_valid
+        self.device = device
+        self.data_basedir = data_basedir
+        self.n_components = n_components
+        #self.data_config(self.opts, window_size)
+        
+        self.mode = 'test'
+        if is_train:
+            self.mode = 'train'
+        elif is_valid:
+            self.mode = 'val'
+        
+        total_len = 0
+        total_id = 0
+        
+        _, voca_data_split, biwi_data_split, mf_data_split, _ = get_data_splits()
+        
+        ## to make no leftover for each mesh id
+        self.min_sample = self.n_components % self.opts.batch_size
+        self.len_list=[]
+        
+        
+        self.voca_pca_holder_list=[]
+        self.voca_id_list=[]
+        for id_name in voca_data_split[self.mode]:
+            self.voca_id_list.append(id_name)
+            npz_file = f"{data_basedir}/VOCA-COMA/VOCASET/{self.mode}/{id_name}_pca.npz"
+            self.voca_pca_holder_list.append(PCA_holder(npz_file))
+        assert len(self.voca_pca_holder_list) == len(self.voca_id_list), "mismatch in voca"
+        
+        self.voca_len = len(self.voca_pca_holder_list)
+        self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+        with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
+            self.voca_mesh = pickle.load(f)
+        total_id = total_id + self.voca_len
+                        
+        self.len_list.append([(self.n_components+self.min_sample)*self.voca_len, self.get_voca, torch.tensor(0), self.voca_len])
+        
+        
+        self.biwi_pca_holder_list=[]
+        self.biwi_id_list=[]
+        for id_name in biwi_data_split[self.mode]:
+            self.biwi_id_list.append(id_name)
+            
+            npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/vertices_npy/{id_name}_pca.npz"
+            if not os.path.exists(npz_file):
+                npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/{id_name}_pca.npz"
+                
+            self.biwi_pca_holder_list.append(PCA_holder(npz_file))
+        assert len(self.biwi_pca_holder_list) == len(self.biwi_id_list), "mismatch in biwi"
+        
+        self.biwi_len = len(self.biwi_pca_holder_list)
+        #self.biwi_std = np.load("utils/biwi/standardization.npy", allow_pickle=True).item()
+        with open(f"{data_basedir}/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
+            self.biwi_mesh = pickle.load(f) # meshes
+        total_id = total_id + self.biwi_len
+        
+        self.len_list.append([(self.n_components+self.min_sample)*self.biwi_len, self.get_biwi, torch.tensor(1), self.biwi_len])
+        
+        
+        self.mf_pca_holder_list=[]
+        self.mf_id_list=[]
+        for id_name in mf_data_split[self.mode]:
+            self.mf_id_list.append(id_name)
+            
+            npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/vertices_npy/{id_name}_pca.npz"
+            if not os.path.exists(npz_file):
+                npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/{id_name}_pca.npz"
+                
+            self.mf_pca_holder_list.append(PCA_holder(npz_file))
+        assert len(self.mf_pca_holder_list) == len(self.mf_id_list), "mismatch in mf"
+            
+        self.mf_len = len(self.mf_pca_holder_list)
+        self.mf_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+        with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
+            self.mf_mesh = pickle.load(f)
+        total_id = total_id + self.mf_len
+        
+        self.len_list.append([(self.n_components+self.min_sample)*self.mf_len, self.get_multiface, torch.tensor(2), self.mf_len])
+        
+        
+        # 2 for -weight and +weight
+        
+        total_len = (self.n_components+self.min_sample) * total_id
+        
+        self.total_len = total_len
+        self.total_id = total_id
+                
+        if print_config:
+            print(self.get_data_config())
+            
+        
+    def get_data_config(self):
+        text = "===========[Dataset]===========\n"
+        text+= f"[mode]: {self.mode}\n"
+        text+= f"------------------------------\n"
+        text+= f"[total id mesh]: {self.total_id}\n"
+        text+= f"[pca n_components]: {self.n_components}\n"
+        text+= f"[+ remain]: {self.min_sample}\n"
+        text+= f"[total pca data]: {self.total_len}\n"
+        text+= "===============================\n"
+        return text
+    
+    def __len__(self):
+        return self.total_len
+    
+    def data_config(self, opts=None, window_size=8):
+        flag = True if opts is not None else False
+        
+        self.use_ict_synth_single = opts.use_ict_synth_single if flag else False
+        
+        self.use_ict_real = opts.use_ict_real if flag else False
+        self.use_ict_synth = opts.use_ict_synth if flag else False
+        self.use_mf_SEN = opts.use_mf_SEN if flag else False
+        self.use_mf_ROM = opts.use_mf_ROM if flag else False
+        self.use_voca = opts.use_voca if flag else False
+        self.use_coma = opts.use_coma if flag else False
+        self.use_biwi = opts.use_biwi if flag else False
+        
+        if flag:
+            self.use_decimate = False
+            self.WS = window_size
+        else:
+            self.use_decimate = self.opts.use_decimate
+            self.WS = self.opts.window_size
+            
+    def get_voca(self, index, id_index):
+        
+        id_name = self.voca_id_list[id_index]
+        pca_holder = self.voca_pca_holder_list[id_index]
+        template = self.voca_mesh[id_name]
+
+        id_index2 = len(self.voca_id_list)-1 if id_index==0 else id_index - 1
+        id_name2 = self.voca_id_list[id_index2]
+        pca_holder2 = self.voca_pca_holder_list[id_index2]
+        template2 = self.voca_mesh[id_name2]
+        
+        faces = self.voca_mesh["face"]
+        
+        # if index < self.n_components:
+        if False:
+            vertex = pca_holder.sample_from_pca_one_axis(scale=1.0, select=index, verbose=False)
+        # else:
+        #     vertex = pca_holder.sample_from_pca(scale=1.0)
+        else:
+            __tmp__ = pca_holder.sample_from_pca_delta(scale=1.0)
+            vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
+            vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
+                
+        template = torch.tensor(template).float()
+        vertex = torch.tensor(vertex).float()
+        
+        template2 = torch.tensor(template2).float()
+        vertex2 = torch.tensor(vertex2).float()
+        
+        faces = torch.tensor(faces).long()
+        return (template, vertex, template2, vertex2, faces)
+            
+    def get_biwi(self, index, id_index):
+        #pca_index = index % self.n_components
+        #id_index = index // (self.n_components+self.min_sample)
+        #id_index = index // self.n_components
+        #id_index = index % self.biwi_len
+        
+        id_name = self.biwi_id_list[id_index]
+        pca_holder = self.biwi_pca_holder_list[id_index]
+        template = self.biwi_mesh[id_name]
+
+        id_index2 = len(self.biwi_id_list)-1 if id_index==0 else id_index - 1
+        id_name2 = self.biwi_id_list[id_index2]
+        pca_holder2 = self.biwi_pca_holder_list[id_index2]
+        template2 = self.biwi_mesh[id_name2]
+        
+        faces = self.biwi_mesh["face"]
+        
+        # if index < self.n_components:
+        if False:
+            vertex = pca_holder.sample_from_pca_one_axis(scale=1.0, select=index, verbose=False)
+        # else:
+        #     vertex = pca_holder.sample_from_pca(scale=1.0)
+        else:
+            __tmp__ = pca_holder.sample_from_pca_delta(scale=1.0)
+            vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
+            vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
+        
+        template = torch.tensor(template).float()
+        vertex = torch.tensor(vertex).float()
+        
+        template2 = torch.tensor(template2).float()
+        vertex2 = torch.tensor(vertex2).float()
+        
+        faces = torch.tensor(faces).long()
+        return (template, vertex, template2, vertex2, faces)
+    
+    def get_multiface(self, index, id_index):
+        #pca_index = index % self.n_components
+        #id_index = index // (self.n_components+self.min_sample)
+        #id_index = index // self.n_components
+        #id_index = index % self.mf_len
+        
+        id_name = self.mf_id_list[id_index]
+        pca_holder = self.mf_pca_holder_list[id_index]
+        template = self.mf_mesh[id_name]
+
+        id_index2 = len(self.mf_id_list)-1 if id_index==0 else id_index - 1
+        id_name2 = self.mf_id_list[id_index2]
+        pca_holder2 = self.mf_pca_holder_list[id_index2]
+        template2 = self.mf_mesh[id_name2]
+        
+        faces = self.mf_mesh["face"]
+        
+        # if index < self.n_components:
+        if False:
+            vertex = pca_holder.sample_from_pca_one_axis(scale=1.0, select=index, verbose=False)
+        # else:
+        #     vertex = pca_holder.sample_from_pca(scale=1.0)
+        else:
+            __tmp__ = pca_holder.sample_from_pca_delta(scale=1.0)
+            vertex = __tmp__ + pca_holder.mean_.reshape(-1,3)            
+            vertex2 = __tmp__ + pca_holder2.mean_.reshape(-1,3)
+        
+        template = torch.tensor(template).float()
+        vertex = torch.tensor(vertex).float()
+        
+        template2 = torch.tensor(template2).float()
+        vertex2 = torch.tensor(vertex2).float()
+        
+        faces = torch.tensor(faces).long()
+        return (template, vertex, template2, vertex2, faces)
+    
+    def random_rotation_matrix(self, randgen=None):
+        """
+        Borrowed from https://github.com/nmwsharp/diffusion-net/blob/master/src/diffusion_net/utils.py
+        
+        Creates a random rotation matrix.
+        randgen: if given, a np.random.RandomState instance used for random numbers (for reproducibility)
+        """
+        # adapted from http://www.realtimerendering.com/resources/GraphicsGems/gemsiii/rand_rotation.c
+        
+        if randgen is None:
+            randgen = np.random.RandomState()
+            
+        theta, phi, z = tuple(randgen.rand(3).tolist())
+        
+        theta = theta * 2.0*np.pi  # Rotation about the pole (Z).
+        phi = phi * 2.0*np.pi  # For direction of pole deflection.
+        z = z * 2.0 # For magnitude of pole deflection.
+        
+        # Compute a vector V used for distributing points over the sphere
+        # via the reflection I - V Transpose(V).  This formulation of V
+        # will guarantee that if x[1] and x[2] are uniformly distributed,
+        # the reflected points will be uniform on the sphere.  Note that V
+        # has length sqrt(2) to eliminate the 2 in the Householder matrix.
+        
+        r = np.sqrt(z)
+        Vx, Vy, Vz = V = (
+            np.sin(phi) * r,
+            np.cos(phi) * r,
+            np.sqrt(2.0 - z)
+            )
+        
+        st = np.sin(theta)
+        ct = np.cos(theta)
+        
+        R = np.array(((ct, st, 0), (-st, ct, 0), (0, 0, 1)))
+        # Construct the rotation matrix  ( V Transpose(V) - I ) R.
+
+        M = (np.outer(V, V) - np.eye(3)).dot(R)
+        return M
+    
+    def random_rotate_points(self, pts, randgen=None):
+        R = self.random_rotation_matrix(randgen) 
+        R = torch.from_numpy(R).to(device=pts.device, dtype=pts.dtype)
+        return torch.matmul(pts, R)
+    
+    def random_trans_scale(self, template, vertices):
+        """
+            not used
+        """
+        ## Random Augmentation ---------------------------------------------------------
+        trans, scale = 0.0, 1.0
+        if self.opts.data_rand_trans:
+            t_range = 0.1
+            trans = (torch.rand((1, 3))*t_range - t_range*0.5)
+        if self.opts.data_rand_scale:
+            scale = torch.rand((1)).repeat(3) * 0.4 + 0.8
+        template = template * scale + trans
+        vertices = vertices * scale + trans
+        ## -----------------------------------------------------------------------------
+        
+        return template, vertices
+    
+    def __getitem__(self, index):
+        """
+        Args:
+            index (int,int,int): batched data indicies 
+                idx (int): index for the expression
+                id_mesh (int): mesh identity label
+                mesh_data (int): label for the data, (0: voca-coma, 1: biwi, 2: mf)
+        Returns:
+            data
+        """
+        idx, id_mesh, mesh_data = index
+        
+        if mesh_data == 0:
+            datas = self.get_voca(idx, id_mesh)
+        
+        elif mesh_data == 1:
+            datas = self.get_biwi(idx, id_mesh)
+        else:
+            datas = self.get_multiface(idx, id_mesh)
+        mesh_data = torch.tensor(mesh_data)
+        return (*datas, mesh_data)
+    
+    def get_slice_idx(self, F_idx, WS):
+        """
+        Args:
+            F_idx (int / np.ndarray): frame index for exp_coeff or vertices
+        Returns:
+            slice_idx (int): slicing index
+        """
+        if type(F_idx)==np.ndarray:
+            F_idx = F_idx.shape[0]
+        if type(F_idx)==torch.Tensor:
+            F_idx = F_idx.shape[0]
+            
+        if self.mode == 'test':
+            WS = F_idx
+            slice_idx = 0
+        else:
+            slice_idx = random.randint(0, F_idx-WS)
+        return slice_idx
+    
+    def get_id_num(self, audio_path, template):
+        if template.shape[0] == self.ict_face_model.v_idx:
+            return self.identity_num[audio_path.split(self.mode)[-1].split('/')[1]]
+        
+        # elif self.use_voca and template.shape[0] == self.voca_trimesh.vertices.shape[0]:        
+        elif self.use_voca and template.shape[0] == self.voca_coma_std['v_idx'].shape[0]:
+            return self.identity_num[audio_path.split(self.mode)[-1].split('/')[1]]
+        
+        elif self.use_biwi and template.shape[0] == self.biwi_trimesh.vertices.shape[0]:
+            return self.identity_num[audio_path.split('self.mode')[-1].split('/')[-1].split('_')[0]]
+        
+        # elif self.use_mf_ROM and template.shape[0] == self.mf_trimesh.vertices.shape[0]:
+        #     return
+        
+        elif self.use_mf_SEN and template.shape[0] == self.mf_trimesh.vertices.shape[0]:
+            return self.identity_num[audio_path.split('wav2vec2')[-1].split('/')[-1].split('-SEN')[0]]
+    
+    def vis_mesh(self, 
+                 vertices, # [B, V, 3]
+                 faces=None, 
+                #  frame=0, 
+                 mesh='ict', 
+                 tag='', 
+                 bg_black=False,
+                 size=2,
+                 render_mode='shade',
+                 logdir='_tmp',
+                ):
+        if faces is None:
+            if mesh == 'ict':
+                if vertices.shape[1] == 11248:
+                    _, faces = self.ict_face_model.get_random_v_and_f(select=0)
+                elif vertices.shape[1] == 9409:
+                    _, faces = self.ict_face_model.get_random_v_and_f(select=1)
+                else:
+                    _, faces = self.ict_face_model.get_random_v_and_f(select=2)
+            elif mesh == 'voca':
+                faces = self.voca_mesh['face']
+            elif mesh == 'biwi':
+                faces = self.biwi_mesh['face']
+            elif mesh == 'mf':
+                faces = self.mf_mesh['face']
+            
+        v_list = vertices * 0.8
+        len_v = len(v_list)
+        
+        f_list = [faces]*len_v
+        rot_list=[[0,0,0]]*len_v
+        
+        os.makedirs(logdir, exist_ok=True)
+        
+        plot_image_array(
+            v_list, f_list, rot_list, 
+            size=size,
+            mode=render_mode,
+            bg_black=bg_black, 
+            logdir=logdir,
+            save=True,
+            name=f'{tag}-{mesh}'
+        )
+
 class CBDdataSampler(data.Sampler):
-    def __init__(self, len_list, batch_size, shuffle=False, balance=False, n_sampling=False, n_=4, reverse=False, is_train=True):
+    def __init__(self, 
+                 len_list, batch_size, shuffle=False, 
+                 balance=False, n_sampling=False, n_=4, 
+                 reverse=False, is_train=True, is_valid=False
+                ):
         self.len_list = len_list
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.reverse = reverse
-        self.mode = np.array(['voca', 'biwi', 'mf'])
+        self.data = np.array(['voca', 'biwi', 'mf'])
         self.n_sampling = n_sampling
         self.n_ = n_
         self.epoch = 0
+        
         self.is_train = is_train
+        self.mode = 'test'
+        if is_train:
+            self.mode = 'train'
+        elif is_valid:
+            self.mode = 'val'
         
         self.indices, self.labels, self.id_mesh = self._get_indices()
         self.total = self.indices.shape[0]
@@ -512,10 +933,11 @@ class CBDdataSampler(data.Sampler):
     
     def get_sampler_config(self):
         text = "========[CBDdataSampler]========\n"
+        text += f"[mode]: {self.mode}"
         text += f"[Batch size]: {self.batch_size}\n"
-        for i, mode in enumerate(self.mode):
-            mode_len = len(np.where(self.labels[:,0]==i)[0])
-            text += f"[Batched {mode.upper()}]: {mode_len}\n"
+        for i, data in enumerate(self.data):
+            data_len = len(np.where(self.labels[:,0]==i)[0])
+            text += f"[Batched {data.upper()}]: {data_len}\n"
         text += f"[Batched len]: {len(self.indices)}\n"
         text += "===============================\n"
         return text
@@ -536,12 +958,11 @@ class CBDDataBatch:
         if data is not None: # essential !
             transposed_data = list(zip(*data))
                         
-            #self.template = torch.stack(transposed_data[0], 0)
-            self.template = transposed_data[0][0][None] # [1, V, 3]
+            self.template = torch.stack(transposed_data[0], 0) # [B, V, 3]
+            #self.template = transposed_data[0][0][None] # [1, V, 3]
             self.vertices = torch.stack(transposed_data[1], 0) # [B, V, 3]
             self.faces = transposed_data[2][0] # # [F, 3]
             self.mesh_data = transposed_data[3][0] # 1
-            
     
     @property
     def get_dfn_info(self): 
@@ -582,6 +1003,64 @@ class CBDDataBatch:
 
 def CBD_collate_wrapper(batch, device="cpu"):
     return CBDDataBatch(batch).to(device)
+
+class CBDDataBatch2:
+    def __init__(self, data):
+        """
+        Args:
+            template: source neutral mesh
+            vertices: source deformed mesh
+            faces: source mesh trianlge
+            mesh_data: dataset index (voca / multiface / biwi)
+        """
+        if data is not None: # essential !
+            transposed_data = list(zip(*data))
+                        
+            self.template = torch.stack(transposed_data[0]+transposed_data[2], 0) # [B, V, 3]
+            #self.template = transposed_data[0][0][None] # [1, V, 3]
+            self.vertices = torch.stack(transposed_data[1]+transposed_data[3], 0) # [B, V, 3]
+            self.faces = transposed_data[4][0] # # [F, 3]
+            self.mesh_data = transposed_data[5][0] # 1
+    
+    @property
+    def get_dfn_info(self): 
+        return [self.mass, self.L, self.evals, self.evecs, self.grad_X, self.grad_Y, self.faces]
+        
+    def set_dfn_info(self, data):
+        # DiffusionNet precomputes
+        self.mass = data[0]
+        self.L = data[1]
+        self.evals = data[2]
+        self.evecs = data[3]
+        self.grad_X = data[4]
+        self.grad_Y = data[5]
+        #self.faces = torch.stack(dfn_info[6], 0) # -> duplicated!
+        
+    def set_batch_dfn_info(self, dfn_info):
+        # DiffusionNet precomputes
+        self.mass = torch.stack(dfn_info[0], 0)
+        self.L = torch.stack(dfn_info[1], 0)
+        self.evals = torch.stack(dfn_info[2], 0)
+        self.evecs = torch.stack(dfn_info[3], 0)
+        self.grad_X = torch.stack(dfn_info[4], 0)
+        self.grad_Y = torch.stack(dfn_info[5], 0)
+        #self.faces = torch.stack(dfn_info[6], 0) # -> duplicated!
+    
+    def to(self, device='cpu'):
+        for id_ in self.__dict__.keys():
+            attr = self.__getattribute__(id_)
+            if isinstance(attr, torch.Tensor):
+                self.__setattr__(id_, attr.to(device))
+        return self
+        
+    # # custom memory pinning method on custom type
+    # def pin_memory(self):
+    #     self.inp = self.inp.pin_memory()
+    #     self.tgt = self.tgt.pin_memory()
+    #     return self
+
+def CBD_collate_wrapper2(batch, device="cpu"):
+    return CBDDataBatch2(batch).to(device)
 
 if __name__ == "__main__":
     """
