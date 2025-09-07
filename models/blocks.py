@@ -4,10 +4,13 @@ import torch.nn.functional as F
 
 import sys
 from pathlib import Path
-abs_path = str(Path(__file__).parents[1].absolute())
-diffusionnet_path=f'{abs_path}/third_party/diffusion-net/src'
-if not diffusionnet_path in sys.path:
-    sys.path+=[diffusionnet_path]
+__abs_path__ = str(Path(__file__).parents[1].absolute())
+__diffusionnet_path__=f'{__abs_path__}/third_party/diffusion-net/src'
+
+for __util_path__ in [__abs_path__, __diffusionnet_path__]:
+    if not __util_path__ in sys.path:
+        sys.path+=[__util_path__]
+        
 import diffusion_net
 
 class DiffusionNetBlock2(nn.Module):

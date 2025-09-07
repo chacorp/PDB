@@ -6,18 +6,20 @@ from torch import nn
 
 import sys
 from pathlib import Path
-abs_path = str(Path(__file__).parents[1].absolute())
-if not abs_path in sys.path:
-    sys.path+=[abs_path, f'{abs_path}/third_party/siren']
-else:
-    sys.path+=[f'{abs_path}/third_party/siren']
+__abs_path__ = str(Path(__file__).parents[1].absolute())
+__siren_path__ = f'{abs_path}/third_party/siren'
+__mesh_util_path__ = f'{__abs_path__}/mesh_utils'
+
+for __util_path__ in [__abs_path__, __siren_path__, __mesh_util_path__]:
+    if not __util_path__ in sys.path:
+        sys.path+=[__util_path__]
     
 try:
     import modules
     from meta_modules import HyperNetwork
     
 except:
-    import pdb;pdb.set_trace()
+    #import pdb;pdb.set_trace()
     raise ImportError("siren git repo required!")
 
 
