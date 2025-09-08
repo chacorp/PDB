@@ -41,6 +41,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
                  is_train=False,
                  tau=0.05,
                  device='cpu',
+                 use_exp_recon=False, # was not necessary
+                 use_shp_recon=True,
                 ):
         super().__init__()
         self.opts = opts
@@ -49,6 +51,10 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         self.num_layers = num_layers
         self.num_cage_vertices = num_cage_vertices
         self.NZ = least_number_of_zeros
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+
+        self.use_exp_recon = use_exp_recon
         
         M = num_cage_vertices
         L = hid_dim
@@ -80,23 +86,27 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         ).to(device)
 
         if self.is_train:
-            self.recon_exp_model = nn.ModuleList([
-                Model(in_dim=L, out_dim=N*out_dim, num_layers=self.num_layers, out_type='global')
-                for N in N_list
-            ]).to(device)
+            if self.use_exp_recon:
+                self.recon_exp_model = nn.ModuleList([
+                    Model(in_dim=L, out_dim=N*out_dim, num_layers=self.num_layers, out_type='global')
+                    for N in N_list
+                ]).to(device)
             
-            self.recon_shp_model = nn.ModuleList([
-                Model(in_dim=L, out_dim=N*out_dim, num_layers=self.num_layers, out_type='global')
-                for N in N_list
-            ]).to(device)
+            if self.use_shp_recon:
+                self.recon_shp_model = nn.ModuleList([
+                    Model(in_dim=L, out_dim=N*out_dim, num_layers=self.num_layers, out_type='global')
+                    for N in N_list
+                ]).to(device)
         
         # self.zero_w = torch.zeros(N,M).to(device)
         
-    def forward(self, source_mesh, deform_mesh, mesh_data, epoch=0, out_kw=False):
+    def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, epoch=0, out_kw=False):
         """
         Args:
-            source_mesh (torch.tensor): [B, N, 3] input source mesh
-            deform_mesh (torch.tensor): [B, N, 3] input deformed mesh
+            source_vert (torch.tensor): [B, N, 3] source mesh vertices
+            deform_vert (torch.tensor): [B, N, 3] deformed mesh vertices
+            source_norm (torch.tensor): [B, N, 3] source mesh vertex normals
+            deform_norm (torch.tensor): [B, N, 3] deformed mesh vertex normals
             mesh_data (int): indicator for data (0: voca, 1: biwi, 2: multiface)
             epoch (int): train epoch (epoch != iteration)
         Returns:
@@ -105,32 +115,46 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             reconstructed deformed mesh
             reconstructed source mesh
         """
-        B, N, _ = deform_mesh.shape
+        B, N, _ = deform_vert.shape
         
-        z_ID_B = self.shape_model(source_mesh) # (B, 1, L)
-
+        if self.in_dim == 6:
+            source_in = torch.cat([source_vert, source_norm], dim=-1)
+            deform_in = torch.cat([deform_vert, deform_norm], dim=-1)
+            
+        z_ID_B = self.shape_model(source_in) # (B, 1, L)
+                
+        key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
         
-        key_weight = self.key_weight_model(source_mesh, N=self.NZ) # (B, N, M)
-        
-        exp_z = self.exp_z_model(deform_mesh, z_ID_B) # (B, 1, L)
-        # exp_z_v = self.exp_z_model(source_mesh, z_ID_B) # (B, 1, L)
+        exp_z = self.exp_z_model(deform_in, z_ID_B) # (B, 1, L)
+        # exp_z_v = self.exp_z_model(source_in, z_ID_B) # (B, 1, L)
         
         key_d = self.key_d_model(exp_z, z_ID_B).reshape(B, self.num_cage_vertices, 3)
         # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
+        
+        
+        if self.use_shp_recon:
+            recon_source = self.recon_shp_model[mesh_data](z_ID_B)
+            recon_source = recon_source.reshape(B, -1, 3)
 
-        
-        recon_source = self.recon_shp_model[mesh_data](z_ID_B)
-        recon_source = recon_source.reshape(B, -1, 3)
-        
-        recon_delta_v = self.recon_exp_model[mesh_data](exp_z)
-        recon_delta_v = recon_delta_v.reshape(B, -1, 3)
-        recon_deformed = recon_delta_v + source_mesh
+        if self.use_exp_recon:
+            recon_delta_v = self.recon_exp_model[mesh_data](exp_z)
+            recon_delta_v = recon_delta_v.reshape(B, -1, 3)
+            recon_deformed = recon_delta_v + source_vert
                 
         
         delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
-        pred_deformed = delta_v + source_mesh
+        pred_deformed = delta_v + source_vert
         
         #verts_v_th = torch.einsum('bnc,bci->bni',key_weight,key_v)
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
-        return pred_deformed, recon_deformed, recon_source, exp_z
+            
+        if self.use_exp_recon and self.use_shp_recon:
+            return pred_deformed, recon_deformed, recon_source, exp_z
+        elif self.use_exp_recon and not self.use_shp_recon:
+            return pred_deformed, recon_deformed, 0, exp_z
+        elif not self.use_exp_recon and self.use_shp_recon:
+            return pred_deformed, 0, recon_source, exp_z
+        else:
+            return pred_deformed, 0, 0, exp_z
+

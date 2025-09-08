@@ -28,8 +28,8 @@ from dataloader_CBD import (
     CBDdataSampler,
     CBDDataset,
     CBD_collate_wrapper,
-    CBDDataset2,
-    CBD_collate_wrapper2,
+    # CBDDataset2,
+    # CBD_collate_wrapper2,
 )
 
 # from utils.mesh_utils import Renderer #, calc_cent
@@ -49,12 +49,14 @@ def Options():
     parser.add_argument('-c', '--config', default='config/train_CBD.yml', help='config file path')
     parser.add_argument("--device",       type=str,   default="cuda:0")
     
-    parser.add_argument("--tb",           action='store_true')
     parser.add_argument("--log_dir",      type=str,   default="ckpts_CBD")
 
     parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
     
-    parser.add_argument("--max_epoch",    type=int,   default=500,  help='number of epochs')
+    parser.add_argument("--in_type",      type=int,   default=0,      
+                        help='input type (0: position, 1: position + normal')
+    
+    parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
     
@@ -74,6 +76,7 @@ def Options():
     parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
     parser.set_defaults(use_scheduler=False)
 
+    parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
     
     
@@ -171,8 +174,10 @@ class Trainer():
         else:
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
+                #in_dim=3, # position
+                in_dim=6, # position + normal
                 hid_dim=256,
-                num_cage_vertices=1024,
+                num_cage_vertices=768,
                 num_layers=4,
                 use_relu=True,
                 is_train=True, device=self.device,
@@ -194,7 +199,6 @@ class Trainer():
             print('no ckpt found, training from scratch!')
 
     def train_v1(self, epochs):
-        
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
         
         # if self.opts.use_scheduler:
@@ -208,23 +212,13 @@ class Trainer():
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
         self.train_dataset = CBDDataset(self.opts, is_train=True)
-
-        # self.neighbor_maps = {
-        #     i: [torch.tensor(n, dtype=torch.long) for n in trimesh.Trimesh(
-        #         vertices=mesh_info[id_list[0]], faces=mesh_info['face']
-        #     ).vertex_neighbors]
-        #     for i, (mesh_info, id_list) in enumerate([
-        #         (self.train_dataset.voca_mesh, self.train_dataset.voca_id_list),
-        #         (self.train_dataset.biwi_mesh, self.train_dataset.biwi_id_list),
-        #         (self.train_dataset.mf_mesh, self.train_dataset.mf_id_list)
-        #     ])
-        # }
+        
         self.neighbor_maps = {
             i: igl.adjacency_list(mesh_info['face'])
             for i, mesh_info in enumerate([
                 self.train_dataset.voca_mesh,
                 self.train_dataset.biwi_mesh,
-                self.train_dataset.mf_mesh,
+                self.train_dataset.mf_SEN_mesh,
             ])
         }
         self.neighbor_pad_mask = {}
@@ -364,8 +358,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------                
                 mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
                                 
-                template_expanded = batch.template#.expand_as(pred_vertices)
-                #neighbors = self.neighbor_maps[batch.mesh_data.item()]
+                template_expanded = batch.template
                 
                 idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
                 normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
@@ -551,8 +544,11 @@ class Trainer():
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
     
     def train_v2(self, epochs):
-        
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.opts.lr,
+            betas=(0.9, 0.999)
+        )
         
         #if self.opts.use_scheduler:
         self.scheduler = torch.optim.lr_scheduler.StepLR(
@@ -564,14 +560,14 @@ class Trainer():
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
-        self.train_dataset = CBDDataset2(self.opts, is_train=True)
+        self.train_dataset = CBDDataset(self.opts, is_train=True)
         
         self.neighbor_maps = {
             i: igl.adjacency_list(mesh_info['face'])
             for i, mesh_info in enumerate([
                 self.train_dataset.voca_mesh,
                 self.train_dataset.biwi_mesh,
-                self.train_dataset.mf_mesh,
+                self.train_dataset.mf_SEN_mesh,
             ])
         }
         self.neighbor_pad_mask = {}
@@ -590,24 +586,24 @@ class Trainer():
             self.train_dataset, 
             batch_sampler=train_sampler, 
             # batch_size=8, shuffle=True,
-            collate_fn=partial(CBD_collate_wrapper2, device=opts.device), 
+            collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
             num_workers=0,
         )
         
         
-        self.valid_dataset = CBDDataset2(self.opts, is_valid=True)        
+        self.valid_dataset = CBDDataset(self.opts, is_valid=True)        
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
             self.opts.batch_size,
             shuffle=True,
             balance=False,
-            is_train=False
+            is_valid=True
         )
         self.valid_dataloader = torch.utils.data.DataLoader(
             self.valid_dataset, 
             batch_sampler=valid_sampler, 
             # batch_size=8, shuffle=True,
-            collate_fn=partial(CBD_collate_wrapper2, device=opts.device), 
+            collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
             num_workers=0
         )
         ##########################################################################################################
@@ -701,24 +697,27 @@ class Trainer():
                 self.optimizer.zero_grad()
                 
                 # model prediction -------------------------------------------------------------------------------
-                pred_vertices, recon_vertices, recon_source, exp_z = self.model(batch.template, batch.vertices, batch.mesh_data, epoch=epoch)
+                
+                pred_vertices, recon_vertices, recon_source, exp_z = self.model(
+                    batch.template, batch.vertices, 
+                    batch.template_normal, batch.vertices_normal,
+                    batch.mesh_data, epoch=epoch
+                )
                 # ------------------------------------------------------------------------------------------------
                 
-                ##################################################################################################
-                # ------------------------------------------------------------------------------------------------
+                # loss -------------------------------------------------------------------------------------------
                 mesh_data_num = batch.mesh_data.cpu().numpy()
                 mesh_data = np.array(['voca', 'biwi', 'mf'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
                 loss_dict['recon'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
-                
-                loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
-                loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
-                loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
-                # ------------------------------------------------------------------------------------------------
-                ##################################################################################################
-                               
+                if self.model.use_shp_recon:
+                    loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
+                if self.model.use_exp_recon:
+                    loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
+                # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
+
                 
                 # get total loss (lambda weights are multiplied here!)
                 loss = 0
@@ -729,11 +728,12 @@ class Trainer():
                     running_losses[key] += tmp
                 loss_dict["total"] = loss 
 
-                # running loss
+                # running loss for logging
                 running_losses["total"] += loss_dict["total"]
                 pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
                 # ------------------------------------------------------------------------------------------------
-                # backward
+                
+                # backward ---------------------------------------------------------------------------------------
                 loss.backward()
                 self.optimizer.step()                
                 # ------------------------------------------------------------------------------------------------
@@ -748,16 +748,21 @@ class Trainer():
                     faces = batch.faces.cpu()
                     
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
+                    __idx__ = 1/(1+index)
                     for key, value in running_losses.items():
-                        log_text += f"{key}: {value:.6e} "
+                        log_text += f"{key}: {value*__idx__:.6e} "
                     self.logger.write(log_text+"\n")
                     
                     frame = HB
                     v_list = [
                         vertices[0].cpu().detach(),
+                        vertices[1].cpu().detach(),
                         vertices[HB].cpu().detach(),
+                        vertices[BS-1].cpu().detach(),
                         pred_vertices[0].cpu().detach(),
+                        pred_vertices[1].cpu().detach(),
                         pred_vertices[HB].cpu().detach(),
+                        pred_vertices[BS-1].cpu().detach(),
                     ]
                     # v_list = [ v for v in vertices[frame:frame+2] ] + \
                     #     [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
@@ -812,39 +817,42 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, recon_vertices, recon_source, exp_z = self.model(batch.template, batch.vertices, batch.mesh_data, epoch=epoch)
+                    pred_vertices, recon_vertices, recon_source, exp_z = self.model(
+                        batch.template, batch.vertices, 
+                        batch.template_normal, batch.vertices_normal,
+                        batch.mesh_data, epoch=epoch
+                    )
                 # ------------------------------------------------------------------------------------------------
                 
                 
-                ##################################################################################################
-                # ------------------------------------------------------------------------------------------------ 
+                # loss ------------------------------------------------------------------------------------------- 
                 with torch.no_grad():
                     mesh_data_num = batch.mesh_data.cpu().numpy()
-                    mesh_data = np.array(['voca', 'biwi', 'mf'])[mesh_data_num]
+                    mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
                     HB = batch.vertices.shape[0] // 2
                     loss_dict['recon'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
+                    if self.model.use_shp_recon:
+                        loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
+                    if self.model.use_exp_recon:
+                        loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
+                    # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
                     
-                    loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
-                    loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
-                    loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
-                # ------------------------------------------------------------------------------------------------
-                ##################################################################################################
-                
-                # get total loss
-                loss = 0
-                for key, value in loss_dict.items():
-                    key_ = key.split("_")[0]
-                    tmp = value.item()*self.loss_lambda[key_]
-                    loss += tmp
-                    running_losses_val[key] += tmp
-                loss_dict["total"] = loss 
+                    # get total loss
+                    loss = 0
+                    for key, value in loss_dict.items():
+                        key_ = key.split("_")[0]
+                        tmp = value.item()*self.loss_lambda[key_]
+                        loss += tmp
+                        running_losses_val[key] += tmp
+                    loss_dict["total"] = loss 
 
-                # running loss
+                # running loss for logging
                 running_losses_val["total"] += loss_dict["total"]
-            
                 pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
+                # ------------------------------------------------------------------------------------------------
+            
                 
                 # ------------------------------------------------------------------------------------------------
                 interv_val = round(len_valid_data / 5)
@@ -854,16 +862,21 @@ class Trainer():
                     faces = batch.faces.cpu()
                 
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
+                    __idx__ = 1/(1+index)
                     for key, value in running_losses_val.items():
-                        log_text += f"{key}: {value:.6e} "
+                        log_text += f"{key}: {value*__idx__:.6e} "
                     self.logger.write(log_text+"\n")
                     
                     frame = HB
                     v_list = [
                         vertices[0].cpu().detach(),
+                        vertices[1].cpu().detach(),
                         vertices[HB].cpu().detach(),
+                        vertices[BS-1].cpu().detach(),
                         pred_vertices[0].cpu().detach(),
+                        pred_vertices[1].cpu().detach(),
                         pred_vertices[HB].cpu().detach(),
+                        pred_vertices[BS-1].cpu().detach(),
                     ]
                     len_v = len(v_list)
                     f_list=[faces] * len_v
@@ -890,8 +903,8 @@ class Trainer():
             if val_loss < BEST_LOSS:
                 BEST_LOSS = val_loss
                 BEST_EPOCH = epoch
-                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
-                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
+                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
+                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
     
     @staticmethod

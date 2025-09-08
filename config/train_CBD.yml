@@ -9,12 +9,12 @@ n_sampling: False
 continue_ckpt: False
 
 # optimizer
-lr : 0.0001
+lr : 0.0002
 max_epoch: 500
 start_epoch: 0
 
 # scheduler
-sc_step: 5
+sc_step: 10
 sc_gamma: 0.9
 
 # loss
