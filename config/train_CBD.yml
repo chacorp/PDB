@@ -1,20 +1,19 @@
 # Test args
 device: 'cuda:0'
 seed: 42
-use_decimate: False
-use_scheduler: False
-id_num: -1
 n_sampling: False
 
+# check point
 continue_ckpt: False
+save_interval: 50
 
 # optimizer
-lr : 0.0001
+lr : 0.0002
 max_epoch: 500
 start_epoch: 0
 
 # scheduler
-sc_step: 5
+sc_step: 10
 sc_gamma: 0.9
 
 # loss
@@ -33,7 +32,6 @@ ckpt: ''
 
 is_train: True
 tb: True
-ict_face_only: False
 
 data_rand_scale: False
 data_rand_trans: True
