@@ -315,7 +315,7 @@ class Trainer():
             
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
-                pred_vertices, recon_vertices, recon_source, exp_z = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
                     batch.template, batch.vertices, 
                     batch.template_normal, batch.vertices_normal,
                     batch.mesh_data, epoch=0

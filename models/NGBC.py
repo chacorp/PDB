@@ -42,9 +42,36 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
                  device='cpu',
                  use_exp_recon=False, # was not necessary
                  use_shp_recon=True, # necessary for training, but not needed for inference
+                 use_full_vertex=False, # default: false (= delta form)
                 ):
         super().__init__()
         self.opts = opts
+        
+        if self.opts is not None:
+            if self.opts.in_type == 0:
+                in_dim = 3
+            elif self.opts.in_type == 1:
+                in_dim = 6
+            else:
+                raise NotImplementedError('in_type not implemented')
+                
+            if self.opts.out_type == 0:
+                self.use_full_vertex = False
+                out_dim = 3
+            elif self.opts.out_type == 1:
+                self.use_full_vertex = True
+                out_dim = 3
+            elif self.opts.out_type == 2:
+                self.use_full_vertex = False
+                out_dim = 9 # (6D + translation 3) will be reshaped into 3x4 matrix
+                M_ = num_cage_vertices
+                num_cage_vertices = num_cage_vertices * 4
+                
+                from utils.exp_utils import from_6D_to_rotation_matrix_torch as _6D_to_rot_
+                self._6D_to_rot_ = _6D_to_rot_
+            else:
+                raise NotImplementedError('out_type not implemented')
+                
         self.is_train = is_train
         
         self.num_layers = num_layers
@@ -54,7 +81,9 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         self.out_dim = out_dim
 
         self.use_shp_recon = use_shp_recon
-        self.use_exp_recon = use_exp_recon
+        self.use_exp_recon = use_exp_recon        
+        self.use_full_vertex = use_full_vertex
+
         
         M = num_cage_vertices
         L = hid_dim
@@ -80,7 +109,9 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
 
         # cage displacement predictor
         self.key_d_model = Model_mk2_1(
-            in_dim=L, style_dim=L, out_dim=M*out_dim, 
+            in_dim=L,
+            style_dim=L,
+            out_dim= M_*out_dim if self.opts.out_type == 2 else M*out_dim,
             num_layers=self.num_layers, 
             use_style=True, out_type='global'
         ).to(device)
@@ -88,13 +119,13 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         if self.is_train:
             if self.use_exp_recon:
                 self.recon_exp_model = nn.ModuleList([
-                    Model(in_dim=L, out_dim=N*out_dim, num_layers=self.num_layers, out_type='global')
+                    Model(in_dim=L, out_dim=N*3, num_layers=self.num_layers, out_type='global')
                     for N in N_list
                 ]).to(device)
             
             if self.use_shp_recon:
                 self.recon_shp_model = nn.ModuleList([
-                    Model(in_dim=L, out_dim=N*out_dim, num_layers=self.num_layers, out_type='global')
+                    Model(in_dim=L, out_dim=N*3, num_layers=self.num_layers, out_type='global')
                     for N in N_list
                 ]).to(device)
         
@@ -126,37 +157,66 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         z_ID_B = self.shape_model(source_in) # (B, 1, L)
                 
         key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
-        
+        # --> (B, N, 4M) if self.opts.out_type == 2
+                
         exp_z = self.exp_z_model(deform_in, z_ID_B) # (B, 1, L)
         # exp_z_v = self.exp_z_model(source_in, z_ID_B) # (B, 1, L)
         
-        key_d = self.key_d_model(exp_z, z_ID_B).reshape(B, self.num_cage_vertices, 3)
+        key_d = self.key_d_model(exp_z, z_ID_B)
+        
+        if self.opts.out_type == 2:
+            # cage transform matrix
+            M_ = self.num_cage_vertices // 4
+            key_d = key_d.reshape(B, M_, 9)
+            tmp_R, tmp_t = key_d[...,:6], key_d[...,6:]
+            
+            tmp_R = self._6D_to_rot_(tmp_R).reshape(B, -1, 3, 3)
+            key_d = torch.cat([tmp_R, tmp_t[..., None]], dim=-1) # (B, M, 3, 4)
+            key_d = key_d.permute(0,1,3,2).reshape(B, -1, 3) # (B, M4, 3)
+            #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
+        else:
+            key_d = key_d.reshape(B, self.num_cage_vertices, 3)
         # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
         
-        
+        ## necessary
         if self.use_shp_recon:
             recon_source = self.recon_shp_model[mesh_data](z_ID_B)
             recon_source = recon_source.reshape(B, -1, 3)
-
+        else:
+            recon_source = 0
+        
+        ## unnecessary
         if self.use_exp_recon:
             recon_delta_v = self.recon_exp_model[mesh_data](exp_z)
             recon_delta_v = recon_delta_v.reshape(B, -1, 3)
             recon_deformed = recon_delta_v + source_vert
-                
-        
+        else:
+            recon_deformed = 0
+
+        ## optional
+        if self.use_full_vertex:
+            exp_z_s = self.exp_z_model(source_in, z_ID_B) # (B, 1, L)    
+            pred_source = self.key_d_model(exp_z_s, z_ID_B).reshape(B, self.num_cage_vertices, 3)
+        else:
+            pred_source = 0
+            
         delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
-        pred_deformed = delta_v + source_vert
+    
+        if self.use_full_vertex:
+            pred_deformed = delta_v
+        else:
+            pred_deformed = delta_v + source_vert
         
         #verts_v_th = torch.einsum('bnc,bci->bni',key_weight,key_v)
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
             
-        if self.use_exp_recon and self.use_shp_recon:
-            return pred_deformed, recon_deformed, recon_source, exp_z
-        elif self.use_exp_recon and not self.use_shp_recon:
-            return pred_deformed, recon_deformed, 0, exp_z
-        elif not self.use_exp_recon and self.use_shp_recon:
-            return pred_deformed, 0, recon_source, exp_z
-        else:
-            return pred_deformed, 0, 0, exp_z
-        
+        # if self.use_exp_recon and self.use_shp_recon:
+        #     return pred_deformed, recon_deformed, recon_source, exp_z
+        # elif self.use_exp_recon and not self.use_shp_recon:
+        #     return pred_deformed, recon_deformed, 0, exp_z
+        # elif not self.use_exp_recon and self.use_shp_recon:
+        #     return pred_deformed, 0, recon_source, exp_z
+        # else:
+        #     return pred_deformed, 0, 0, exp_z
+        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source

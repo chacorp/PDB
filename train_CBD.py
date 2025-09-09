@@ -54,8 +54,10 @@ def Options():
     parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
     parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
     
-    parser.add_argument("--in_type",      type=int,   default=0,      
+    parser.add_argument("--in_type",      type=int,   default=1,
                         help='input type (0: position, 1: position + normal')
+    parser.add_argument("--out_type",      type=int,   default=1,      
+                        help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     
     parser.add_argument("--save_interval",type=int,   default=50,     help='save interval epoch')
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
@@ -63,7 +65,6 @@ def Options():
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
     
     parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
-
     parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
     parser.add_argument("--ckpt",         type=str,   default=None)    
     parser.add_argument("--continue_ckpt",dest='continue_ckpt', action='store_true')
@@ -81,10 +82,8 @@ def Options():
     parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
     
-    
     parser.add_argument("--optim_cage",dest='optim_cage', action='store_true')
     parser.set_defaults(optim_cage=False)
-    
     
     args = parser.parse_args()
     return args
@@ -156,19 +155,12 @@ class Trainer():
 
         if opts.version==1:
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
-        else:
-            if self.opts.in_type == 0:
-                in_dim = 3
-            elif self.opts.in_type == 1:
-                in_dim = 6
-            else:
-                in_dim = 3
-                
+        else:   
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
                 #in_dim=3, # position
                 #in_dim=6, # position + normal
-                in_dim=in_dim,
+                # in_dim=self.opts.in_dim,
                 hid_dim=256,
                 # num_cage_vertices=768,
                 # num_cage_vertices=1024,
@@ -325,7 +317,7 @@ class Trainer():
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
         interv_train = round(len_train_data / 10)
-        for epoch in range(start_epoch, epochs):
+        for epoch in range(start_epoch, epochs+1):
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
             
             ## for logging loss!
@@ -673,7 +665,7 @@ class Trainer():
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
         interv_train = round(len_train_data / 10)
-        for epoch in range(start_epoch, epochs):
+        for epoch in range(start_epoch, epochs+1):
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
             
             ## for logging loss!
@@ -694,7 +686,7 @@ class Trainer():
                 
                 # model prediction -------------------------------------------------------------------------------
                 
-                pred_vertices, recon_vertices, recon_source, exp_z = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
                     batch.template, batch.vertices, 
                     batch.template_normal, batch.vertices_normal,
                     batch.mesh_data, epoch=epoch
@@ -712,6 +704,8 @@ class Trainer():
                     loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
                 if self.model.use_exp_recon:
                     loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
+                if self.model.use_full_vertex:
+                    loss_dict['exp-v'] = F.mse_loss(batch.template, pred_source) # for expression AE
                 # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
 
                 
@@ -812,7 +806,7 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, recon_vertices, recon_source, exp_z = self.model(
+                    pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
                         batch.template, batch.vertices, 
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
