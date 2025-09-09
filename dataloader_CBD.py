@@ -27,8 +27,8 @@ import time
 class CBDDataset(data.Dataset):
     def __init__(self, 
                  opts,
-                 #data_basedir='/data/sihun',
-                 data_basedir='/data/sihun/pca',
+                 # data_basedir='/data/sihun', # char-s02
+                 data_basedir='/data/sihun/pca', # char-s05
                  is_train=False,
                  is_valid=False,
                  window_size=8, # batch size
@@ -37,6 +37,11 @@ class CBDDataset(data.Dataset):
                  ict_face_only=False,
                  n_components=100, ## mf, voca, biwi all used 100
                  scale=1.0, # pca data axis scale
+                 use_voca=True,
+                 use_coma=True,
+                 use_biwi=True,
+                 use_mf_SEN=True,
+                 use_mf_ROM=True,
                 ):
         super().__init__()
         # get basenames
@@ -47,6 +52,13 @@ class CBDDataset(data.Dataset):
         self.data_basedir = data_basedir
         self.n_components = n_components
         self.scale = scale
+        
+        self.use_voca=use_voca
+        self.use_coma=use_coma
+        self.use_biwi=use_biwi
+        self.use_mf_SEN=use_mf_SEN
+        self.use_mf_ROM=use_mf_ROM
+        
         #self.data_config(self.opts, window_size)
         
         self.mode = 'test'
@@ -65,135 +77,136 @@ class CBDDataset(data.Dataset):
         self.min_sample = self.n_components % self.opts.batch_size
         self.len_list=[]
         
-        
-        self.voca_pca_holder_list=[]
-        self.voca_id_list=[]
-        for id_name in voca_data_split[self.mode]:
-            self.voca_id_list.append(id_name)
-            npz_file = f"{data_basedir}/VOCA-COMA/VOCASET/{self.mode}/{id_name}_pca.npz"
-            self.voca_pca_holder_list.append(PCA_holder(npz_file))
-        assert len(self.voca_pca_holder_list) == len(self.voca_id_list), "mismatch in voca"
-        
-        self.voca_len = len(self.voca_pca_holder_list)
-        self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
-        with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
-            self.voca_mesh = pickle.load(f)
-        total_id = total_id + self.voca_len
-
-        # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
-        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
-        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
-        # self.voca_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
-        # self.voca_adj_list = igl.adjacency_list(self.voca_mesh["face"])
-                
-        self.len_list.append([(self.n_components+self.min_sample)*self.voca_len, self.get_voca, torch.tensor(0), self.voca_len])
-        
-        
-        
-        self.biwi_pca_holder_list=[]
-        self.biwi_id_list=[]
-        for id_name in biwi_data_split[self.mode]:
-            self.biwi_id_list.append(id_name)
+        if self.use_voca:
+            self.voca_pca_holder_list=[]
+            self.voca_id_list=[]
+            for id_name in voca_data_split[self.mode]:
+                self.voca_id_list.append(id_name)
+                npz_file = f"{data_basedir}/VOCA-COMA/VOCASET/{self.mode}/{id_name}_pca.npz"
+                self.voca_pca_holder_list.append(PCA_holder(npz_file))
+            assert len(self.voca_pca_holder_list) == len(self.voca_id_list), "mismatch in voca"
             
-            npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/vertices_npy/{id_name}_pca.npz"
-            if not os.path.exists(npz_file):
-                npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/{id_name}_pca.npz"
+            self.voca_len = len(self.voca_pca_holder_list)
+            self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
+                self.voca_mesh = pickle.load(f)
+            total_id = total_id + self.voca_len
+    
+            # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.voca_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.voca_adj_list = igl.adjacency_list(self.voca_mesh["face"])
+                    
+            self.len_list.append([(self.n_components+self.min_sample)*self.voca_len, self.get_voca, torch.tensor(0), self.voca_len])
+        
+        
+        if self.use_biwi:
+            self.biwi_pca_holder_list=[]
+            self.biwi_id_list=[]
+            for id_name in biwi_data_split[self.mode]:
+                self.biwi_id_list.append(id_name)
                 
-            self.biwi_pca_holder_list.append(PCA_holder(npz_file))
-        assert len(self.biwi_pca_holder_list) == len(self.biwi_id_list), "mismatch in biwi"
-        
-        self.biwi_len = len(self.biwi_pca_holder_list)
-        #self.biwi_std = np.load("utils/biwi/standardization.npy", allow_pickle=True).item()
-        with open(f"{data_basedir}/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
-            self.biwi_mesh = pickle.load(f) # meshes
-        total_id = total_id + self.biwi_len
-        
-        # adj_mat = igl.adjacency_matrix(self.biwi_mesh["face"])
-        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
-        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
-        # self.biwi_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
-        # self.biwi_adj_list = igl.adjacency_list(self.biwi_mesh["face"])
-        
-        self.len_list.append([(self.n_components+self.min_sample)*self.biwi_len, self.get_biwi, torch.tensor(1), self.biwi_len])
-        
-        
-        self.mf_SEN_pca_holder_list=[]
-        self.mf_SEN_id_list=[]
-        for id_name in mf_data_split[self.mode]:
-            self.mf_SEN_id_list.append(id_name)
+                npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/vertices_npy/{id_name}_pca.npz"
+                if not os.path.exists(npz_file):
+                    npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/{id_name}_pca.npz"
+                    
+                self.biwi_pca_holder_list.append(PCA_holder(npz_file))
+            assert len(self.biwi_pca_holder_list) == len(self.biwi_id_list), "mismatch in biwi"
             
-            npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/vertices_npy/{id_name}_pca.npz"
-            if not os.path.exists(npz_file):
-                npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/{id_name}_pca.npz"
+            self.biwi_len = len(self.biwi_pca_holder_list)
+            #self.biwi_std = np.load("utils/biwi/standardization.npy", allow_pickle=True).item()
+            with open(f"{data_basedir}/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
+                self.biwi_mesh = pickle.load(f) # meshes
+            total_id = total_id + self.biwi_len
+            
+            # adj_mat = igl.adjacency_matrix(self.biwi_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.biwi_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.biwi_adj_list = igl.adjacency_list(self.biwi_mesh["face"])
+            
+            self.len_list.append([(self.n_components+self.min_sample)*self.biwi_len, self.get_biwi, torch.tensor(1), self.biwi_len])
+
+        
+        if self.use_mf_SEN:
+            self.mf_SEN_pca_holder_list=[]
+            self.mf_SEN_id_list=[]
+            for id_name in mf_data_split[self.mode]:
+                self.mf_SEN_id_list.append(id_name)
                 
-            self.mf_SEN_pca_holder_list.append(PCA_holder(npz_file))
-        assert len(self.mf_SEN_pca_holder_list) == len(self.mf_SEN_id_list), "mismatch in mf SEN"
-            
-        self.mf_SEN_len = len(self.mf_SEN_pca_holder_list)
-        self.mf_SEN_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
-        with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
-            self.mf_SEN_mesh = pickle.load(f)
-        total_id = total_id + self.mf_SEN_len
-        
-        # adj_mat = igl.adjacency_matrix(self.mf_SEN_mesh["face"])
-        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
-        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
-        # self.mf_SEN_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
-        # self.mf_SEN_adj_list = igl.adjacency_list(self.mf_SEN_mesh["face"])
-        
-        self.len_list.append([(self.n_components+self.min_sample)*self.mf_SEN_len, self.get_multiface_SEN, torch.tensor(2), self.mf_SEN_len])
-        
-
-
-
-        self.coma_pca_holder_list=[]
-        self.coma_id_list=[]
-        for id_name in voca_data_split[self.mode]:
-            self.coma_id_list.append(id_name)
-            npz_file = f"{data_basedir}/VOCA-COMA/COMA/{self.mode}/{id_name}_pca.npz"
-            self.coma_pca_holder_list.append(PCA_holder(npz_file))
-        assert len(self.coma_pca_holder_list) == len(self.coma_id_list), "mismatch in coma"
-        
-        self.coma_len = len(self.coma_pca_holder_list)
-        self.coma_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
-        with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
-            self.coma_mesh = pickle.load(f)
-        total_id = total_id + self.coma_len
-
-        # adj_mat = igl.adjacency_matrix(self.coma_mesh["face"])
-        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
-        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
-        # self.coma_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
-        # self.coma_adj_list = igl.adjacency_list(self.coma_mesh["face"])
+                npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/vertices_npy/{id_name}_pca.npz"
+                if not os.path.exists(npz_file):
+                    npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/{id_name}_pca.npz"
+                    
+                self.mf_SEN_pca_holder_list.append(PCA_holder(npz_file))
+            assert len(self.mf_SEN_pca_holder_list) == len(self.mf_SEN_id_list), "mismatch in mf SEN"
                 
-        self.len_list.append([(self.n_components+self.min_sample)*self.coma_len, self.get_coma, torch.tensor(3), self.coma_len])
-
-
-        self.mf_ROM_pca_holder_list=[]
-        self.mf_ROM_id_list=[]
-        for id_name in mf_data_split[self.mode]:
-            self.mf_ROM_id_list.append(id_name)
+            self.mf_SEN_len = len(self.mf_SEN_pca_holder_list)
+            self.mf_SEN_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+            with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
+                self.mf_SEN_mesh = pickle.load(f)
+            total_id = total_id + self.mf_SEN_len
             
-            npz_file = f"{data_basedir}/multiface_align/ROM/{self.mode}/vertices_npy/{id_name}_pca.npz"
-            if not os.path.exists(npz_file):
-                npz_file = f"{data_basedir}/multiface_align/ROM/{self.mode}/{id_name}_pca.npz"
+            # adj_mat = igl.adjacency_matrix(self.mf_SEN_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.mf_SEN_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.mf_SEN_adj_list = igl.adjacency_list(self.mf_SEN_mesh["face"])
+            
+            self.len_list.append([(self.n_components+self.min_sample)*self.mf_SEN_len, self.get_multiface_SEN, torch.tensor(2), self.mf_SEN_len])
+
+        
+        if self.use_coma:
+            self.coma_pca_holder_list=[]
+            self.coma_id_list=[]
+            for id_name in voca_data_split[self.mode]:
+                self.coma_id_list.append(id_name)
+                npz_file = f"{data_basedir}/VOCA-COMA/COMA/{self.mode}/{id_name}_pca.npz"
+                self.coma_pca_holder_list.append(PCA_holder(npz_file))
+            assert len(self.coma_pca_holder_list) == len(self.coma_id_list), "mismatch in coma"
+            
+            self.coma_len = len(self.coma_pca_holder_list)
+            self.coma_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
+                self.coma_mesh = pickle.load(f)
+            total_id = total_id + self.coma_len
+    
+            # adj_mat = igl.adjacency_matrix(self.coma_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.coma_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.coma_adj_list = igl.adjacency_list(self.coma_mesh["face"])
+                    
+            self.len_list.append([(self.n_components+self.min_sample)*self.coma_len, self.get_coma, torch.tensor(3), self.coma_len])
+
+
+        if self.use_mf_ROM:
+            self.mf_ROM_pca_holder_list=[]
+            self.mf_ROM_id_list=[]
+            for id_name in mf_data_split[self.mode]:
+                self.mf_ROM_id_list.append(id_name)
                 
-            self.mf_ROM_pca_holder_list.append(PCA_holder(npz_file))
-        assert len(self.mf_ROM_pca_holder_list) == len(self.mf_ROM_id_list), "mismatch in mf ROM"
+                npz_file = f"{data_basedir}/multiface_align/ROM/{self.mode}/vertices_npy/{id_name}_pca.npz"
+                if not os.path.exists(npz_file):
+                    npz_file = f"{data_basedir}/multiface_align/ROM/{self.mode}/{id_name}_pca.npz"
+                    
+                self.mf_ROM_pca_holder_list.append(PCA_holder(npz_file))
+            assert len(self.mf_ROM_pca_holder_list) == len(self.mf_ROM_id_list), "mismatch in mf ROM"
+                
+            self.mf_ROM_len = len(self.mf_ROM_pca_holder_list)
+            self.mf_ROM_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+            with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
+                self.mf_ROM_mesh = pickle.load(f)
+            total_id = total_id + self.mf_ROM_len
             
-        self.mf_ROM_len = len(self.mf_ROM_pca_holder_list)
-        self.mf_ROM_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
-        with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
-            self.mf_ROM_mesh = pickle.load(f)
-        total_id = total_id + self.mf_ROM_len
-        
-        # adj_mat = igl.adjacency_matrix(self.mf_ROM_mesh["face"])
-        # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
-        # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
-        # self.mf_ROM_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
-        # self.mf_ROM_adj_list = igl.adjacency_list(self.mf_ROM_mesh["face"])
-        
-        self.len_list.append([(self.n_components+self.min_sample)*self.mf_ROM_len, self.get_multiface_ROM, torch.tensor(4), self.mf_ROM_len])
+            # adj_mat = igl.adjacency_matrix(self.mf_ROM_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.mf_ROM_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.mf_ROM_adj_list = igl.adjacency_list(self.mf_ROM_mesh["face"])
+            
+            self.len_list.append([(self.n_components+self.min_sample)*self.mf_ROM_len, self.get_multiface_ROM, torch.tensor(4), self.mf_ROM_len])
         
         # 2 for -weight and +weight
         
@@ -559,7 +572,7 @@ class CBDdataSampler(data.Sampler):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.reverse = reverse
-        self.data = np.array(['voca', 'biwi', 'mf'])
+        self.data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf'])
         self.n_sampling = n_sampling
         self.n_ = n_
         self.epoch = 0
@@ -588,6 +601,7 @@ class CBDdataSampler(data.Sampler):
         id_mesh = np.zeros(0, dtype=int)
 
         self.len_data=[]
+        self.mesh_data=[]
         for len_data, _, mesh_data, id_len_list in self.len_list:
             #print(len_data, id_len_list)
             m_data = mesh_data.numpy()
@@ -596,7 +610,7 @@ class CBDdataSampler(data.Sampler):
             #SS_next += padd
             
             n_expressions = (len_data // id_len_list) + (self.batch_size-padd)
-            #import pdb;pdb.set_trace()
+            
             if self.mode == 'train':
                 if m_data == 0: # voca or coma
                     n_expressions = 3*self.batch_size*n_expressions
@@ -608,40 +622,20 @@ class CBDdataSampler(data.Sampler):
             _indices = np.tile(np.arange(0, n_expressions, dtype=int), id_len_list)
             _labels = np.arange(0, id_len_list, dtype=int).repeat(n_expressions)
             _id_mesh = np.ones_like(_labels)*m_data
-            
-            # if self.mode == 'train':
-            #     if m_data == 0: # voca or coma
-            #         tile_n = 3*(self.batch_size)
-            #     if m_data == 1: # biwi
-            #         tile_n = 4*(self.batch_size)
-            #     if m_data == 2: # mf
-            #         tile_n = 2*(self.batch_size)
-            #     _indices = np.tile(_indices, tile_n)
-            #     _labels = np.repeat(_labels, tile_n)
-            #     _id_mesh = np.tile(_id_mesh, tile_n)
-            # elif self.mode == 'val':
-            #     if m_data == 0: # voca or coma
-            #         tile_n = 1*(self.batch_size)
-            #     if m_data == 1: # biwi
-            #         tile_n = 1*(self.batch_size)
-            #     if m_data == 2: # mf
-            #         tile_n = 1*(self.batch_size)
-            #     _indices = np.tile(_indices, tile_n)
-            #     _labels = np.repeat(_labels, tile_n)
-            #     _id_mesh = np.tile(_id_mesh, tile_n)
-            
+                        
             indices = np.r_[indices, _indices]
             labels = np.r_[labels, _labels]
             id_mesh = np.r_[id_mesh, _id_mesh]
             self.len_data.append(len(_indices))
-
+            self.mesh_data.append(self.data[m_data])
+            
         indices = indices.reshape(-1, self.batch_size)
         labels = labels.reshape(-1, self.batch_size)
         id_mesh = id_mesh.reshape(-1, self.batch_size)
         
         assert indices.shape[0] == labels.shape[0], "miss match!"
         assert indices.shape[0] == id_mesh.shape[0], "miss match!"
-                
+        
         return indices, labels, id_mesh
     
     def __iter__(self):
@@ -676,8 +670,8 @@ class CBDdataSampler(data.Sampler):
         text = "========[CBDdataSampler]========\n"
         text += f"[mode]: {self.mode}\n"
         text += f"[Batch size]: {self.batch_size}\n"
-        for i, data in enumerate(self.data):
-            text += f"[Batched {data.upper()}]: {self.len_data[i]}\n"
+        for name, len_data in zip(self.mesh_data, self.len_data):
+            text += f"[Batched {name.upper()}]: {len_data}\n"
         text += f"[Batched total len]: {len(self.indices)}\n"
         text += "===============================\n"
         return text
@@ -881,7 +875,6 @@ if __name__ == "__main__":
     
     pbar = tqdm(enumerate(dataloader), total=len_dataloader)
     for idx, batch in pbar:
-        #import pdb;pdb.set_trace()
         #print(batch.vertices.shape, batch.template.shape)
         
         mode = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data]

@@ -52,10 +52,12 @@ def Options():
     parser.add_argument("--log_dir",      type=str,   default="ckpts_CBD")
 
     parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
+    parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
     
     parser.add_argument("--in_type",      type=int,   default=0,      
                         help='input type (0: position, 1: position + normal')
     
+    parser.add_argument("--save_interval",type=int,   default=50,     help='save interval epoch')
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
@@ -104,21 +106,8 @@ def p2f_loss(before_v, after_v, normals_before, normals_after):
     Returns
         loss (float)
     """
-    #device = before_v.device
     
     def distance(verts, norms):
-        # B, V, _ = verts.shape
-        # dists = torch.zeros(B, V, device=device)
-        # for i, neighbors_idx in enumerate(neighbors_map):
-        #     if len(neighbors_idx) < 3: continue
-            
-        #     neighborhood = verts[:, neighbors_idx.to(device), :]
-        #     centroid = torch.mean(neighborhood, dim=1)
-        #     _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
-        #     normals = V_svd[:, -1, :]
-            
-        #     dist_vec = verts[:, i, :] - centroid
-        #     dists[:, i] = torch.abs(torch.sum(dist_vec * normals, dim=1))
         dists = torch.abs(torch.sum(verts * norms, dim=-1))
         return dists
 
@@ -156,10 +145,6 @@ def norm_loss(normals_before, normals_after):
     Returns
         loss (float)
     """
-    # device = before_v.device
-    
-    # normals_before = pca_normals(before_v)
-    # normals_after  = pca_normals(after_v)
     return torch.mean(1.0 - F.cosine_similarity(normals_before, normals_after, dim=-1))
 
 class Trainer():
@@ -172,12 +157,22 @@ class Trainer():
         if opts.version==1:
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
         else:
+            if self.opts.in_type == 0:
+                in_dim = 3
+            elif self.opts.in_type == 1:
+                in_dim = 6
+            else:
+                in_dim = 3
+                
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
                 #in_dim=3, # position
-                in_dim=6, # position + normal
+                #in_dim=6, # position + normal
+                in_dim=in_dim,
                 hid_dim=256,
-                num_cage_vertices=768,
+                # num_cage_vertices=768,
+                # num_cage_vertices=1024,
+                num_cage_vertices=self.opts.num_cage_v,
                 num_layers=4,
                 use_relu=True,
                 is_train=True, device=self.device,
@@ -249,7 +244,8 @@ class Trainer():
             self.opts.batch_size,
             shuffle=True,
             balance=False,
-            is_train=False
+            is_train=False,
+            is_valid=True,
         )
         self.valid_dataloader = torch.utils.data.DataLoader(
             self.valid_dataset, 
@@ -780,7 +776,6 @@ class Trainer():
                         logdir=save_logdir,
                         name=save_img_name, save=True
                     )
-                    
                 
                 if self.opts.debug:
                     break
@@ -794,7 +789,7 @@ class Trainer():
                 self.log_loss(self.writer_train, running_losses, epoch, train_counter)
 
             # save model
-            if epoch % 100 == 0:
+            if epoch % self.opts.save_interval == 0:
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
             
             
@@ -906,6 +901,9 @@ class Trainer():
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+            else:
+                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e}\n")
+                print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}]\n")
     
     @staticmethod
     def log_loss(writer, loss_dict, step, counter=None):

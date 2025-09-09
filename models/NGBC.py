@@ -20,7 +20,6 @@ import torch
 import torch.nn as nn
 from utils.exp_utils import Model, Model_mk2_1 #Model_mk1, Model_mk3_1
 
-
 class NeuralGeneralizedBarycentricCoordinate(nn.Module):
     """
         Neural Generalized Barycentric Coordinate 
@@ -42,7 +41,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
                  tau=0.05,
                  device='cpu',
                  use_exp_recon=False, # was not necessary
-                 use_shp_recon=True,
+                 use_shp_recon=True, # necessary for training, but not needed for inference
                 ):
         super().__init__()
         self.opts = opts
@@ -54,6 +53,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         self.in_dim = in_dim
         self.out_dim = out_dim
 
+        self.use_shp_recon = use_shp_recon
         self.use_exp_recon = use_exp_recon
         
         M = num_cage_vertices
@@ -117,6 +117,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         """
         B, N, _ = deform_vert.shape
         
+        source_in = source_vert
+        deform_in = deform_vert
         if self.in_dim == 6:
             source_in = torch.cat([source_vert, source_norm], dim=-1)
             deform_in = torch.cat([deform_vert, deform_norm], dim=-1)
@@ -157,4 +159,4 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             return pred_deformed, 0, recon_source, exp_z
         else:
             return pred_deformed, 0, 0, exp_z
-
+        
