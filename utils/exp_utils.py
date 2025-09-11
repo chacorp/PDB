@@ -6,6 +6,7 @@ import os
 import pickle
 from glob import glob
 
+import math
 import numpy as np
 import igl
 
@@ -16,34 +17,32 @@ from scipy.sparse.linalg import spsolve
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
 
-import trimesh
-
 import torch
 import torch.nn as nn
 import torch.optim
-from tqdm import tqdm
+
 import torch.nn.functional as F
 from torch_scatter import scatter_add
 from collections import defaultdict
 
+import trimesh
+
+from utils.remesh_utils import ICT_face_model
 
 import sys
 from pathlib import Path
-abs_path = str(Path(__file__).parents[1].absolute())
-if not abs_path in sys.path:
-    sys.path+=[abs_path]
-    # sys.path+=[f'{abs_path}/third_party/siren']
-    sys.path+=[f'{abs_path}/third_party/Pointnet_Pointnet2_pytorch/models']
-    sys.path+=[f'{abs_path}/third_party/diffusion-net/src']
-else:
-    # sys.path+=[f'{abs_path}/third_party/siren']
-    sys.path+=[f'{abs_path}/third_party/Pointnet_Pointnet2_pytorch/models']
-    sys.path+=[f'{abs_path}/third_party/diffusion-net/src']
+__abs_path__ = str(Path(__file__).parents[1].absolute())
+__p_net_path__ = f'{__abs_path__}/third_party/Pointnet_Pointnet2_pytorch/models'
+__d_net_path__ = f'{__abs_path__}/third_party/diffusion-net/src'
+
+for __util_path__ in [__abs_path__, __p_net_path__, __d_net_path__]:
+    if not __util_path__ in sys.path:
+        sys.path+=[__util_path__]
     
 import diffusion_net
 from pointnet_utils import PointNetEncoder, feature_transform_reguliarzer, STN3d, STNkd
 from pointnet_part_seg import get_model, get_loss
-from utils.remesh_utils import ICT_face_model
+
 
     
 def get_colors(vertices):
@@ -2190,7 +2189,93 @@ class Model_mk2_1(nn.Module):
             out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
             
         return out
-    
+
+class Model_mk2_11(nn.Module):
+    def __init__(self,
+                 in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
+                 num_layers=4, use_style=True, out_type='vertices',
+                 use_softmax=False, use_K=False, K_dim=8,
+                ):
+        super().__init__()
+                
+        self.in_dim = in_dim
+        self.style_dim = style_dim
+        self.out_dim = out_dim
+        self.use_style=use_style
+        self.out_type = out_type
+        self.use_softmax = use_softmax
+        self.use_K = use_K
+        self.K_dim = K_dim
+        
+        self.act = nn.ReLU()
+                
+        self.layer_in = nn.Linear(in_dim, hid_dim)
+        self.layer_out = nn.Sequential(
+                nn.Linear(hid_dim, out_dim//2), nn.ReLU(), nn.LayerNorm(out_dim//2),
+                nn.Linear(out_dim//2, out_dim),
+            )
+        
+        self.layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
+            ) for _ in range(num_layers)
+        ])
+        adain_dim = style_dim if use_style else in_dim
+        
+        self.adain_in = nn.Sequential(
+                nn.Linear(adain_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
+            )
+        
+        self.adains_m = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
+            ) for _ in range(num_layers)
+        ])
+        self.adains_s = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim),
+            ) for _ in range(num_layers)
+        ])        
+
+    def forward(self, x_in, style):
+        """
+            x_in: (B, N, 3)
+        """
+        out = self.act(self.layer_in(x_in))
+        
+        id_in = self.act(self.adain_in(style if self.use_style else x_in))
+        
+        for l, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
+            l_out = l(out)
+            s_out = sigma(id_in)
+            m_out = mu(id_in)
+            out = (l_out * s_out + m_out) + out
+                            
+        out = self.layer_out(out)
+        
+        if self.out_type == 'global':
+            out = out.mean(-2, keepdims=True)
+
+        if self.use_softmax==True:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            # if self.use_K:
+            #     B, N, C = out.shape
+            #     out = out.reshape(B, self.K_dim, N, C//self.K_dim)
+            out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
+            
+        return out
+        
 class Model_mk2_2(nn.Module):
     def __init__(self, in_dim=3, out_dim=9, num_layers=4, mode='rot', use_residual=False, use_adain=False, use_to_out=False, out_type='local'):
         super().__init__()
@@ -2885,6 +2970,64 @@ class Model_mk4(nn.Module):
         out = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
         return out
 
+def _smoothstep(
+        t: torch.Tensor,
+        kind: str = "quintic"
+    ) -> torch.Tensor:
+    """Monotone step S:[0,1]->[0,1] with selectable smoothness."""
+    if kind == "cos":
+        tt = t.clamp(0, 1)
+        return 0.5 * (1 - torch.cos(math.pi * tt))
+    elif kind == "quintic":
+        tt = t.clamp(0, 1)
+        return tt**3 * (10 - 15*tt + 6*tt*tt)
+    elif kind == "cinf":
+        s = torch.zeros_like(t)
+        m = (t > 0) & (t < 1)
+        u = t[m]
+        a = torch.exp(-1.0 / u)
+        b = torch.exp(-1.0 / (1.0 - u))
+        s[m] = a / (a + b)
+        s = torch.where(t >= 1, torch.ones_like(s), s)
+        return s
+    else:
+        raise ValueError("kind must be one of {'cos','quintic','cinf'}")
+
+def plateau_hat_r(
+        r: torch.Tensor,
+        r0: float,
+        r1: float,
+        kind: str = "quintic"
+    ) -> torch.Tensor:
+    """Plateau hat as a function of radius r."""
+    if not (r1 > r0):
+        raise ValueError("Require r1 > r0")
+    t = (r - r0) / (r1 - r0)
+    S = _smoothstep(t, kind=kind)
+    f = torch.where(r <= r0, torch.ones_like(r), 1 - S)
+    f = torch.where(r >= r1, torch.zeros_like(r), f)
+    return f
+
+def plateau_hat_points(
+        X: torch.Tensor,
+        C: torch.Tensor,
+        r0: float,
+        r1: float,
+        kind: str = "quintic",
+        normalize=None,
+        eps: float = 1e-12
+    ) -> torch.Tensor:
+    """
+    X: (N,3) points, C: (K,3) centers -> weights W: (N,K)
+    normalize='pou' -> partition of unity across centers.
+    """
+    diff = X[:, None, :] - C[None, :, :]
+    r = torch.linalg.norm(diff, dim=-1)  # (N,K)
+    W = plateau_hat_r(r, r0, r1, kind=kind)
+    if normalize == 'pou':
+        s = W.sum(dim=1, keepdim=True).clamp_min(eps)
+        W = W / s
+    return W
     
 def normalize_homogeneous(V):
     return np.concatenate([V, np.ones((V.shape[0], 1))], axis=1)

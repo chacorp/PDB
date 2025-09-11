@@ -603,21 +603,20 @@ class CBDdataSampler(data.Sampler):
         self.len_data=[]
         self.mesh_data=[]
         for len_data, _, mesh_data, id_len_list in self.len_list:
-            #print(len_data, id_len_list)
+            
             m_data = mesh_data.numpy()
             
             padd = (len_data // id_len_list) % self.batch_size
-            #SS_next += padd
             
             n_expressions = (len_data // id_len_list) + (self.batch_size-padd)
             
             if self.mode == 'train':
                 if m_data == 0: # voca or coma
-                    n_expressions = 3*self.batch_size*n_expressions
+                    n_expressions = 24*n_expressions
                 if m_data == 1: # biwi
-                    n_expressions = 4*self.batch_size*n_expressions
+                    n_expressions = 24*n_expressions
                 if m_data == 2: # mf
-                    n_expressions = 2*self.batch_size*n_expressions
+                    n_expressions = 24*n_expressions
             
             _indices = np.tile(np.arange(0, n_expressions, dtype=int), id_len_list)
             _labels = np.arange(0, id_len_list, dtype=int).repeat(n_expressions)

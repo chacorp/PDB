@@ -7,6 +7,9 @@ n_sampling: False
 continue_ckpt: False
 save_interval: 50
 
+in_type: 1
+out_type: 0
+
 # optimizer
 lr : 0.0002
 max_epoch: 500
