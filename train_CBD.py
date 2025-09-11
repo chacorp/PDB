@@ -63,6 +63,7 @@ def Options():
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
+    parser.add_argument("--sc_step",      type=int,   default=10,     help='scheduler step')
     
     parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
     parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
@@ -145,6 +146,16 @@ def norm_loss(normals_before, normals_after):
         loss (float)
     """
     return torch.mean(1.0 - F.cosine_similarity(normals_before, normals_after, dim=-1))
+
+
+class Logger():
+    def __init__(self, file_path):
+        self.file_path = file_path
+        
+    def write(self, txt):
+        with open(self.file_path, 'a') as f:
+            f.write(txt+"\n")
+        f.close()
 
 class Trainer():
     def __init__(self, opts):
@@ -280,8 +291,8 @@ class Trainer():
             self.writer_valid = SummaryWriter(log_dir=valid_)
         
         # self logger
-        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
-        print(f'Saving log at: {self.opts.log_dir}')
+        self.logger = Logger(os.path.join(self.opts.log_dir, "log.txt"))
+        print(f'Saving log at: {self.logger.file_path}')
         
         print(self.train_dataset.get_data_config())
         print(train_sampler.get_sampler_config())
@@ -628,8 +639,8 @@ class Trainer():
             self.writer_valid = SummaryWriter(log_dir=valid_)
         
         # self logger
-        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
-        print(f'Saving log at: {self.opts.log_dir}')
+        self.logger = Logger(os.path.join(self.opts.log_dir, "log.txt"))
+        print(f'Saving log at: {self.logger.file_path}')
         
         print(self.train_dataset.get_data_config())
         print(train_sampler.get_sampler_config())
