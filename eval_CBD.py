@@ -215,6 +215,7 @@ class Trainer():
             [False, False, False,  True, False], # 3
             [False, False, False, False,  True], # 4
             [False, False,  True, False,  True], # 5
+            [ True, False, False,  True, False], # 6
             [ True,  True,  True,  True,  True], # -1
         ]
         selection = selection[self.opts.data_selection]
@@ -406,6 +407,8 @@ if __name__ == "__main__":
         
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-15-26-03-NGBC --in_type 0 --out_type 0 --num_cage_v 640 --data_selection 0
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-21-05-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0 --batch_size 1 --device 'cpu'
+
+        python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-53-39-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0
     """
     # argparse configs
     opts = Options()
