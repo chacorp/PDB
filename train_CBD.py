@@ -154,7 +154,7 @@ class Logger():
         
     def write(self, txt):
         with open(self.file_path, 'a') as f:
-            f.write(txt+"\n")
+            f.write(txt)
         f.close()
 
 class Trainer():
@@ -749,7 +749,7 @@ class Trainer():
                     faces = batch.faces.cpu()
                     
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
-                    __idx__ = 1/(1+index)
+                    __idx__ = 1/train_counter
                     for key, value in running_losses.items():
                         log_text += f"{key}: {value*__idx__:.6e} "
                     self.logger.write(log_text+"\n")
@@ -862,9 +862,9 @@ class Trainer():
                     faces = batch.faces.cpu()
                 
                     log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
-                    __idx__ = 1/(1+index)
+                    __jdx__ = 1/counter
                     for key, value in running_losses_val.items():
-                        log_text += f"{key}: {value*__idx__:.6e} "
+                        log_text += f"{key}: {value*__jdx__:.6e} "
                     self.logger.write(log_text+"\n")
                     
                     frame = HB
@@ -881,7 +881,7 @@ class Trainer():
                     len_v = len(v_list)
                     f_list=[faces] * len_v
                     save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
-                    save_img_name = f"{epoch:03d}_{index:04d}"
+                    save_img_name = f"{epoch:03d}_{counter:04d}"
                     
                     plot_image_array(
                         v_list, f_list, 
