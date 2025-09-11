@@ -611,12 +611,7 @@ class CBDdataSampler(data.Sampler):
             n_expressions = (len_data // id_len_list) + (self.batch_size-padd)
             
             if self.mode == 'train':
-                if m_data == 0: # voca or coma
-                    n_expressions = 24*n_expressions
-                if m_data == 1: # biwi
-                    n_expressions = 24*n_expressions
-                if m_data == 2: # mf
-                    n_expressions = 24*n_expressions
+                n_expressions = 20*n_expressions
             
             _indices = np.tile(np.arange(0, n_expressions, dtype=int), id_len_list)
             _labels = np.arange(0, id_len_list, dtype=int).repeat(n_expressions)
