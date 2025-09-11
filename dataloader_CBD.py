@@ -611,12 +611,7 @@ class CBDdataSampler(data.Sampler):
             n_expressions = (len_data // id_len_list) + (self.batch_size-padd)
             
             if self.mode == 'train':
-                if m_data == 0: # voca or coma
-                    n_expressions = 24*n_expressions
-                if m_data == 1: # biwi
-                    n_expressions = 24*n_expressions
-                if m_data == 2: # mf
-                    n_expressions = 24*n_expressions
+                n_expressions = 20*n_expressions
             
             _indices = np.tile(np.arange(0, n_expressions, dtype=int), id_len_list)
             _labels = np.arange(0, id_len_list, dtype=int).repeat(n_expressions)
@@ -825,7 +820,7 @@ if __name__ == "__main__":
     set_seed(opts)
     
     
-    opts.batch_size = 3
+    opts.batch_size = 16
     print(f'use batch_size: {opts.batch_size}')
     
     dataset = CBDDataset(opts, is_train=True, is_valid=False)
@@ -840,7 +835,7 @@ if __name__ == "__main__":
         n_sampling=opts.n_sampling,
         n_=opts.batch_size,
         # reverse=True,
-        # is_train=True,
+        is_train=True,
         # is_train=False,
         # is_valid=True
     )
@@ -871,7 +866,7 @@ if __name__ == "__main__":
     
     
     from utils import plot_image_array, plot_image_array_diff3, vis_rig 
-    
+    import pdb;pdb.set_trace()
     pbar = tqdm(enumerate(dataloader), total=len_dataloader)
     for idx, batch in pbar:
         #print(batch.vertices.shape, batch.template.shape)
