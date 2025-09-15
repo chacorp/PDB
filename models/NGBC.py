@@ -156,7 +156,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             
         z_ID_B = self.shape_model(source_in) # (B, 1, L)
                 
-        key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+        key_weight = self.key_weight_model(source_in, NZ=self.NZ) # (B, N, M)
         # --> (B, N, 4M) if self.opts.out_type == 2
                 
         exp_z = self.exp_z_model(deform_in, z_ID_B) # (B, 1, L)

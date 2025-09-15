@@ -1741,7 +1741,7 @@ class Model(nn.Module):
         mask = (hard - soft).detach() + soft
         return mask
         
-    def forward(self, x_in, N=128, return_inv=False, return_raw=False):
+    def forward(self, x_in, NZ=128, return_inv=False, return_raw=False):
         out = self.forward_func(x_in)
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
@@ -1760,8 +1760,8 @@ class Model(nn.Module):
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         if self.use_least_N:
-            out = F.relu(out)
-            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+            #out = F.relu(out)
+            mask = self.least_N_zeros_gate(out, N=NZ, dim=-1)
             out = out * mask
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
