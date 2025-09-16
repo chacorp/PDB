@@ -41,7 +41,7 @@ for __util_path__ in [__abs_path__, __p_net_path__, __d_net_path__]:
     
 import diffusion_net
 from pointnet_utils import PointNetEncoder, feature_transform_reguliarzer, STN3d, STNkd
-from pointnet_part_seg import get_model, get_loss
+# from pointnet_part_seg import get_model, get_loss
 
 
     
@@ -93,22 +93,38 @@ def plateau_hat_r(
 def plateau_hat_points(
         X: torch.Tensor,
         C: torch.Tensor=torch.tensor([[0.0, 0.0, 0.5]]), 
-        r0: float=0.65,
-        r1: float=1.65,
+        r0: float=0.75,
+        r1: float=1.75,
         kind: str = "quintic",
         normalize=None,
-        eps: float = 1e-12
+        eps=1e-12
     ):
     """
-        X: (N,3) points, C: (K,3) centers -> weights W: (N,K)
-        normalize='pou' -> partition of unity across centers.
+    Args:
+        X (torch.tensor): (N,3) points
+        C (torch.tensor): (K,3) centers
+        normalize (str): if 'pou' -> partition of unity across centers.(default: None)
+        r0 (float): falloff radius
+        r1 (float): weight radius
+    Returns:
+        W: (N,K) weights per center
     """
-    diff = X[:, None, :] - C[None, :, :]
+    
+    if len(X.shape) > 2:
+        X_in = X.reshape(-1, X.shape[-1])
+    else:
+        X_in = X
+        
+    diff = X_in[:, None, :] - C[None, :, :].to(X.device) # (N,K,3)
     r = torch.linalg.norm(diff, dim=-1)  # (N,K)
     W = plateau_hat_r(r, r0, r1, kind=kind)
+    
     if normalize == 'pou':
-        s = W.sum(dim=1, keepdim=True).clamp_min(eps)
+        s = W.sum(dim=-1, keepdim=True).clamp_min(eps)
         W = W / s
+        
+    if len(X.shape) > 2:
+        W = W.reshape(X.shape[0], X.shape[1], -1)
     return W
     
 def quaternion_to_rotation_matrix(q):
@@ -1691,6 +1707,7 @@ class Model(nn.Module):
                  mode='rot', use_residual=False, use_adain=False, 
                  use_to_out=False, out_type='vertices',
                  use_softmax=False, use_relu=False, use_least_N=False, use_least_N_on_V=False,
+                 use_gate_layer=False,
                  tau=1e-2, use_K=False, K_dim=8,
                 ):
         super().__init__()
@@ -1701,10 +1718,12 @@ class Model(nn.Module):
         self.use_residual = use_residual
         self.use_adain = use_adain
         self.use_to_out = use_to_out
+        
         self.use_softmax=use_softmax
         self.use_relu=use_relu
         self.use_least_N = use_least_N
         self.use_least_N_on_V = use_least_N_on_V
+        self.use_gate_layer = use_gate_layer
         
         self.out_type = out_type
         self.use_K = use_K
@@ -1764,7 +1783,17 @@ class Model(nn.Module):
                 nn.Linear(hid_dim, hid_dim),
             ),
         ])
-
+        
+        if self.use_gate_layer:
+            self.gate_layer = nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, out_dim), nn.Sigmoid(),
+            )
+        
         self.forward_func = self.forward_default
         
         if self.use_adain:
@@ -1812,17 +1841,19 @@ class Model(nn.Module):
         #     out = out.reshape(B, self.K_dim, N, C//self.K_dim)
         
         if self.use_softmax:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)    
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
             out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
             
         if self.use_relu:
             out = F.normalize(out, dim=-2) # normalize for each column (key points)
             out = F.relu(out)
+            
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         if self.use_least_N:
             out = F.normalize(out, dim=-2) # normalize for each column (key points)
             out = F.relu(out)
+            
             mask = self.least_N_zeros_gate(out, N=N, dim=-1)
             out = out * mask
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
@@ -1851,18 +1882,19 @@ class Model(nn.Module):
             else:
                 out = l_out
         
-        out = self.layer_out(out)
-        
+        if self.use_gate_layer:
+            gate = self.gate_layer(out)
+            out = self.layer_out(out) * gate
+        else:
+            out = self.layer_out(out)
+            
         return out
         
     def forward_adain(self, x_in, return_inv=False):
         out = self.act(self.layer_in(x_in))
         id_in = self.act(self.adain_in(x_in)).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
         
-        if self.use_to_out:
-            to_out = 0
-            
-        for n, l, mu, sigma, t_o in zip(self.norms, self.layers, self.adains_m, self.adains_s, self.to_out):
+        for n, l, mu, sigma in zip(self.norms, self.layers, self.adains_m, self.adains_s):
             l_out = n(self.act(l(out)))
             l_out = l_out * sigma(id_in) + mu(id_in)
             
@@ -1870,15 +1902,13 @@ class Model(nn.Module):
                 out = l_out + out
             else:
                 out = l_out
-            
-            if self.use_to_out:
-                to_out += t_o(out)
                 
-        out = self.layer_out(out)
-        
-        if self.use_to_out:
-            out += to_out
-            
+        if self.use_gate_layer:
+            gate = self.gate_layer(id_in)
+            out = self.layer_out(out) * gate
+        else:
+            out = self.layer_out(out)
+                    
         return out
         
 class Model2(nn.Module):
@@ -2173,7 +2203,8 @@ class Model_mk2_1(nn.Module):
     def __init__(self,
                  in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
                  num_layers=4, use_style=True, out_type='vertices',
-                 use_softmax=False, use_K=False, K_dim=8,
+                 use_softmax=False, use_relu=False, use_K=False, K_dim=8,
+                 use_gate_layer=False,
                 ):
         super().__init__()
                 
@@ -2183,6 +2214,8 @@ class Model_mk2_1(nn.Module):
         self.use_style=use_style
         self.out_type = out_type
         self.use_softmax = use_softmax
+        self.use_relu = use_relu
+        self.use_gate_layer = use_gate_layer
         self.use_K = use_K
         self.K_dim = K_dim
         
@@ -2222,7 +2255,17 @@ class Model_mk2_1(nn.Module):
                 nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
             ) for _ in range(num_layers)
-        ])        
+        ])
+
+        if self.use_gate_layer:
+            self.gate_layer = nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, out_dim), nn.Sigmoid(),
+            )
 
     def forward(self, x_in, style):
         """
@@ -2237,18 +2280,25 @@ class Model_mk2_1(nn.Module):
             s_out = sigma(id_in)
             m_out = mu(id_in)
             out = (l_out * s_out + m_out) + out
-                            
-        out = self.layer_out(out)
+        
+        if self.use_gate_layer:
+            gate = self.gate_layer(id_in)
+            out = self.layer_out(out) * gate
+        else:
+            out = self.layer_out(out)
         
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
 
-        if self.use_softmax==True:
+        if self.use_softmax:
             out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            # if self.use_K:
-            #     B, N, C = out.shape
-            #     out = out.reshape(B, self.K_dim, N, C//self.K_dim)
             out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
+
+        if self.use_relu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         return out
 
@@ -2642,7 +2692,7 @@ class Model_mk3(nn.Module):
         self.bn4 = nn.BatchNorm1d(512)
         self.bn5 = nn.BatchNorm1d(2048)
         self.fstn = STNkd(k=128)
-        self.convs1 = torch.nn.Conv1d(4944-16, 256, 1)
+        self.convs1 = torch.nn.Conv1d(4944, 256, 1)
         self.convs2 = torch.nn.Conv1d(256, 256, 1)
         self.convs3 = torch.nn.Conv1d(256, 128, 1)
         self.convs4 = torch.nn.Conv1d(128, out_dim, 1)
@@ -2650,17 +2700,26 @@ class Model_mk3(nn.Module):
         self.bns2 = nn.BatchNorm1d(256)
         self.bns3 = nn.BatchNorm1d(128)
 
-    def forward(self, x_in, return_inv=False, return_raw=False, no_rot=False):
+    # def forward(self, x_in, return_inv=False, return_raw=False, no_rot=False):
+    #     out, trans_feat = self.forward_func(x_in)
+    #     # out = out + 1e-12
+    #     # return self.get_output(out, x_in, return_inv, return_raw)
+    #     if no_rot:
+    #         return outs, trans_feat
+    #     outs = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
+    #     return outs, trans_feat
+
+    def forward(self, x_in):
         out, trans_feat = self.forward_func(x_in)
-        # out = out + 1e-12
-        # return self.get_output(out, x_in, return_inv, return_raw)
-        if no_rot:
-            return outs, trans_feat
-        outs = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
+        
         return outs, trans_feat
         
     # def forward_func(self, point_cloud, label):
     def forward_func(self, point_cloud):
+        """
+        Args:
+            point_cloud: (B,D,N) input point cloud with D dimension features
+        """
         # B, D, N = point_cloud.size()
         # trans = self.stn(point_cloud)
         # point_cloud = point_cloud.transpose(2, 1) # (B, N, D)
@@ -2669,22 +2728,12 @@ class Model_mk3(nn.Module):
         trans = self.stn(point_cloud.transpose(2, 1))
         
         if D > 3:
-            # point_cloud, feature = point_cloud.split(3, dim=2)
-            if D > 6:
-                point_cloud, point_normal, feature = point_cloud[...,:3], point_cloud[...,3:6], point_cloud[...,6:]
-            else:
-                point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
+            point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
                 
         point_cloud = torch.bmm(point_cloud, trans)
-        if D > 6:
-            point_normal = torch.bmm(point_normal, trans)
-            
+                    
         if D > 3:
-            # point_cloud = torch.cat([point_cloud, feature], dim=2)
-            if D > 6:
-                point_cloud = torch.cat([point_cloud, point_normal, feature], dim=-1)
-            else:
-                point_cloud = torch.cat([point_cloud, feature], dim=-1)
+            point_cloud = torch.cat([point_cloud, feature], dim=-1)
 
         point_cloud = point_cloud.transpose(2, 1) # (B, D, N)
 
@@ -2702,15 +2751,15 @@ class Model_mk3(nn.Module):
         out_max = torch.max(out5, 2, keepdim=True)[0]
         out_max = out_max.view(-1, 2048)
 
-        # out_max = torch.cat([out_max,label.squeeze(1)],1)
-        # expand = out_max.view(-1, 2048+16, 1).repeat(1, 1, N)
-        expand = out_max.view(-1, 2048, 1).repeat(1, 1, N)
+        out_max = torch.cat([out_max,label.squeeze(1)],1)
+        expand = out_max.view(-1, 2048+16, 1).repeat(1, 1, N)
         concat = torch.cat([expand, out1, out2, out3, out4, out5], 1)
         net = F.relu(self.bns1(self.convs1(concat)))
         net = F.relu(self.bns2(self.convs2(net)))
         net = F.relu(self.bns3(self.convs3(net)))
         net = self.convs4(net)
         net = net.transpose(2, 1).contiguous()
+        
         # net = F.log_softmax(net.view(-1, self.out_dim), dim=-1)
         net = net.view(B, N, self.out_dim) # [B, N, out_dim]
 
@@ -2854,8 +2903,6 @@ class Model_mk3_2(nn.Module):
                 point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
                 
         point_cloud = torch.bmm(point_cloud, trans)
-        if D > 6:
-            point_normal = torch.bmm(point_normal, trans)
             
         if D > 3:
             # point_cloud = torch.cat([point_cloud, feature], dim=2)
@@ -2945,8 +2992,6 @@ class Model_mk3_3(nn.Module):
                 point_cloud, feature = point_cloud[...,:3], point_cloud[...,3:]
                 
         point_cloud = torch.bmm(point_cloud, trans)
-        if D > 6:
-            point_normal = torch.bmm(point_normal, trans)
             
         if D > 3:
             # point_cloud = torch.cat([point_cloud, feature], dim=2)
@@ -3049,64 +3094,6 @@ class Model_mk4(nn.Module):
         out = get_output(self, out, x_in, return_inv=return_inv, return_raw=return_raw)
         return out
 
-def _smoothstep(
-        t: torch.Tensor,
-        kind: str = "quintic"
-    ) -> torch.Tensor:
-    """Monotone step S:[0,1]->[0,1] with selectable smoothness."""
-    if kind == "cos":
-        tt = t.clamp(0, 1)
-        return 0.5 * (1 - torch.cos(math.pi * tt))
-    elif kind == "quintic":
-        tt = t.clamp(0, 1)
-        return tt**3 * (10 - 15*tt + 6*tt*tt)
-    elif kind == "cinf":
-        s = torch.zeros_like(t)
-        m = (t > 0) & (t < 1)
-        u = t[m]
-        a = torch.exp(-1.0 / u)
-        b = torch.exp(-1.0 / (1.0 - u))
-        s[m] = a / (a + b)
-        s = torch.where(t >= 1, torch.ones_like(s), s)
-        return s
-    else:
-        raise ValueError("kind must be one of {'cos','quintic','cinf'}")
-
-def plateau_hat_r(
-        r: torch.Tensor,
-        r0: float,
-        r1: float,
-        kind: str = "quintic"
-    ) -> torch.Tensor:
-    """Plateau hat as a function of radius r."""
-    if not (r1 > r0):
-        raise ValueError("Require r1 > r0")
-    t = (r - r0) / (r1 - r0)
-    S = _smoothstep(t, kind=kind)
-    f = torch.where(r <= r0, torch.ones_like(r), 1 - S)
-    f = torch.where(r >= r1, torch.zeros_like(r), f)
-    return f
-
-def plateau_hat_points(
-        X: torch.Tensor,
-        C: torch.Tensor,
-        r0: float,
-        r1: float,
-        kind: str = "quintic",
-        normalize=None,
-        eps: float = 1e-12
-    ) -> torch.Tensor:
-    """
-    X: (N,3) points, C: (K,3) centers -> weights W: (N,K)
-    normalize='pou' -> partition of unity across centers.
-    """
-    diff = X[:, None, :] - C[None, :, :]
-    r = torch.linalg.norm(diff, dim=-1)  # (N,K)
-    W = plateau_hat_r(r, r0, r1, kind=kind)
-    if normalize == 'pou':
-        s = W.sum(dim=1, keepdim=True).clamp_min(eps)
-        W = W / s
-    return W
     
 def normalize_homogeneous(V):
     return np.concatenate([V, np.ones((V.shape[0], 1))], axis=1)
