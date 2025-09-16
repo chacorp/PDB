@@ -79,7 +79,7 @@ def plateau_hat_r(
         kind: str = "quintic"
     ):
     """
-        Plateau hat as a function of radius r
+    Top-hat function on range r
     """
     if not (r1 > r0):
         raise ValueError("Require r1 > r0")
@@ -90,6 +90,7 @@ def plateau_hat_r(
     f = torch.where(r >= r1, torch.zeros_like(r), f)
     return f
 
+@torch.no_grad()
 def plateau_hat_points(
         X: torch.Tensor,
         C: torch.Tensor=torch.tensor([[0.0, 0.0, 0.5]]), 
@@ -100,9 +101,11 @@ def plateau_hat_points(
         eps=1e-12
     ):
     """
+    Top-hat function on point C
+    
     Args:
         X (torch.tensor): (N,3) points
-        C (torch.tensor): (K,3) centers
+        C (torch.tensor): (K,3) centers of Top-hat function
         normalize (str): if 'pou' -> partition of unity across centers.(default: None)
         r0 (float): falloff radius
         r1 (float): weight radius
