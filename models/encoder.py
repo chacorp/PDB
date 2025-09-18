@@ -6,16 +6,21 @@ import torch.utils.data
 import sys
 from pathlib import Path
 __abs_path__ = str(Path(__file__).parents[1].absolute())
-__diffusionnet_path__=f'{__abs_path__}/third_party/diffusion-net/src'
+__p_net_path__ = f'{__abs_path__}/third_party/Pointnet_Pointnet2_pytorch/models'
+__d_net_path__=f'{__abs_path__}/third_party/diffusion-net/src'
 __siren_path__ = f'{__abs_path__}/third_party/siren'
 
 
-for __util_path__ in [__abs_path__, __diffusionnet_path__, __siren_path__]:
+for __util_path__ in [__abs_path__, __p_net_path__, __d_net_path__, __siren_path__]:
     if not __util_path__ in sys.path:
         sys.path+=[__util_path__]
 
 ## diffusionnet
 import diffusion_net
+
+## pointnet
+# from pointnet_utils import PointNetEncoder, feature_transform_reguliarzer, STN3d, STNkd
+from pointnet_utils import STN3d, STNkd
 
 ## siren
 import modules
@@ -23,6 +28,406 @@ from meta_modules import HyperNetwork
 
 # from torchmeta.modules import (MetaModule, MetaSequential)
 from models.blocks import *
+
+
+class PointNetEncoder_small(nn.Module):
+    def __init__(self, in_dim=3, out_dim=512, global_feat=True, feature_transform=False):
+        super(PointNetEncoder_small, self).__init__()
+        self.out_dim = out_dim
+        
+        self.stn = STN3d(in_dim)
+        self.conv1 = torch.nn.Conv1d(in_dim, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1)
+        self.conv3 = torch.nn.Conv1d(128, self.out_dim, 1)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(self.out_dim)
+        
+        self.global_feat = global_feat
+        self.feature_transform = feature_transform
+        if self.feature_transform:
+            self.fstn = STNkd(k=64)
+
+    def forward(self, x_in):
+        """
+        Args:
+            x_in: (B,N,D)
+        Returns
+            (B,feat,N)
+        """
+        x = x_in.transpose(2, 1) # (B,N,D) -> (B,D,N)
+        
+        B, D, N = x.size()
+        trans = self.stn(x)
+        x = x.transpose(2, 1)
+        if D > 3:
+            feature = x[:, :, 3:]
+            x = x[:, :, :3]
+        x = torch.bmm(x, trans)
+        if D > 3:
+            x = torch.cat([x, feature], dim=2)
+        x = x.transpose(2, 1)
+        x = F.relu(self.bn1(self.conv1(x)))
+
+        if self.feature_transform:
+            trans_feat = self.fstn(x)
+            x = x.transpose(2, 1)
+            x = torch.bmm(x, trans_feat)
+            x = x.transpose(2, 1)
+        else:
+            trans_feat = None
+
+        pointfeat = x
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.bn3(self.conv3(x))
+        x = torch.max(x, 2, keepdim=True)[0]
+        x = x.view(-1, self.out_dim)
+        
+        if self.global_feat:
+            return x, trans, trans_feat
+        else:
+            x = x.view(-1, self.out_dim, 1).repeat(1, 1, N)
+            return torch.cat([x, pointfeat], 1), trans, trans_feat
+            
+class PointNet_small(nn.Module):
+    """
+    PointNet architecture
+    """
+    def __init__(self, 
+                in_dim=3, out_dim=3, hid_dim=512,
+                 mode='rot', # (not used)
+                 out_type='vertices',
+                 use_softmax=False, use_relu=False, use_elu=False,
+                 use_least_N=False, use_least_N_on_V=False,
+                 use_gate_layer=False,
+                 tau=1e-2
+                ):
+        super().__init__()
+        
+        self.mode = mode
+        self.out_dim = out_dim
+        self._tau = 1 / tau
+        self.out_type = out_type
+                
+        self.hid_dim = self.out_dim if self.out_type == 'global' else hid_dim 
+        self.global_feat = True if self.out_type == 'global' else False
+        
+        self.use_softmax=use_softmax
+        self.use_relu=use_relu
+        self.use_elu=use_elu
+        self.use_least_N = use_least_N
+        self.use_least_N_on_V = use_least_N_on_V
+        self.use_gate_layer = use_gate_layer
+        
+        # if act == 'sigmoid':
+        #     self.act = nn.Sigmoid()
+        # elif act == 'relu':
+        #     self.act = nn.ReLU()
+        # elif act == 'lrelu':
+        #     self.act = nn.LeakyReLU(0.2)
+        # elif act == 'elu':
+        #     self.act = nn.ELU(0.2)
+        # elif act=='softplus':
+        #     self.act = nn.Softplus()
+        # else:
+        #     self.act = lambda x: x
+            
+        self.pnt_enc = PointNetEncoder_small(
+            in_dim=in_dim,
+            out_dim=self.hid_dim,
+            global_feat=self.global_feat,
+            feature_transform=True
+        )
+        
+        if self.out_type == 'global':
+            self.layer1 = nn.Linear(self.hid_dim, 256)
+            self.layer2 = nn.Linear(256, 256)
+            self.layer3 = nn.Linear(256, 128)
+            self.layer4 = nn.Linear(128, self.out_dim)
+            #self.dropout = nn.Dropout(p=0.4)
+            self.bns1 = nn.BatchNorm1d(256)
+            self.bns2 = nn.BatchNorm1d(256)
+            self.bns3 = nn.BatchNorm1d(128)
+            
+        else:
+            # self.convs1 = torch.nn.Conv1d(4944-16, 256, 1)
+            self.layer1 = nn.Conv1d(64+self.hid_dim, 256, 1)
+            self.layer2 = nn.Conv1d(256, 256, 1)
+            self.layer3 = nn.Conv1d(256, 128, 1)
+            self.layer4 = nn.Conv1d(128, self.out_dim, 1)
+            self.bns1 = nn.BatchNorm1d(256)
+            self.bns2 = nn.BatchNorm1d(256)
+            self.bns3 = nn.BatchNorm1d(128)
+    
+    def least_N_zeros_gate(self, out, N: int=128, dim: int = -1):
+        """
+        forward: hard top-(K-N) mask || backward: softmax(tau)
+        
+        Args:
+            out: (*, K)
+            N: least number of zero (keep = K - N)
+        
+        Return
+            mask: range in [0,1] (forward = 0/1, backward = soft)
+        """
+        K = out.size(dim)
+        keep = max(K - N, 0)
+        
+        if keep == 0:
+            soft = torch.softmax(out * self._tau, dim=dim)
+            return (torch.zeros_like(soft) - soft).detach() + soft
+        
+        # soft path
+        soft = torch.softmax(out * self._tau, dim=dim) # (*,K)
+        
+        # hard top-(K-N) mask (forward)
+        topk = torch.topk(out, keep, dim=dim)
+        hard = torch.zeros_like(out).scatter(dim, topk.indices, 1.0)
+        
+        mask = (hard - soft).detach() + soft
+        return mask
+
+    def forward(self, x_in, N=128, return_all=False):
+        B, V, C = x_in.shape
+        
+        out, trans_feat = self.forward_func(x_in)
+        
+        # if self.out_type == 'global':
+        #     out = out.mean(-2, keepdims=True)
+        
+        if self.use_softmax:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
+            
+        if self.use_relu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_elu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.elu(out,alpha=0.5)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+            out = out * mask
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N_on_V:
+            NZ = V // 16
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
+            out = F.relu(out) * mask
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+
+        if return_all:
+            return out, trans_feat
+        return out
+        
+    def forward_func(self, point_cloud):
+        """
+        Args:
+            point_cloud: (B,N,D) input point cloud with D dimension features
+        """
+        
+        B, N, D = point_cloud.size()
+        
+        out, trans, trans_feat = self.pnt_enc(point_cloud)
+        # out.shape => (B feat N)
+        
+        out = F.relu(self.bns1(self.layer1(out)))
+        out = F.relu(self.bns2(self.layer2(out)))
+        out = F.relu(self.bns3(self.layer3(out)))
+        out = self.layer4(out)
+        
+        if self.out_type == 'global':
+            out = out.view(B, 1, self.out_dim)
+            return out, trans_feat
+            
+        out = out.transpose(2, 1).contiguous()        
+        # net = F.log_softmax(net.view(-1, self.out_dim), dim=-1)
+        out = out.view(B, N, self.out_dim) # [B, N, out_dim]
+        return out, trans_feat
+
+class PointNet_large(nn.Module):
+    """
+    PointNet architecture 2
+    """
+    def __init__(self, 
+                in_dim=3, out_dim=3, hid_dim=512,
+                 mode='rot', # (not used)
+                 out_type='vertices',
+                 use_softmax=False, use_relu=False, use_elu=False,
+                 use_least_N=False, use_least_N_on_V=False,
+                 use_gate_layer=False,
+                 tau=1e-2
+                ):
+        super().__init__()
+
+        assert out_dim//4 > 1, f'out_dim is too small! {out_dim}'
+        
+        self.mode = mode
+        self.out_dim = out_dim
+        self._tau = 1 / tau
+        self.out_type = out_type
+                
+        self.hid_dim = self.out_dim if self.out_type == 'global' else hid_dim 
+        self.global_feat = True if self.out_type == 'global' else False
+        
+        self.use_softmax=use_softmax
+        self.use_relu=use_relu
+        self.use_elu=use_elu
+        self.use_least_N = use_least_N
+        self.use_least_N_on_V = use_least_N_on_V
+        self.use_gate_layer = use_gate_layer
+        
+        # if act == 'sigmoid':
+        #     self.act = nn.Sigmoid()
+        # elif act == 'relu':
+        #     self.act = nn.ReLU()
+        # elif act == 'lrelu':
+        #     self.act = nn.LeakyReLU(0.2)
+        # elif act == 'elu':
+        #     self.act = nn.ELU(0.2)
+        # elif act=='softplus':
+        #     self.act = nn.Softplus()
+        # else:
+        #     self.act = lambda x: x
+            
+        self.pnt_enc = PointNetEncoder_small(
+            in_dim=in_dim,
+            out_dim=self.hid_dim,
+            global_feat=self.global_feat,
+            feature_transform=True
+        )
+        
+        if self.out_type == 'global':
+            self.layer1 = nn.Linear(self.hid_dim, 256)
+            self.layer2 = nn.Linear(256, 256)
+            self.layer3 = nn.Linear(256, self.out_dim//4)
+            self.layer4 = nn.Linear(self.out_dim//4, self.out_dim//2)
+            self.layer5 = nn.Linear(self.out_dim//2, self.out_dim)
+            #self.dropout = nn.Dropout(p=0.4)
+            self.bns1 = nn.BatchNorm1d(256)
+            self.bns2 = nn.BatchNorm1d(256)
+            self.bns3 = nn.BatchNorm1d(self.out_dim//4)
+            self.bns4 = nn.BatchNorm1d(self.out_dim//2)
+            
+        else:
+            # self.convs1 = torch.nn.Conv1d(4944-16, 256, 1)
+            self.layer1 = nn.Conv1d(64+self.hid_dim, 256, 1)
+            self.layer2 = nn.Conv1d(256, 256, 1)
+            self.layer3 = nn.Conv1d(256, self.out_dim//4, 1)
+            self.layer4 = nn.Conv1d(self.out_dim//4, self.out_dim//2, 1)
+            self.layer5 = nn.Conv1d(self.out_dim//2, self.out_dim, 1)
+            self.bns1 = nn.BatchNorm1d(256)
+            self.bns2 = nn.BatchNorm1d(256)
+            self.bns3 = nn.BatchNorm1d(self.out_dim//4)
+            self.bns4 = nn.BatchNorm1d(self.out_dim//2)
+    
+    def least_N_zeros_gate(self, out, N: int=128, dim: int = -1):
+        """
+        forward: hard top-(K-N) mask || backward: softmax(tau)
+        
+        Args:
+            out: (*, K)
+            N: least number of zero (keep = K - N)
+        
+        Return
+            mask: range in [0,1] (forward = 0/1, backward = soft)
+        """
+        K = out.size(dim)
+        keep = max(K - N, 0)
+        
+        if keep == 0:
+            soft = torch.softmax(out * self._tau, dim=dim)
+            return (torch.zeros_like(soft) - soft).detach() + soft
+        
+        # soft path
+        soft = torch.softmax(out * self._tau, dim=dim) # (*,K)
+        
+        # hard top-(K-N) mask (forward)
+        topk = torch.topk(out, keep, dim=dim)
+        hard = torch.zeros_like(out).scatter(dim, topk.indices, 1.0)
+        
+        mask = (hard - soft).detach() + soft
+        return mask
+
+    def forward(self, x_in, N=128, return_all=False):
+        B, V, C = x_in.shape
+        
+        out, trans_feat = self.forward_func(x_in)
+        
+        # if self.out_type == 'global':
+        #     out = out.mean(-2, keepdims=True)
+        
+        if self.use_softmax:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
+            
+        if self.use_relu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_elu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.elu(out, alpha=0.5)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+            out = out * mask
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N_on_V:
+            NZ = V // 16
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
+            out = F.relu(out) * mask
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+
+        if return_all:
+            return out, trans_feat
+        return out
+        
+    def forward_func(self, point_cloud):
+        """
+        Args:
+            point_cloud: (B,N,D) input point cloud with D dimension features
+        """
+        
+        B, N, D = point_cloud.size()
+        
+        out, trans, trans_feat = self.pnt_enc(point_cloud)
+        # out.shape => (B feat N)
+        
+        out = F.relu(self.bns1(self.layer1(out)))
+        out = F.relu(self.bns2(self.layer2(out)))
+        out = F.relu(self.bns3(self.layer3(out)))
+        out = F.relu(self.bns4(self.layer4(out)))
+        out = self.layer5(out)
+        
+        if self.out_type == 'global':
+            out = out.view(B, 1, self.out_dim)
+            return out, trans_feat
+            
+        out = out.transpose(2, 1).contiguous()        
+        # net = F.log_softmax(net.view(-1, self.out_dim), dim=-1)
+        out = out.view(B, N, self.out_dim) # [B, N, out_dim]
+        return out, trans_feat
+
 
 class BaseDiffusionNetEncoder(nn.Module):
     # reference: https://github.com/dafei-qin/NFR_pytorch/blob/e3553faa77f65240ec20167aec6e814473233890/mymodel.py#L17
@@ -121,36 +526,319 @@ class MLP(nn.Sequential):
     '''
     A simple MLP with configurable hidden layer sizes.
     '''
-    def __init__(self, layer_sizes, num_gn=32, dropout=False, act='relu', name="MLP", p=.5):
+    def __init__(self, layer_sizes, num_gn=32, dropout=False, act='relu', nrm='batch', name="MLP", p=.5):
         super(MLP, self).__init__()
 
-        if act == 'none':
-            self.act = lambda x: x
+        if act == 'sigmoid':
+            self.act = nn.Sigmoid()
         elif act == 'relu':
             self.act = nn.ReLU()
         elif act == 'lrelu':
-            self.act = nn.LeakyReLU()
+            self.act = nn.LeakyReLU(0.2)
+        elif act == 'elu':
+            self.act = nn.ELU(0.2)
+        elif act=='softplus':
+            self.act = nn.Softplus()
+        else:
+            self.act = lambda x: x
+        
+        self.nrm=nrm
+        if nrm == 'group':
+            norm_func=nn.GroupNorm
+        elif nrm == 'inst':
+            norm_func=nn.InstanceNorm1d
+        elif nrm == 'batch':
+            norm_func=nn.BatchNorm1d
+        elif nrm == 'layer':
+            norm_func=nn.LayerNorm
+        else:
+            norm_func = lambda x: x
             
-        self.N_layers = len(layer_sizes)
+        self.num_layers = len(layer_sizes)
+        
         layers = []
         norms = []
-        for i in range(self.N_layers-1):
+        for i in range(self.num_layers-2):
             if dropout and i > 0:
-                layers.append(nn.Dropout(p=p))    
-            layers.append(nn.Linear(layer_sizes[i], layer_sizes[i+1]))
+                layers.append(nn.Dropout(p=p))
             
-        for j in range(self.N_layers-2): # no norm for the last layer
-            # norms.append(nn.GroupNorm(num_gn, layer_sizes[j+1]))
-            norms.append(nn.InstanceNorm1d(layer_sizes[j+1]))
-            
+            layers.append(
+                nn.Linear(layer_sizes[i], layer_sizes[i+1])
+            )
+            norms.append(
+                norm_func(num_gn, layer_sizes[i+1])
+                if nrm == 'group' else
+                norm_func(layer_sizes[i+1])
+            )            
+        layers.append(
+            nn.Linear(layer_sizes[-2], layer_sizes[-1])
+        )
+        
         self.layers = nn.ModuleList(layers)
         self.norms = nn.ModuleList(norms)
+
+    def detect_transpose(self, x):
+        if self.nrm == 'group' or self.nrm == 'inst' or self.nrm == 'batch':
+            x = x.transpose(-1, -2)
+        return x
         
     def forward(self, x):
-        for i in range(self.N_layers-2):
-            tmp = self.layers[i](x)#.transpose(-1, -2)
-            out = self.act(self.norms[i](tmp))#.transpose(-1, -2)
+        out = x
+        for i in range(self.num_layers-2):
+            tmp = self.layers[i](out)
+            tmp = self.detect_transpose(tmp)
+            
+            out = self.act(self.norms[i](tmp))
+            out = self.detect_transpose(out)
         out = self.layers[-1](out)
+        return out
+
+class LinearEncoder(nn.Module):
+    def __init__(self, 
+                 in_dim=3, out_dim=3, hid_dim=128, num_layers=4, 
+                 mode='rot', use_residual=False, out_type='vertices',
+                 use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
+                 use_least_N=False, use_least_N_on_V=False,
+                 use_gate_layer=False,
+                 act='lrelu', nrm='layer',
+                 tau=1e-2, use_K=False, K_dim=8,
+                ):
+        super().__init__()
+        
+        self.mode = mode
+        self.out_dim = out_dim
+        self._tau = 1 / tau
+        
+        self.use_residual = use_residual
+        
+        self.use_softmax=use_softmax
+        self.use_relu=use_relu
+        self.use_elu=use_elu
+        self.use_softplus=use_softplus
+        self.use_least_N = use_least_N
+        self.use_least_N_on_V = use_least_N_on_V
+        self.use_gate_layer = use_gate_layer
+        
+        self.out_type = out_type
+        self.use_K = use_K
+        self.K_dim = K_dim
+                
+        self.layer_in = nn.Linear(in_dim, hid_dim)
+        self.layer_out = nn.Linear(hid_dim, out_dim)
+
+        self.layers = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+
+        ## adaptive layer Norm
+        self.adain_in = MLP(
+            [in_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
+            act=act, nrm=nrm
+        )
+        
+        self.adains_m = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm='layer')
+            for _ in range(num_layers)
+        ])
+        self.adains_s = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm='layer')
+            for _ in range(num_layers)
+        ])
+        
+        if self.use_gate_layer:
+            self.gate_layer = nn.Sequential(
+                MLP([hid_dim, hid_dim, out_dim], act=act, nrm=nrm),
+                nn.Sigmoid(),
+            )
+        
+    def least_N_zeros_gate(self, out, N: int=128, dim: int = -1, tau: float = 0.01):
+        """
+        forward: hard top-(K-N) mask || backward: softmax(tau)
+        
+        Args:
+            out: (*, K)
+            N: least number of zero (keep = K - N)
+        
+        Return
+            mask: range in [0,1] (forward = 0/1, backward = soft)
+        """
+        K = out.size(dim)
+        keep = max(K - N, 0)
+        
+        if keep == 0:
+            soft = torch.softmax(out * self._tau, dim=dim)
+            return (torch.zeros_like(soft) - soft).detach() + soft
+    
+        # soft path for gradients
+        soft = torch.softmax(out * self._tau, dim=dim) # (*,K)
+    
+        # hard top-(K-N) mask (forward)
+        topk = torch.topk(out, keep, dim=dim)
+        hard = torch.zeros_like(out).scatter(dim, topk.indices, 1.0)
+    
+        # Straight-Through estimator
+        mask = (hard - soft).detach() + soft
+        return mask
+        
+    def forward(self, x_in, N=128, return_inv=False, return_raw=False):
+        B, V, C = x_in.shape
+        
+        out = self.forward_func(x_in)
+        
+        if self.out_type == 'global':
+            out = out.mean(-2, keepdims=True)
+        
+        if self.use_softmax:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
+            
+        if self.use_relu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_softplus:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.softplus(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+
+        if self.use_elu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.elu(out, alpha=0.5)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+            out = out * mask
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N_on_V:
+            NZ = V // 16
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
+            out = out * mask            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        return out
+        
+        
+    def forward_func(self, x_in, return_inv=False):
+        out = self.layer_in(x_in)
+        
+        id_in = self.adain_in(x_in).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
+        
+        for layer, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
+            l_out = layer(out)
+            l_out = l_out * sigma(id_in) + mu(id_in)
+            
+            if self.use_residual:
+                out = l_out + out
+            else:
+                out = l_out
+                
+        if self.use_gate_layer:
+            out = self.layer_out(out) * self.gate_layer(id_in)
+        else:
+            out = self.layer_out(out)
+                    
+        return out
+
+class LinearEncoder2(nn.Module):
+    def __init__(self,
+                 in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
+                 num_layers=4, use_style=True, out_type='vertices',
+                 use_softmax=False, use_relu=False, use_K=False, K_dim=8,
+                 use_gate_layer=False,
+                ):
+        super().__init__()
+                
+        self.in_dim = in_dim
+        self.style_dim = style_dim
+        self.out_dim = out_dim
+        self.use_style=use_style
+        self.out_type = out_type
+        self.use_softmax = use_softmax
+        self.use_relu = use_relu
+        self.use_gate_layer = use_gate_layer
+        self.use_K = use_K
+        self.K_dim = K_dim
+        
+        self.act = nn.ReLU()
+                
+        self.layer_in = nn.Linear(in_dim, hid_dim)
+        self.layer_out = nn.Linear(hid_dim, out_dim)
+
+        self.layers = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+        adain_dim = style_dim if use_style else in_dim
+        self.adain_in = MLP(
+            [adain_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
+            act=act, nrm=nrm
+        )
+        
+        self.adains_m = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+        self.adains_s = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+
+        if self.use_gate_layer:
+            self.gate_layer = nn.Sequential(
+                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, out_dim), nn.Sigmoid(),
+            )
+
+    def forward(self, x_in, style):
+        """
+            x_in: (B, N, 3)
+        """
+        out = self.act(self.layer_in(x_in))
+        
+        id_in = self.act(self.adain_in(style if self.use_style else x_in))
+        
+        for l, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
+            l_out = l(out)
+            s_out = sigma(id_in)
+            m_out = mu(id_in)
+            out = (l_out * s_out + m_out) + out
+        
+        if self.use_gate_layer:
+            gate = self.gate_layer(id_in)
+            out = self.layer_out(out) * gate
+        else:
+            out = self.layer_out(out)
+        
+        if self.out_type == 'global':
+            out = out.mean(-2, keepdims=True)
+
+        if self.use_softmax:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
+
+        if self.use_relu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
         return out
         
 class AdaINDiffusionNetEncoder(nn.Module):
