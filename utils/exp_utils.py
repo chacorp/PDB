@@ -52,7 +52,8 @@ def get_colors(vertices):
 
 def _smoothstep(t: torch.Tensor, kind: str = "quintic"):
     """
-    Monotone step S:[0,1]->[0,1] with selectable smoothness
+    Returns:
+        s (float): Monotone step, [0,1]->[0,1] with selectable smoothness
     """
     if kind == "cos":
         tt = t.clamp(0, 1)
@@ -79,7 +80,7 @@ def plateau_hat_r(
         kind: str = "quintic"
     ):
     """
-    Top-hat function on range r
+    Top-hat function for range r
     """
     if not (r1 > r0):
         raise ValueError("Require r1 > r0")
@@ -90,23 +91,22 @@ def plateau_hat_r(
     f = torch.where(r >= r1, torch.zeros_like(r), f)
     return f
 
-@torch.no_grad()
 def plateau_hat_points(
         X: torch.Tensor,
         C: torch.Tensor=torch.tensor([[0.0, 0.0, 0.5]]), 
         r0: float=0.75,
-        r1: float=1.75,
+        r1: float=1.65,
         kind: str = "quintic",
         normalize=None,
         eps=1e-12
     ):
     """
-    Top-hat function on point C
+    Top-hat function on center C for given points 
     
     Args:
         X (torch.tensor): (N,3) points
         C (torch.tensor): (K,3) centers of Top-hat function
-        normalize (str): if 'pou' -> partition of unity across centers.(default: None)
+        normalize (str): if 'pou' -> partition of unity across centers. (default: None)
         r0 (float): falloff radius
         r1 (float): weight radius
     Returns:
@@ -1678,7 +1678,7 @@ def get_output(self, out, x_in, return_inv=False, return_raw=False):
     
     return out
 
-def load_batch_dfn_ino(dfn_info_list, device):
+def load_batch_dfn_info(dfn_info_list, device):
     """
     dfn_info_list (list)
     """
@@ -1703,7 +1703,24 @@ def load_batch_dfn_ino(dfn_info_list, device):
     batch_evecs=torch.stack(batch_evecs).to(device)
     return batch_mass, batch_L, batch_evals, batch_evecs, batch_grad_X, batch_grad_Y, batch_faces
 
-
+class nnPermute(nn.Module):
+    def __init__(self, dims=[0,2,1]):
+        super().__init__()
+        self.dims = dims
+        
+    def forward(self, x):
+        x = x.permute(self.dims)
+        return x
+        
+class nnTranspose(nn.Module):
+    def __init__(self, dims=[2,1]):
+        super().__init__()
+        self.dims = dims
+        
+    def forward(self, x):
+        x = x.transpose(*self.dims)
+        return x
+        
 class Model(nn.Module):
     def __init__(self, 
                  in_dim=3, out_dim=9, hid_dim=128, num_layers=4, 
@@ -1711,6 +1728,7 @@ class Model(nn.Module):
                  use_to_out=False, out_type='vertices',
                  use_softmax=False, use_relu=False, use_least_N=False, use_least_N_on_V=False,
                  use_gate_layer=False,
+                 act='relu',
                  tau=1e-2, use_K=False, K_dim=8,
                 ):
         super().__init__()
@@ -1731,8 +1749,16 @@ class Model(nn.Module):
         self.out_type = out_type
         self.use_K = use_K
         self.K_dim = K_dim
+
+        if act=='relu':
+            self.act = nn.ReLU()
+        elif act=='softplus':
+            self.act = nn.Softplus()
+        elif act=='lrelu':
+            self.act = nn.LeakyReLU(0.2)
+        elif act=='elu':
+            self.act = nn.ELU(0.2)
         
-        self.act = nn.ReLU()
         self.layer_in = nn.Linear(in_dim, hid_dim)
         self.layer_out = nn.Linear(hid_dim, out_dim)
 
@@ -1745,46 +1771,28 @@ class Model(nn.Module):
 
         # self.adain_in = nn.Linear(in_dim, 64)
         self.adain_in = nn.Sequential(
-                nn.Linear(in_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
+                nn.Linear(in_dim,  hid_dim), self.act, nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), self.act, nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), self.act, nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), self.act, nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), self.act, nn.LayerNorm(hid_dim),
                 nn.Linear(hid_dim, hid_dim),
             )
         self.adains_m = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
+                nn.Linear(hid_dim, hid_dim), self.act, nn.LayerNorm(hid_dim),
+                nn.Linear(hid_dim, hid_dim), self.act, nn.LayerNorm(hid_dim),
                 nn.Linear(hid_dim, hid_dim),
-            ),
-            nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim),
-            ),
-            nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim),
-            ),
+            )
+            for _ in range(num_layers)
         ])
         self.adains_s = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
                 nn.Linear(hid_dim, hid_dim),
-            ),
-            nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim),
-            ),
-            nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                nn.Linear(hid_dim, hid_dim),
-            ),
+            )
+            for _ in range(num_layers)
         ])
         
         if self.use_gate_layer:
