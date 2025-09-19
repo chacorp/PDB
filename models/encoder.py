@@ -756,7 +756,10 @@ class LinearEncoder2(nn.Module):
     def __init__(self,
                  in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
                  num_layers=4, use_style=True, out_type='vertices',
-                 use_softmax=False, use_relu=False, use_K=False, K_dim=8,
+                 use_softmax=False, use_relu=False, use_elu=False,
+                 use_least_N=False, use_least_N_on_V=False,
+                 use_K=False, K_dim=8,
+                 act='lrelu', nrm='layer',
                  use_gate_layer=False,
                 ):
         super().__init__()
@@ -768,6 +771,11 @@ class LinearEncoder2(nn.Module):
         self.out_type = out_type
         self.use_softmax = use_softmax
         self.use_relu = use_relu
+        self.use_elu = use_elu
+        
+        self.use_least_N=use_least_N # not used
+        self.use_least_N_on_V=use_least_N_on_V # not used
+
         self.use_gate_layer = use_gate_layer
         self.use_K = use_K
         self.K_dim = K_dim
@@ -806,13 +814,13 @@ class LinearEncoder2(nn.Module):
                 nn.Linear(hid_dim, out_dim), nn.Sigmoid(),
             )
 
-    def forward(self, x_in, style):
+    def forward(self, x_in, style, N=128):
         """
             x_in: (B, N, 3)
         """
-        out = self.act(self.layer_in(x_in))
+        out = self.layer_in(x_in)
         
-        id_in = self.act(self.adain_in(style if self.use_style else x_in))
+        id_in = self.adain_in(style if self.use_style else x_in)
         
         for l, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
             l_out = l(out)
@@ -837,6 +845,29 @@ class LinearEncoder2(nn.Module):
             out = F.normalize(out, dim=-2) # normalize for each column (key points)
             out = F.relu(out)
             
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_elu:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.elu(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+
+        if self.use_least_N:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+            out = out * mask
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+        if self.use_least_N_on_V:
+            NZ = V // 16
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.relu(out)
+            
+            mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
+            out = out * mask            
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         return out
