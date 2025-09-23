@@ -1568,13 +1568,13 @@ class NeuralGeneralizedBarycentricCoordinate81(nn.Module):
             exp_z_d = self.exp_z_model(deform_in) # (B, 1, L)
             key_d = self.key_d_model(exp_z_d)
             
-            exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)
-            key_s = self.key_d_model(exp_z_s, z_ID_B)
+            exp_z_s = self.exp_z_model(deform_in_s) # (B, 1, L)
+            key_s = self.key_d_model(exp_z_s)
         
-        key_s_key_d = self.reshape_key_d(key_s_key_d, B) # (B, 2M, 3)
+        key_d = self.reshape_key_d(key_d, B) # (B, 2M, 3)
+        key_s = self.reshape_key_d(key_s, B) # (B, 2M, 3)
         
         M = self.num_cage_vertices
-        key_s, key_d = key_s_key_d[:,:M], key_s_key_d[:,M:]
         ### ---------------------------------------------------------
 
         
@@ -1615,7 +1615,7 @@ class NeuralGeneralizedBarycentricCoordinate81(nn.Module):
         ### ---------------------------------------------------------  
         
         if out_kw:
-            return pred_deformed, recon_deformed, recon_source, exp_z_d, key_d, key_weight
+            return pred_deformed, recon_deformed, recon_source, exp_z_d, key_d, key_weight_d
             
         return pred_deformed, recon_deformed, recon_source, exp_z_d, pred_source, (randperm_idx, rearange_idx)
     
