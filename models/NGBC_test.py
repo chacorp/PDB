@@ -1517,14 +1517,12 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             
             if self.use_shp:
                 exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)    
-                key_s = self.key_d_model(exp_z_s, z_ID_B).reshape(
-                    B, self.num_cage_vertices, 3
-                )
+                key_s = self.key_d_model(exp_z_s, z_ID_B)            
             else:
                 exp_z_s = self.exp_z_model(deform_in_s) # (B, 1, L)    
-                key_s = self.key_d_model(exp_z_s).reshape(
-                    B, self.num_cage_vertices, 3
-                )
+                key_s = self.key_d_model(exp_z_s)
+            key_s = self.reshape_key_d(key_s, B) # (B, M, 3)
+                
             pred_source = torch.einsum('bnc,bci->bni',key_weight,key_s)
         else:
             pred_source = 0

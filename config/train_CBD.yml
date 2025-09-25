@@ -8,7 +8,7 @@ continue_ckpt: False
 save_interval: 50
 
 in_type: 1
-out_type: 0
+out_type: 1
 
 # optimizer
 lr : 0.0002
@@ -17,7 +17,7 @@ start_epoch: 0
 
 # scheduler
 sc_step: 10
-sc_gamma: 0.9
+sc_gamma: 0.95
 
 # loss
 lambda_mvc: 1.0
