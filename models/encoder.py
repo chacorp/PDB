@@ -648,7 +648,7 @@ class LinearEncoder(nn.Module):
         
         if self.use_gate_layer:
             self.gate_layer = nn.Sequential(
-                MLP([hid_dim, hid_dim, out_dim], act=act, nrm=nrm),
+                MLP([hid_dim, hid_dim, hid_dim, hid_dim, out_dim], act=act, nrm=nrm),
                 nn.Sigmoid(),
             )
         
@@ -758,7 +758,7 @@ class LinearEncoder2(nn.Module):
                  num_layers=4, use_style=True, out_type='vertices',
                  use_softmax=False, use_relu=False, use_elu=False,
                  use_least_N=False, use_least_N_on_V=False,
-                 use_K=False, K_dim=8,
+                 use_residual=True, use_K=False, K_dim=8,
                  act='lrelu', nrm='layer',
                  use_gate_layer=False,
                 ):
@@ -772,7 +772,8 @@ class LinearEncoder2(nn.Module):
         self.use_softmax = use_softmax
         self.use_relu = use_relu
         self.use_elu = use_elu
-        
+
+        self.use_residual=use_residual
         self.use_least_N=use_least_N # not used
         self.use_least_N_on_V=use_least_N_on_V # not used
 
@@ -780,7 +781,7 @@ class LinearEncoder2(nn.Module):
         self.use_K = use_K
         self.K_dim = K_dim
         
-        self.act = nn.ReLU()
+        self.act = nn.LeakyReLU(0.2)
                 
         self.layer_in = nn.Linear(in_dim, hid_dim)
         self.layer_out = nn.Linear(hid_dim, out_dim)
@@ -796,22 +797,18 @@ class LinearEncoder2(nn.Module):
         )
         
         self.adains_m = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
             for _ in range(num_layers)
         ])
         self.adains_s = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
             for _ in range(num_layers)
         ])
 
         if self.use_gate_layer:
             self.gate_layer = nn.Sequential(
-                nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim), 
-                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
-                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
-                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
-                # nn.Linear(hid_dim, hid_dim), nn.ReLU(), nn.LayerNorm(hid_dim),
-                nn.Linear(hid_dim, out_dim), nn.Sigmoid(),
+                MLP([hid_dim, hid_dim, hid_dim, hid_dim, out_dim], act=act, nrm=nrm),
+                nn.Sigmoid(),
             )
 
     def forward(self, x_in, style, N=128):
@@ -826,11 +823,15 @@ class LinearEncoder2(nn.Module):
             l_out = l(out)
             s_out = sigma(id_in)
             m_out = mu(id_in)
-            out = (l_out * s_out + m_out) + out
+            l_out = (l_out * s_out) + m_out
+            
+            if self.use_residual:
+                out = l_out + out
+            else:
+                out = l_out
         
         if self.use_gate_layer:
-            gate = self.gate_layer(id_in)
-            out = self.layer_out(out) * gate
+            out = self.layer_out(out) * self.gate_layer(self.act(id_in))
         else:
             out = self.layer_out(out)
         
