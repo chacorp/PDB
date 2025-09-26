@@ -1,6 +1,6 @@
-# Neural Face Skinning for Mesh-agnostic Facial Expression Cloning
+# Neural coordinates for facial animation retargeting
 
-<img src="assets/teaser.png" alt="drawing"/> 
+<!-- <img src="assets/teaser.png" alt="drawing"/>  -->
 <!-- <a href=""><img src="https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg" height=22.5></a> -->
 <a href="https://chacorp.github.io/nfs-page/"><img src="https://img.shields.io/static/v1?label=Project&message=Page&color=red" height=22.5></a>
 
@@ -121,32 +121,22 @@ NOTE: requres pretrained model... will be uploaded soon... !
 ## 4. Training
 After the data preparation, you can train your own model by using bash file `train.sh` as below:
 ```bash
-bash train.sh
+bash train_CBD.sh
 ```
 
 The bash file can be modified for desired cases.
 ```shell
 # train model from the scratch
-python train.py \
-  --log_dir "ckpts" \
-  --max_epoch 500 \
-  --stage1 --tb \
-  --dec_type 'disp' \ 
-  --design 'new2' \
-  --seg_dim 20 \
-  --warmup \
-  --window_size 16
-
-# continue or fine-tune model from the saved checkpoint
-python train.py \
-  --log_dir "ckpts" \
-  --max_epoch 500 \
-  --stage1 --tb \
-  --dec_type 'disp' \
-  --design 'new2' \
-  --seg_dim 20 \
-  --window_size 16 \
-  --ckpt "ckpts/2025-01-02-06-54-46-all" # path to saved checkpoint
+python train_CBD.py \
+--max_epoch 200 \
+--tb \
+--lr 2E-4 \
+--sc_step 10 \
+--version 5 \
+--batch_size 32 \
+--num_cage_v 512 \
+--in_type 1 \
+--out_type 1
 ```
 
 
