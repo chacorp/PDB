@@ -756,7 +756,7 @@ class LinearEncoder2(nn.Module):
     def __init__(self,
                  in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
                  num_layers=4, use_style=True, out_type='vertices',
-                 use_softmax=False, use_relu=False, use_elu=False,
+                 use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
                  use_least_N=False, use_least_N_on_V=False,
                  use_residual=True, use_K=False, K_dim=8,
                  act='lrelu', nrm='layer',
@@ -772,6 +772,7 @@ class LinearEncoder2(nn.Module):
         self.use_softmax = use_softmax
         self.use_relu = use_relu
         self.use_elu = use_elu
+        self.use_softplus = use_softplus
 
         self.use_residual=use_residual
         self.use_least_N=use_least_N # not used
@@ -854,6 +855,12 @@ class LinearEncoder2(nn.Module):
             
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
 
+        if self.use_softplus:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            out = F.softplus(out)
+            
+            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
         if self.use_least_N:
             out = F.normalize(out, dim=-2) # normalize for each column (key points)
             out = F.relu(out)
