@@ -40,7 +40,11 @@ from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorize
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
 
 from models.baseline import CageNet
-from models.NGBC import NeuralGeneralizedBarycentricCoordinate
+from models.NGBC import (
+    NeuralGeneralizedBarycentricCoordinate, 
+    NeuralGeneralizedBarycentricCoordinate5,
+    NeuralGeneralizedBarycentricCoordinate8,
+)
 
 sys.path = list(set(sys.path))
 
@@ -159,30 +163,42 @@ class Trainer():
 
         if opts.version==1:
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
-        else:
-            # if self.opts.in_type == 0:
-            #     in_dim = 3
-            # elif self.opts.in_type == 1:
-            #     in_dim = 6
-            # else:
-            #     in_dim = 3
-                
+        elif opts.version==2:
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
-                #in_dim=3, # position
-                #in_dim=6, # position + normal
-                # in_dim=in_dim,
                 hid_dim=256,
-                # num_cage_vertices=768,
-                # num_cage_vertices=1024,
                 num_cage_vertices=self.opts.num_cage_v,
                 num_layers=4,
                 use_relu=True,
-                is_train=False,
+                is_train=True, 
                 device=self.device,
-                use_exp_recon=False,
-                use_shp_recon=False, # not needed for inference
             )
+        elif opts.version==5:
+            self.model = NeuralGeneralizedBarycentricCoordinate5(
+                opts, num_layers=4,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_elu=False,
+                use_relu=True,
+                use_least_N_on_V=False,
+                is_train=True,
+                device=self.device,
+            )
+        elif opts.version==8:
+            self.model = NeuralGeneralizedBarycentricCoordinate8(
+                opts, num_layers=4,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_elu=False,
+                use_relu=True,
+                use_least_N_on_V=False,
+                is_train=True,
+                device=self.device,
+            )
+        else:
+            raise NotImplementedError('No matching model version')
         
         # load weight
         self.load_weight()
@@ -402,6 +418,9 @@ class Trainer():
 
 if __name__ == "__main__":
     """
+    #### voca | biwi | mf_SEN | coma | mf_ROM | mf_all |
+    ####   0  |   1  |    2   |   3  |    4   |    5   |
+    
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-08-19-15-47-NGBC --in_type 1 --num_cage_v 768 --data_selection -1
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-08-13-21-05-NGBC --in_type 0 --num_cage_v 1024 --data_selection 5 --start_epoch 400
         
@@ -409,6 +428,10 @@ if __name__ == "__main__":
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-21-05-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0 --batch_size 1 --device 'cpu'
 
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-53-39-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0
+
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-25-18-27-55-NGBCv8 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
+        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-26-10-16-32-NGBCv5 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
     """
     # argparse configs
     opts = Options()
