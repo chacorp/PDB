@@ -947,9 +947,9 @@ class Trainer():
         )
         
         #if self.opts.use_scheduler:
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
+        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
             self.optimizer, 
-            step_size=self.opts.sc_step, 
+            milestones=[torch.arange(0, epochs-1, self.opts.sc_step)], 
             gamma=self.opts.sc_gamma
         )
             
@@ -1074,6 +1074,7 @@ class Trainer():
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
         interv_train = round(len_train_data / 10)
+        
         for epoch in range(start_epoch, epochs+1):
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
             
@@ -1090,24 +1091,32 @@ class Trainer():
             self.model.train()
             train_counter = 0
             
+            is_stepped = False
+            is_stts_added = False
+            
             pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
             for index, batch in pbar:
                 self.optimizer.zero_grad()
 
-                ## random sampling and random permutation
-                N=batch.template.shape[1]
-                N_range = torch.randint(100, N//6, (1,)).item()
-    
-                randperm_idx = torch.randperm(N)[:N-N_range]
-                rearange_idx = torch.argsort(randperm_idx)
-                
-                batch_template_v = batch.template[:, randperm_idx]
-                batch_template_n = batch.template_normal[:, randperm_idx]
-                batch_vertices_v = batch.vertices[:, randperm_idx]
-                batch_vertices_n = batch.vertices_normal[:, randperm_idx]
-
-                ## masking face region using hat function (min x1 ~ max x2)
                 with torch.no_grad():
+                    ## sampling points with probability
+                    margin = 0.5
+                    _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
+                        
+                    ## random sampling and random permutation
+                    N=batch.template.shape[1]
+                    #N_range = torch.randint(100, N//6, (1,)).item()    
+                    #randperm_idx = torch.randperm(N)[:N-N_range]
+                    
+                    randperm_idx = torch.multinomial(_p, 2048)
+                    rearange_idx = torch.argsort(randperm_idx)
+                    
+                    batch_template_v = batch.template[:, randperm_idx]
+                    batch_template_n = batch.template_normal[:, randperm_idx]
+                    batch_vertices_v = batch.vertices[:, randperm_idx]
+                    batch_vertices_n = batch.vertices_normal[:, randperm_idx]
+
+                    ## masking face region using hat function (min x1 ~ max x2)
                     t_mask = plateau_hat_points(batch_template_v) + 1.0
                     
                 # model prediction -------------------------------------------------------------------------------
@@ -1169,7 +1178,7 @@ class Trainer():
                 global_step += 1
                 train_counter += 1
                                 
-                interv_train = round(len_train_data / 10)
+                
                 if index % interv_train == 1:
 
                     IDX = torch.tensor([0, 1, HB, BS-1])
@@ -1188,11 +1197,12 @@ class Trainer():
                     __idx__ = 1/train_counter
                     for key, value in running_losses.items():
                         log_text += f"{key}: {value*__idx__:.6e} "
-                    
-                    log_text+='\n>>> sum across vertex weights on each cage: '
-                    log_text+=f'(max: {key_weight[0].sum(0).max().item()}, min: {key_weight[0].sum(0).min().item()})\n'
-                    log_text+=f'>>> Num actually used cage vertex: {torch.count_nonzero(key_weight[0].sum(0))} / {key_weight.shape[-1]}'
-                    
+
+                    if not is_stts_added:
+                        log_text+='\n>>> Sum across vertex weights on each cage: '
+                        log_text+=f'(max: {key_weight[0].sum(0).max().item():.5e}, min: {key_weight[0].sum(0).min().item():.5e})\n'
+                        log_text+=f'>>> Num actually used cage vertex: {torch.count_nonzero(key_weight[0].sum(0))} / {key_weight.shape[-1]}'
+                        is_stts_added=True
                     self.logger.write(log_text+"\n")
                     
                     frame = HB
@@ -1232,9 +1242,10 @@ class Trainer():
                 self.scheduler.step()
                 
                 curr_lr = self.optimizer.param_groups[0]["lr"]
-                if epoch % self.opts.sc_step==0:
+                if epoch % self.opts.sc_step==0 and not is_stepped:
                     log_notice = f'[{epoch:03d}/{epochs:03d}][{index:04d}][Train] scheduler stepped: {curr_lr:.6e}'
                     self.logger.write(log_notice+"\n")
+                    is_stepped=True
             # ----------------------------------------------------------------------------------------------------
                 
             # log
@@ -1371,9 +1382,12 @@ class Trainer():
         )
         
         #if self.opts.use_scheduler:
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
+        scheduler = MultiStepLR(optimizer, milestones=[30, 80], gamma=0.1)
+
+        # self.scheduler = torch.optim.lr_scheduler.StepLR(
+        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
             self.optimizer, 
-            step_size=self.opts.sc_step, 
+            milestones=[torch.arange(0, epochs-1, self.opts.sc_step)], 
             gamma=self.opts.sc_gamma
         )
             
@@ -1436,7 +1450,7 @@ class Trainer():
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
         
-        tag = "-NGBCv5"
+        tag = "-NGBCv8"
         if self.opts.optim_cage:
             tag += "-optim_cage"
         self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
@@ -1514,24 +1528,32 @@ class Trainer():
             self.model.train()
             train_counter = 0
             
+            is_stepped=False
+            is_stts_added=False
+            
             pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
             for index, batch in pbar:
                 self.optimizer.zero_grad()
-
-                ## random sampling and random permutation
-                N=batch.template.shape[1]
-                N_range = torch.randint(100, N//6, (1,)).item()
-    
-                randperm_idx = torch.randperm(N)[:N-N_range]
-                rearange_idx = torch.argsort(randperm_idx)
                 
-                batch_template_v = batch.template[:, randperm_idx]
-                batch_template_n = batch.template_normal[:, randperm_idx]
-                batch_vertices_v = batch.vertices[:, randperm_idx]
-                batch_vertices_n = batch.vertices_normal[:, randperm_idx]
-
-                ## masking face region using hat function (min x1 ~ max x2)
                 with torch.no_grad():
+                    ## sampling points with probability
+                    margin = 0.5
+                    _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
+                        
+                    ## random sampling and random permutation
+                    N=batch.template.shape[1]
+                    #N_range = torch.randint(100, N//6, (1,)).item()    
+                    #randperm_idx = torch.randperm(N)[:N-N_range]
+                    
+                    randperm_idx = torch.multinomial(_p, 2048)
+                    rearange_idx = torch.argsort(randperm_idx)
+                    
+                    batch_template_v = batch.template[:, randperm_idx]
+                    batch_template_n = batch.template_normal[:, randperm_idx]
+                    batch_vertices_v = batch.vertices[:, randperm_idx]
+                    batch_vertices_n = batch.vertices_normal[:, randperm_idx]
+
+                    ## masking face region using hat function (min x1 ~ max x2)
                     t_mask = plateau_hat_points(batch_template_v) + 1.0
                     
                 # model prediction -------------------------------------------------------------------------------
@@ -1621,10 +1643,12 @@ class Trainer():
                     __idx__ = 1/train_counter
                     for key, value in running_losses.items():
                         log_text += f"{key}: {value*__idx__:.6e} "
-                    
-                    log_text+='\n>>> sum across vertex weights on each cage: '
-                    log_text+=f'(max: {key_weight[0].sum(0).max().item()}, min: {key_weight[0].sum(0).min().item()})\n'
-                    log_text+=f'>>> Num actually used cage vertex: {torch.count_nonzero(key_weight[0].sum(0))} / {key_weight.shape[-1]}'
+
+                    if not is_stts_added:
+                        log_text+='\n>>> Sum across vertex weights on each cage: '
+                        log_text+=f'(max: {key_weight[0].sum(0).max().item():.5e}, min: {key_weight[0].sum(0).min().item():.5e})\n'
+                        log_text+=f'>>> Num actually used cage vertex: {torch.count_nonzero(key_weight[0].sum(0))} / {key_weight.shape[-1]}'
+                        is_stts_added=True
                     self.logger.write(log_text+"\n")
                     
                     frame = HB
@@ -1664,9 +1688,10 @@ class Trainer():
                 self.scheduler.step()
                 
                 curr_lr = self.optimizer.param_groups[0]["lr"]
-                if epoch % self.opts.sc_step==0:
+                if epoch % self.opts.sc_step==0 and not is_stepped:
                     log_notice = f'scheduler stepped: {curr_lr:.6e}'
                     self.logger.write(log_notice+"\n")
+                    is_stepped=True
             # ----------------------------------------------------------------------------------------------------
                 
             # log

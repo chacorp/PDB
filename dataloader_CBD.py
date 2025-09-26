@@ -599,7 +599,7 @@ class CBDdataSampler(data.Sampler):
         indices = np.zeros(0, dtype=int)
         labels  = np.zeros(0, dtype=int)
         id_mesh = np.zeros(0, dtype=int)
-
+        
         self.len_data=[]
         self.mesh_data=[]
         for len_data, _, mesh_data, id_len_list in self.len_list:
@@ -611,7 +611,7 @@ class CBDdataSampler(data.Sampler):
             n_expressions = (len_data // id_len_list) + (self.batch_size-padd)
             
             if self.mode == 'train':
-                n_expressions = 20*n_expressions
+                n_expressions = 2*n_expressions
             
             _indices = np.tile(np.arange(0, n_expressions, dtype=int), id_len_list)
             _labels = np.arange(0, id_len_list, dtype=int).repeat(n_expressions)
@@ -633,7 +633,6 @@ class CBDdataSampler(data.Sampler):
         return indices, labels, id_mesh
     
     def __iter__(self):
-        
         if self.shuffle:
             idx = np.arange(self.indices.shape[0])
             idx = np.random.permutation(idx)
@@ -761,7 +760,7 @@ class CBDDataBatch2:
     def set_dfn_info(self, data):
         # DiffusionNet precomputes
         self.mass = data[0]
-        self.L = data[1]
+        self.L = data[1]   
         self.evals = data[2]
         self.evecs = data[3]
         self.grad_X = data[4]
