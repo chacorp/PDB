@@ -1104,7 +1104,7 @@ class Trainer():
 
                 with torch.no_grad():
                     ## sampling points with probability
-                    margin = 0.5
+                    margin = 0.8
                     _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
                         
                     ## random sampling and random permutation
@@ -1542,7 +1542,7 @@ class Trainer():
                 
                 with torch.no_grad():
                     ## sampling points with probability
-                    margin = 0.5
+                    margin = 0.8
                     _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
                         
                     ## random sampling and random permutation
