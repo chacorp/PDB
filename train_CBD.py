@@ -946,10 +946,14 @@ class Trainer():
             betas=(0.9, 0.999)
         )
         
-        #if self.opts.use_scheduler:
-        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        # self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        #     self.optimizer, 
+        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)], 
+        #     gamma=self.opts.sc_gamma
+        # )
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, 
-            milestones=[torch.arange(0, epochs-1, self.opts.sc_step)], 
+            step_size=self.opts.sc_step,
             gamma=self.opts.sc_gamma
         )
             
@@ -1105,7 +1109,7 @@ class Trainer():
                         
                     ## random sampling and random permutation
                     N=batch.template.shape[1]
-                    #N_range = torch.randint(100, N//6, (1,)).item()    
+                    #N_range = torch.randint(100, N//6, (1,)).item()
                     #randperm_idx = torch.randperm(N)[:N-N_range]
                     
                     randperm_idx = torch.multinomial(_p, 2048)
@@ -1381,15 +1385,16 @@ class Trainer():
             betas=(0.9, 0.999)
         )
         
-        #if self.opts.use_scheduler:
-        scheduler = MultiStepLR(optimizer, milestones=[30, 80], gamma=0.1)
-
-        # self.scheduler = torch.optim.lr_scheduler.StepLR(
-        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, 
-            milestones=[torch.arange(0, epochs-1, self.opts.sc_step)], 
+            step_size=self.opts.sc_step,
             gamma=self.opts.sc_gamma
         )
+        # self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        #     self.optimizer, 
+        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)], 
+        #     gamma=self.opts.sc_gamma
+        # )
             
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
