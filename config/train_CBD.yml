@@ -16,7 +16,7 @@ max_epoch: 500
 start_epoch: 0
 
 # scheduler
-sc_step: 10
+sc_step: 20
 sc_gamma: 0.95
 
 # loss
