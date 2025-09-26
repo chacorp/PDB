@@ -239,8 +239,9 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
                  num_layers=4,
                  N_list=[3525, 2560, 5223], # voca biwi mf
                  use_softmax=False,
-                 use_relu=False,
-                 use_elu=True,
+                 use_relu=True,
+                 use_elu=False,
+                 use_softplus=False,
                  use_least_N=False,
                  use_least_N_on_V=False,
                  least_number_of_zeros=256, # for sparsity (not used)
@@ -322,6 +323,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             use_softmax=use_softmax,
             use_relu=use_relu, # default setting
             use_elu=use_elu,
+            use_softplus=use_softplus,
             use_least_N=use_least_N,
             use_least_N_on_V=use_least_N_on_V,
         ).to(device)
@@ -601,8 +603,9 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
                  num_layers=4,
                  N_list=[3525, 2560, 5223], # voca biwi mf
                  use_softmax=False,
-                 use_relu=False,
-                 use_elu=True,
+                 use_relu=True,
+                 use_elu=False,
+                 use_softplus=False,
                  use_least_N=False,
                  use_least_N_on_V=False,
                  least_number_of_zeros=256, # for sparsity (not used)
@@ -688,6 +691,7 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
             use_softmax=use_softmax,
             use_relu=use_relu, # default setting
             use_elu=use_elu,
+            use_softplus=use_softplus,
             use_least_N=use_least_N,
             use_least_N_on_V=use_least_N_on_V,
         ).to(device)
