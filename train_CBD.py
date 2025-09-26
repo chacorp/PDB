@@ -1104,15 +1104,15 @@ class Trainer():
 
                 with torch.no_grad():
                     ## sampling points with probability
-                    margin = 0.8
-                    _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
+                    # margin = 0.8
+                    # _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
                         
                     ## random sampling and random permutation
                     N=batch.template.shape[1]
-                    #N_range = torch.randint(100, N//6, (1,)).item()
-                    #randperm_idx = torch.randperm(N)[:N-N_range]
+                    N_range = torch.randint(100, N//6, (1,)).item()
+                    randperm_idx = torch.randperm(N)[:N-N_range]
                     
-                    randperm_idx = torch.multinomial(_p, 2048)
+                    # randperm_idx = torch.multinomial(_p, 2048)
                     rearange_idx = torch.argsort(randperm_idx)
                     
                     batch_template_v = batch.template[:, randperm_idx]
@@ -1121,15 +1121,16 @@ class Trainer():
                     batch_vertices_n = batch.vertices_normal[:, randperm_idx]
 
                     ## masking face region using hat function (min x1 ~ max x2)
-                    t_mask = plateau_hat_points(batch_template_v) + 1.0
+                    # t_mask = plateau_hat_points(batch_template_v) + 1.0
                     
                 # model prediction -------------------------------------------------------------------------------
                 ## weight prediction: (B, Nv, Nc)
                 ## key_d prediction:  (B, Nc, 3+3) [deformed cage]
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, t_mask = self.model(
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
+                t_mask = t_mask + 1.0
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
@@ -1280,7 +1281,7 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
+                    pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
                         batch.template, batch.vertices, 
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
@@ -1542,15 +1543,15 @@ class Trainer():
                 
                 with torch.no_grad():
                     ## sampling points with probability
-                    margin = 0.8
-                    _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
+                    # margin = 0.8
+                    # _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
                         
                     ## random sampling and random permutation
                     N=batch.template.shape[1]
-                    #N_range = torch.randint(100, N//6, (1,)).item()    
-                    #randperm_idx = torch.randperm(N)[:N-N_range]
+                    N_range = torch.randint(100, N//6, (1,)).item()    
+                    randperm_idx = torch.randperm(N)[:N-N_range]
                     
-                    randperm_idx = torch.multinomial(_p, 2048)
+                    # randperm_idx = torch.multinomial(_p, 2048)
                     rearange_idx = torch.argsort(randperm_idx)
                     
                     batch_template_v = batch.template[:, randperm_idx]
@@ -1559,15 +1560,16 @@ class Trainer():
                     batch_vertices_n = batch.vertices_normal[:, randperm_idx]
 
                     ## masking face region using hat function (min x1 ~ max x2)
-                    t_mask = plateau_hat_points(batch_template_v) + 1.0
+                    # t_mask = plateau_hat_points(batch_template_v) + 1.0
                     
                 # model prediction -------------------------------------------------------------------------------
                 ## weight prediction: (B, Nv, Nc)
                 ## key_d prediction:  (B, Nc, 3+3) [init cage, deformed cage]
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, t_mask = self.model(
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
+                t_mask = t_mask + 1.0
                 # pred_vertices_s, recon_vertices_s, recon_source_s, exp_z_s, pred_source_s = self.model(
                 #     batch_template_v, batch_template_v, batch_template_n, batch_template_n,
                 #     batch.mesh_data, epoch=epoch
@@ -1634,6 +1636,7 @@ class Trainer():
 
                     IDX = torch.tensor([0, 1, HB, BS-1])
                     with torch.no_grad():
+                        # t_mask_ = plateau_hat_points(batch.template[IDX]) + 1.0
                         #pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
                         pred_vertices, _, _, exp_z, key_d, key_weight = self.model(
                             batch.template[IDX], batch.vertices[IDX],
@@ -1727,7 +1730,7 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
+                    pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
                         batch.template, batch.vertices, 
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
