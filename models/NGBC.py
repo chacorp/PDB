@@ -419,6 +419,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             reconstructed source mesh
         """
         B, N, _ = deform_vert.shape
+        hat_mask = plateau_hat_points(source_vert)
         
         source_in = source_vert
         deform_in = deform_vert-source_vert # as a delta
@@ -431,7 +432,6 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
         deform_in = torch.cat([deform_in, source_in], dim=-1)
         
         if self.in_type==2:
-            hat_mask = plateau_hat_points(source_vert)
             source_in = torch.cat([source_in, hat_mask], dim=-1)
             deform_in = torch.cat([deform_in, hat_mask], dim=-1)
         
@@ -810,6 +810,7 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
             reconstructed source mesh
         """
         B, N, _ = deform_vert.shape
+        hat_mask = plateau_hat_points(source_vert)
         
         source_in = source_vert
         deform_in = deform_vert-source_vert # as a delta
@@ -821,7 +822,6 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
         deform_in = torch.cat([deform_in, source_in], dim=-1)
         
         if self.in_type == 2:
-            hat_mask = plateau_hat_points(source_vert)
             source_in = torch.cat([source_in, hat_mask], dim=-1)
             deform_in = torch.cat([deform_in, hat_mask], dim=-1)
 
