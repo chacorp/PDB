@@ -21,8 +21,294 @@ from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, K
 from utils.remesh_utils import map_vertices, decimate_mesh_vertex
 from utils.mesh_utils import get_dfn_info2, get_mesh_operators
 from utils.exp_utils import PCA_holder, adjacency_matrix
-from tqdm import tqdm
-import time
+
+class EvalDataset(data.Dataset):
+    def __init__(self, opts=None, is_train=False, data_basedir='/data/sihun', data_name='coma'):
+        super().__init__()
+        self.opts = opts
+        self.is_train = False
+        self.mode = 'test'
+        
+        data_name_list = ['voca','mf_SEN','biwi','coma','mf_ROM']
+        self.data_name = data_name
+        if not self.data_name in data_name_list:
+            #voca, mf_SEN, biwi, coma, mf_ROM
+            raise ValueError(f'\nNo data name for that!: [{data_name}] listed dataname: {data_name_list}')
+        
+        _, self.voca_data_split, self.biwi_data_split, self.mf_data_split, _ = get_data_splits()
+        
+        self.biwi_base_path = f'{data_basedir}/BIWI_align_deci'
+        self.coma_base_path = f'{data_basedir}/VOCA-COMA'
+        self.mf_base_path = f'{data_basedir}/multiface_align'
+
+        # self.template_data_basedir = data_basedir
+        self.template_data_basedir = data_basedir+'/pca' # eve-s01
+        
+        if self.data_name=='voca':
+            self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
+                self.voca_mesh = pickle.load(f)
+            self.get_data = self.get_voca
+        
+        if self.data_name=='biwi':
+            ## already std applied
+            #self.biwi_std = np.load("utils/biwi/standardization.npy", allow_pickle=True).item()
+            with open(f"{self.template_data_basedir}/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
+                self.biwi_mesh = pickle.load(f) # meshes
+            self.get_data = self.get_biwi
+        
+        if self.data_name=='mf_SEN':
+            self.mf_SEN_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+            with open(f"{self.template_data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
+                self.mf_SEN_mesh = pickle.load(f)
+            self.get_data = self.get_mf_SEN
+            # adj_mat = igl.adjacency_matrix(self.mf_SEN_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.mf_SEN_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.mf_SEN_adj_list = igl.adjacency_list(self.mf_SEN_mesh["face"])
+
+        
+        if self.data_name=='coma':
+            self.coma_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
+                self.coma_mesh = pickle.load(f)
+            self.get_data = self.get_coma
+            # adj_mat = igl.adjacency_matrix(self.coma_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.coma_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.coma_adj_list = igl.adjacency_list(self.coma_mesh["face"])
+
+
+        if self.data_name=='mf_ROM':
+            self.mf_ROM_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+            with open(f"{self.template_data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
+                self.mf_ROM_mesh = pickle.load(f)
+            self.get_data = self.get_mf_ROM
+            # adj_mat = igl.adjacency_matrix(self.mf_ROM_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.mf_ROM_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.mf_ROM_adj_list = igl.adjacency_list(self.mf_ROM_mesh["face"])
+
+        self.len = 0
+        self.write_all_data_as_txt()
+
+    def get_data_config(self):
+        text = "===========[Dataset]===========\n"
+        text+= f"[mode]: {self.mode}\n"
+        text+= f"[Dataset]: {self.data_name}\n"
+        text+= f"------------------------------\n"
+        text+= f"[total data]: {self.len}\n"
+        text+= "===============================\n"
+        return text
+        
+    def __len__(self):
+        return self.len
+        #return self.len_anim_all
+    
+    def load_data_txt(self, txt_file):
+        with open(txt_file, 'r') as f:
+            tmp = f.readlines()
+            tmp = [ line.replace('\n','') for line in tmp]
+        return tmp
+        
+    def write_all_data_as_txt(self):
+        """
+        reads the folder and writes a list of files in the folder as a .txt format
+        """
+        if self.data_name=='mf_ROM':
+            logger_file = f"utils/data/mf_ROM_vertex_data_{self.mode}.txt"
+            if os.path.exists(logger_file):
+                print(f'mf ROM data list exists: {logger_file}')
+            else:
+                logger = open(logger_file, 'w')
+                for id_name in self.mf_data_split[self.mode]:
+                    vtx_path_list = sorted(glob.glob(os.path.join(f'{self.mf_base_path}/ROM/{self.mode}', 'vertices_npy', id_name, '*')))
+                    for vtx_path in vtx_path_list:
+                        if '.npy' in vtx_path:
+                            continue
+                        vtx_path = sorted(glob.glob(os.path.join(vtx_path,'*.npy')))
+                        for path in vtx_path:
+                            logger.write(f'{path}\n')
+                logger.close()
+            self.mf_ROM_datalist = self.load_data_txt(logger_file)
+            self.len += len(self.mf_ROM_datalist)
+        
+        if self.data_name=='mf_SEN':
+            logger_file = f"utils/data/mf_SEN_vertex_data_{self.mode}.txt"
+            if os.path.exists(logger_file):
+                print(f'mf SEN data list exists: {logger_file}')
+            else:
+                logger = open(logger_file, 'w')
+                for id_name in self.mf_data_split[self.mode]:
+                    vtx_path_list = sorted(glob.glob(os.path.join(f'{self.mf_base_path}/SEN/{self.mode}', 'vertices_npy', id_name, '*')))
+                    for vtx_path in vtx_path_list:
+                        if '.npy' in vtx_path:
+                            continue
+                        vtx_path = sorted(glob.glob(os.path.join(vtx_path,'*.npy')))
+                        for path in vtx_path:
+                            logger.write(f'{path}\n')
+                logger.close()
+            self.mf_SEN_datalist = self.load_data_txt(logger_file)
+            self.len += len(self.mf_SEN_datalist)
+            
+        if self.data_name=='coma':
+            logger_file = f"utils/data/coma_vertex_data_{self.mode}.txt"
+            if os.path.exists(logger_file):
+                print(f'coma data list exists: {logger_file}')
+            else:
+                logger = open(logger_file, 'w')
+                for id_name in self.voca_data_split[self.mode]:
+                    vtx_path_list = sorted(glob.glob(f'{self.coma_base_path}/COMA/{self.mode}/{id_name}/vertices_npy/*'))
+                    for vtx_path in vtx_path_list:
+                        vtx_path = sorted(glob.glob(os.path.join(vtx_path,'*.npy')))
+                        for path in vtx_path:
+                            logger.write(f'{path}\n')
+                logger.close()
+            self.coma_datalist = self.load_data_txt(logger_file)
+            self.len += len(self.coma_datalist)
+        
+        if self.data_name=='voca':
+            logger_file = f"utils/data/voca_vertex_data_{self.mode}.txt"
+            if os.path.exists(logger_file):
+                print(f'voca data list exists: {logger_file}')
+            else:
+                logger = open(logger_file, 'w')
+                for id_name in self.voca_data_split[self.mode]:
+                    vtx_path_list = sorted(glob.glob(f'{self.coma_base_path}/VOCASET/{self.mode}/{id_name}/vertices_npy/*'))
+                    for vtx_path in vtx_path_list:
+                        vtx_path = sorted(glob.glob(os.path.join(vtx_path,'*.npy')))
+                        for path in vtx_path:
+                            logger.write(f'{path}\n')
+                logger.close()
+            self.voca_datalist = self.load_data_txt(logger_file)
+            self.len += len(self.voca_datalist)
+
+        if self.data_name=='biwi':
+            logger_file = f"utils/data/biwi_vertex_data_{self.mode}.txt"
+            if os.path.exists(logger_file):
+                print(f'biwi data list exists: {logger_file}')
+            else:
+                logger = open(logger_file, 'w')
+                for id_name in self.biwi_data_split[self.mode]:
+                    id_path_list = sorted(glob.glob(f'{self.biwi_base_path}/{self.mode}/vertices_npy/{id_name}*'))
+                    for id_path in id_path_list:
+                        if 'pca' in id_path:
+                            continue
+                        vtx_path = sorted(glob.glob(f'{id_path}/*.npy'))
+                        for path in vtx_path:
+                            logger.write(f'{path}\n')
+                logger.close()
+            self.biwi_datalist = self.load_data_txt(logger_file)
+            self.len += len(self.biwi_datalist)
+        
+    def get_voca(self, index):
+        file_path=self.voca_datalist[index]
+        id_name = file_path.split('/')[6]
+        
+        vertices_np = np.load(file_path)
+        vertices = torch.tensor(vertices_np).float()
+        
+        faces_np = self.voca_std['new_f']
+        faces = torch.tensor(faces_np).long()
+        
+        template_np = self.voca_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
+        template_normal = igl.per_vertex_normals(template_np, faces_np)
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
+        
+    def get_biwi(self, index):
+        file_path=self.biwi_datalist[index]
+        id_name = file_path.split('/')[6].split('_')[0]
+        
+        vertices_np = np.load(file_path)
+        vertices = torch.tensor(vertices_np).float()
+        
+        faces_np = self.biwi_mesh['face']
+        faces = torch.tensor(faces_np).long()
+        
+        template_np = self.biwi_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
+        template_normal = igl.per_vertex_normals(template_np, faces_np)
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
+        
+    def get_mf_SEN(self, index):
+        file_path=self.mf_SEN_datalist[index]
+        id_name = file_path.split('/')[7]
+        
+        vertices_np = np.load(file_path)
+        vertices = torch.tensor(vertices_np).float()
+        
+        # faces_np = self.mf_SEN_std['new_f']
+        # faces = torch.tensor(faces_np).long()
+        faces = self.mf_SEN_std['new_f'].long()
+        
+        template_np = self.mf_SEN_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
+        template_normal = igl.per_vertex_normals(template_np, faces.numpy())
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces.numpy())
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
+        
+    def get_mf_ROM(self, index):
+        file_path=self.mf_ROM_datalist[index]
+        id_name = file_path.split('/')[7]
+        
+        vertices_np = np.load(file_path)
+        vertices = torch.tensor(vertices_np).float()
+        
+        # faces_np = self.mf_ROM_std['new_f']
+        # faces = torch.tensor(faces_np).long()
+        faces = self.mf_ROM_std['new_f'].long()
+        
+        template_np = self.mf_ROM_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
+        template_normal = igl.per_vertex_normals(template_np, faces.numpy())
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces.numpy())
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
+        
+    def get_coma(self, index):
+        file_path=self.coma_datalist[index]
+        id_name = file_path.split('/')[6]
+        
+        vertices_np = np.load(file_path)
+        vertices = torch.tensor(vertices_np).float()
+        
+        faces_np = self.coma_std['new_f']
+        faces = torch.tensor(faces_np).long()
+        
+        template_np = self.coma_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
+        template_normal = igl.per_vertex_normals(template_np, faces_np)
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
+            
+    def __getitem__(self, index):
+        return self.get_data(index)
+            
 
 class CBDDataset(data.Dataset):
     def __init__(self, 
@@ -799,6 +1085,9 @@ if __name__ == "__main__":
     """
     import yaml; import argparse
     from tqdm import tqdm
+    import time
+    
+    from utils import plot_image_array, plot_image_array_diff3, vis_rig 
     
     def set_seed(opts):
         # set seed
@@ -817,6 +1106,40 @@ if __name__ == "__main__":
     opts = argparse.Namespace(**opts_yaml)
     
     set_seed(opts)
+
+    #### evaluation data
+    # eval_dataset = EvalDataset(data_name='mf_SEN')
+    # eval_dataloader = torch.utils.data.DataLoader(
+    #     eval_dataset,
+    #     num_workers=8,
+    #     shuffle=False,
+    #     batch_size=1,
+    # )
+    
+    # len_eval_dataloader = len(eval_dataloader)
+    # pbar = tqdm(enumerate(eval_dataloader), total=len_eval_dataloader)
+    # mode = eval_dataset.data_name
+    # #import pdb;pdb.set_trace()
+
+    # logdir = 'tmp_'
+    # os.makedirs(logdir, exist_ok=True)
+    # for idx, data in pbar:
+    #     vertices, template, vertices_normal, template_normal, faces = data
+    #     pbar.set_description(f"{idx:5d}-{mode},{vertices.shape}, {template.shape}")
+        
+    #     v_list = [vertices[0] * 0.8, template[0] * 0.8] 
+    #     len_v = len(v_list)
+        
+    #     f_list = [faces[0]]*len_v
+    #     plot_image_array(
+    #         v_list, f_list, rot_list=[[0,0,0]]*len_v,
+    #         size=2, bg_black=True,  logdir=logdir, save=True, name=f'{idx:05d}-{mode}'
+    #     )
+    #     if idx == 50:
+    #         break
+    # import pdb;pdb.set_trace()
+
+
     
     
     opts.batch_size = 16
@@ -825,6 +1148,7 @@ if __name__ == "__main__":
     dataset = CBDDataset(opts, is_train=True, is_valid=False)
     print(dataset.get_data_config())
     
+        
     
     sampler = CBDdataSampler(
         dataset.len_list, 
@@ -864,8 +1188,7 @@ if __name__ == "__main__":
     # cpubar = tqdm(range(len_dataloader), total=100, desc='cpu', position=2, ncols=100)
     
     
-    from utils import plot_image_array, plot_image_array_diff3, vis_rig 
-    import pdb;pdb.set_trace()
+    
     pbar = tqdm(enumerate(dataloader), total=len_dataloader)
     for idx, batch in pbar:
         #print(batch.vertices.shape, batch.template.shape)
