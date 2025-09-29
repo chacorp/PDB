@@ -40,7 +40,11 @@ from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorize
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
 
 from models.baseline import CageNet
-from models.NGBC import NeuralGeneralizedBarycentricCoordinate
+from models.NGBC import (
+    NeuralGeneralizedBarycentricCoordinate, 
+    NeuralGeneralizedBarycentricCoordinate5,
+    NeuralGeneralizedBarycentricCoordinate8,
+)
 
 sys.path = list(set(sys.path))
 
@@ -59,6 +63,8 @@ def Options():
     
     parser.add_argument("--in_type",      type=int,   default=0,      
                         help='input type (0: position, 1: position + normal')
+    parser.add_argument("--out_type",      type=int,   default=1,      
+                        help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
@@ -157,30 +163,42 @@ class Trainer():
 
         if opts.version==1:
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
-        else:
-            if self.opts.in_type == 0:
-                in_dim = 3
-            elif self.opts.in_type == 1:
-                in_dim = 6
-            else:
-                in_dim = 3
-                
+        elif opts.version==2:
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
-                #in_dim=3, # position
-                #in_dim=6, # position + normal
-                in_dim=in_dim,
                 hid_dim=256,
-                # num_cage_vertices=768,
-                # num_cage_vertices=1024,
                 num_cage_vertices=self.opts.num_cage_v,
                 num_layers=4,
                 use_relu=True,
-                is_train=False,
+                is_train=True, 
                 device=self.device,
-                use_exp_recon=False,
-                use_shp_recon=False, # not needed for inference
             )
+        elif opts.version==5:
+            self.model = NeuralGeneralizedBarycentricCoordinate5(
+                opts, num_layers=4,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_elu=False,
+                use_relu=True,
+                use_least_N_on_V=False,
+                is_train=True,
+                device=self.device,
+            )
+        elif opts.version==8:
+            self.model = NeuralGeneralizedBarycentricCoordinate8(
+                opts, num_layers=4,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_elu=False,
+                use_relu=True,
+                use_least_N_on_V=False,
+                is_train=True,
+                device=self.device,
+            )
+        else:
+            raise NotImplementedError('No matching model version')
         
         # load weight
         self.load_weight()
@@ -192,7 +210,8 @@ class Trainer():
             else:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
             print(f"Loading... {ckpt}")
-            ckpt_dict = torch.load(ckpt)            
+            
+            ckpt_dict = torch.load(ckpt, map_location=self.device)            
             self.model.load_state_dict(ckpt_dict,strict=False)
         else:
             print('no ckpt found, training from scratch!')
@@ -205,12 +224,14 @@ class Trainer():
         BS = self.opts.batch_size
         
         selection=[
+            # voca | biwi | mf_SEN | coma | mf_ROM
             [True,  False, False, False, False], # 0
             [False,  True, False, False, False], # 1
             [False, False,  True, False, False], # 2
             [False, False, False,  True, False], # 3
             [False, False, False, False,  True], # 4
-            [False, False, False,  True,  True], # 5
+            [False, False,  True, False,  True], # 5
+            [ True, False, False,  True, False], # 6
             [ True,  True,  True,  True,  True], # -1
         ]
         selection = selection[self.opts.data_selection]
@@ -344,13 +365,13 @@ class Trainer():
                 frame = HB
                 v_list = [
                     vertices[0].cpu().detach(),
-                    vertices[1].cpu().detach(),
-                    vertices[HB].cpu().detach(),
-                    vertices[BS-1].cpu().detach(),
+                    # vertices[1].cpu().detach(),
+                    # vertices[HB].cpu().detach(),
+                    # vertices[BS-1].cpu().detach(),
                     pred_vertices[0].cpu().detach(),
-                    pred_vertices[1].cpu().detach(),
-                    pred_vertices[HB].cpu().detach(),
-                    pred_vertices[BS-1].cpu().detach(),
+                    # pred_vertices[1].cpu().detach(),
+                    # pred_vertices[HB].cpu().detach(),
+                    # pred_vertices[BS-1].cpu().detach(),
                 ]
                 len_v = len(v_list)
                 f_list=[faces] * len_v
@@ -397,8 +418,20 @@ class Trainer():
 
 if __name__ == "__main__":
     """
+    #### voca | biwi | mf_SEN | coma | mf_ROM | mf_all |
+    ####   0  |   1  |    2   |   3  |    4   |    5   |
+    
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-08-19-15-47-NGBC --in_type 1 --num_cage_v 768 --data_selection -1
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-08-13-21-05-NGBC --in_type 0 --num_cage_v 1024 --data_selection 5 --start_epoch 400
+        
+        python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-15-26-03-NGBC --in_type 0 --out_type 0 --num_cage_v 640 --data_selection 0
+        python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-21-05-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0 --batch_size 1 --device 'cpu'
+
+        python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-53-39-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0
+
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-25-18-27-55-NGBCv8 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
+        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-26-10-16-32-NGBCv5 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
     """
     # argparse configs
     opts = Options()

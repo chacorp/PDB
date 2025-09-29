@@ -12,6 +12,8 @@ from matplotlib_rnd import *
 import trimesh
 import random
 
+torch.arange(4)
+qwe = torch.randperm(4)
 
 class load_obj_mesh():
     def __init__(self, obj_file, to_torch=False, device='cpu'):
