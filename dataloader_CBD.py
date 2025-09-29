@@ -23,14 +23,19 @@ from utils.mesh_utils import get_dfn_info2, get_mesh_operators
 from utils.exp_utils import PCA_holder, adjacency_matrix
 
 class EvalDataset(data.Dataset):
-    def __init__(self, opts=None, is_train=False, data_basedir='/data/sihun', data_name='coma'):
+    def __init__(self, opts=None, is_train=False, data_basedir='/data/sihun', data_name='coma', toggle=True):
         super().__init__()
         self.opts = opts
         self.is_train = False
         self.mode = 'test'
         
-        data_name_list = ['voca','mf_SEN','biwi','coma','mf_ROM']
+        #data_name_list = ['voca','mf_SEN','biwi','coma','mf_ROM']
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM']
         self.data_name = data_name
+        
+        d_mask = [dn==data_name for dn in data_name_list]
+        self.mesh_data = torch.tensor([0,1,2,3,4])[d_mask]
+        
         if not self.data_name in data_name_list:
             #voca, mf_SEN, biwi, coma, mf_ROM
             raise ValueError(f'\nNo data name for that!: [{data_name}] listed dataname: {data_name_list}')
@@ -41,14 +46,20 @@ class EvalDataset(data.Dataset):
         self.coma_base_path = f'{data_basedir}/VOCA-COMA'
         self.mf_base_path = f'{data_basedir}/multiface_align'
 
-        # self.template_data_basedir = data_basedir
-        self.template_data_basedir = data_basedir+'/pca' # eve-s01
+        if toggle:
+            self.template_data_basedir = data_basedir # char 
+        else:
+            self.template_data_basedir = data_basedir+'/pca' # eve-s01
+        
+        self.len = 0
+        self.write_all_data_as_txt()
         
         if self.data_name=='voca':
             self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
             with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.voca_mesh = pickle.load(f)
             self.get_data = self.get_voca
+            
         
         if self.data_name=='biwi':
             ## already std applied
@@ -91,10 +102,8 @@ class EvalDataset(data.Dataset):
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
             # self.mf_ROM_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
             # self.mf_ROM_adj_list = igl.adjacency_list(self.mf_ROM_mesh["face"])
-
-        self.len = 0
-        self.write_all_data_as_txt()
-
+    
+    
     def get_data_config(self):
         text = "===========[Dataset]===========\n"
         text+= f"[mode]: {self.mode}\n"
@@ -265,6 +274,26 @@ class EvalDataset(data.Dataset):
         
         return vertices, template, vertices_normal, template_normal, faces
         
+    def get_coma(self, index):
+        file_path=self.coma_datalist[index]
+        id_name = file_path.split('/')[6]
+        
+        vertices_np = np.load(file_path)
+        vertices = torch.tensor(vertices_np).float()
+        
+        faces_np = self.coma_std['new_f']
+        faces = torch.tensor(faces_np).long()
+        
+        template_np = self.coma_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
+        template_normal = igl.per_vertex_normals(template_np, faces_np)
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
+    
     def get_mf_ROM(self, index):
         file_path=self.mf_ROM_datalist[index]
         id_name = file_path.split('/')[7]
@@ -285,29 +314,9 @@ class EvalDataset(data.Dataset):
         vertices_normal = torch.tensor(vertices_normal).float()
         
         return vertices, template, vertices_normal, template_normal, faces
-        
-    def get_coma(self, index):
-        file_path=self.coma_datalist[index]
-        id_name = file_path.split('/')[6]
-        
-        vertices_np = np.load(file_path)
-        vertices = torch.tensor(vertices_np).float()
-        
-        faces_np = self.coma_std['new_f']
-        faces = torch.tensor(faces_np).long()
-        
-        template_np = self.coma_mesh[id_name]
-        template = torch.tensor(template_np).float()
-        
-        template_normal = igl.per_vertex_normals(template_np, faces_np)
-        vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
-        template_normal = torch.tensor(template_normal).float()
-        vertices_normal = torch.tensor(vertices_normal).float()
-        
-        return vertices, template, vertices_normal, template_normal, faces
             
     def __getitem__(self, index):
-        return self.get_data(index)
+        return (*self.get_data(index), self.mesh_data)
             
 
 class CBDDataset(data.Dataset):
@@ -976,7 +985,7 @@ class CBDDataBatch:
             self.vertices = torch.stack(transposed_data[1], 0) # [B, V, 3]
             self.faces = transposed_data[2][0] # # [F, 3]
             
-            self.template_normal = torch.stack(transposed_data[3], 0) # [B, V, 3]            
+            self.template_normal = torch.stack(transposed_data[3], 0) # [B, V, 3]
             self.vertices_normal = torch.stack(transposed_data[4], 0) # [B, V, 3]
             
             self.mesh_data = transposed_data[-1][0] # 1
@@ -1021,7 +1030,7 @@ class CBDDataBatch:
 def CBD_collate_wrapper(batch, device="cpu"):
     return CBDDataBatch(batch).to(device)
 
-class CBDDataBatch2:
+class CBDDataBatch_eval:
     def __init__(self, data):
         """
         Args:
@@ -1032,37 +1041,18 @@ class CBDDataBatch2:
         """
         if data is not None: # essential !
             transposed_data = list(zip(*data))
-                        
-            self.template = torch.stack(transposed_data[0]+transposed_data[2], 0) # [B, V, 3]
-            #self.template = transposed_data[0][0][None] # [1, V, 3]
-            self.vertices = torch.stack(transposed_data[1]+transposed_data[3], 0) # [B, V, 3]
-            self.faces = transposed_data[4][0] # # [F, 3]
-            self.mesh_data = transposed_data[-1][0] # 1
-    
-    @property
-    def get_dfn_info(self): 
-        return [self.mass, self.L, self.evals, self.evecs, self.grad_X, self.grad_Y, self.faces]
-        
-    def set_dfn_info(self, data):
-        # DiffusionNet precomputes
-        self.mass = data[0]
-        self.L = data[1]   
-        self.evals = data[2]
-        self.evecs = data[3]
-        self.grad_X = data[4]
-        self.grad_Y = data[5]
-        #self.faces = torch.stack(dfn_info[6], 0) # -> duplicated!
-        
-    def set_batch_dfn_info(self, dfn_info):
-        # DiffusionNet precomputes
-        self.mass = torch.stack(dfn_info[0], 0)
-        self.L = torch.stack(dfn_info[1], 0)
-        self.evals = torch.stack(dfn_info[2], 0)
-        self.evecs = torch.stack(dfn_info[3], 0)
-        self.grad_X = torch.stack(dfn_info[4], 0)
-        self.grad_Y = torch.stack(dfn_info[5], 0)
-        #self.faces = torch.stack(dfn_info[6], 0) # -> duplicated!
-    
+            self.vertices = torch.stack(transposed_data[0], 0) # [B, V, 3]            
+            self.template = torch.stack(transposed_data[1], 0) # [B, V, 3]            
+            
+            self.vertices_normal = torch.stack(transposed_data[2], 0) # [B, V, 3]
+            self.template_normal = torch.stack(transposed_data[3], 0) # [B, V, 3]
+            
+            self.faces = torch.stack(transposed_data[4], 0) # # [F, 3]
+            self.mesh_data = transposed_data[-1][0]
+            
+            #                  [     0,      1,      2,      3,      4]
+            # data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM']
+            
     def to(self, device='cpu'):
         for id_ in self.__dict__.keys():
             attr = self.__getattribute__(id_)
@@ -1076,8 +1066,8 @@ class CBDDataBatch2:
     #     self.tgt = self.tgt.pin_memory()
     #     return self
 
-def CBD_collate_wrapper2(batch, device="cpu"):
-    return CBDDataBatch2(batch).to(device)
+def CBD_collate_wrapper_eval(batch, device="cpu"):
+    return CBDDataBatch_eval(batch).to(device)
 
 if __name__ == "__main__":
     """

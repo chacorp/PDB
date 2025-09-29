@@ -11,12 +11,12 @@ from functools import partial
 import trimesh
 import igl
 
-import sys
-from pathlib import Path
-__abs_path__ = str(Path(__file__).parents[1].absolute())
+# import sys
+# from pathlib import Path
+# __abs_path__ = str(Path(__file__).parents[1].absolute())
 
-if not __abs_path__ in sys.path:
-    sys.path+=[__abs_path__]
+# if not __abs_path__ in sys.path:
+#     sys.path+=[__abs_path__]
 
 
 import torch
@@ -28,7 +28,9 @@ from dataloader_CBD import (
     CBDdataSampler,
     CBDDataset,
     CBD_collate_wrapper,
-    EvalDataset
+    EvalDataset,
+    CBDDataBatch_eval,
+    CBD_collate_wrapper_eval,
     # CBDDataset2,
     # CBD_collate_wrapper2,
 )
@@ -47,7 +49,9 @@ from models.NGBC import (
     NeuralGeneralizedBarycentricCoordinate8,
 )
 
-sys.path = list(set(sys.path))
+import torch.multiprocessing as mp
+
+# sys.path = list(set(sys.path))
 
 def Options():
     parser = argparse.ArgumentParser(description='neural generalized barycentric coordinate for FA retargeting')
@@ -166,7 +170,11 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
 
-        if opts.version==1:
+        if opts.version==0:
+            from models import NFS
+            self.model = NFS(self.opts, None, print_param=True).to(self.device)
+            
+        elif opts.version==1:
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
         elif opts.version==2:
             self.model = NeuralGeneralizedBarycentricCoordinate(
@@ -411,7 +419,7 @@ class Trainer():
         
         if self.opts.data_selection == -1:
             raise NotImplementedError('only works for individual data')
-        data_name_list = ['voca','mf_SEN','biwi','coma','mf_ROM']
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM']
         selection = data_name_list[self.opts.data_selection]
         
         
@@ -419,7 +427,8 @@ class Trainer():
         self.dataloader = torch.utils.data.DataLoader(
             self.dataset,
             batch_size=self.opts.batch_size,
-            num_workers=8,
+            collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
+            #num_workers=8,
         )
         ##########################################################################################################
         
@@ -471,21 +480,17 @@ class Trainer():
         
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
-            vertices, template, vertices_normal, template_normal, faces = batch
             
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
                 pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
-                    template.to(self.device), vertices.to(self.device), 
-                    template_normal.to(self.device), vertices_normal.to(self.device),
-                    mesh_data=0, epoch=0
+                    batch.template, batch.vertices, 
+                    batch.template_normal, batch.vertices_normal,
+                    mesh_data=batch.mesh_data, epoch=0
                 )
             
                 # Metric                
-                losses_val['MSE'] += F.mse_loss(
-                    vertices.to(self.device),
-                    pred_vertices
-                ).item() * denom # for NGBC model
+                losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
         
             
@@ -493,24 +498,25 @@ class Trainer():
             interv_val = round(len_data / 10)
             if index % interv_val == 0:
                 # for visualization
-                # vertices = vertices
-                # faces = faces
+                vertices = batch.vertices.cpu().detach()
+                faces = batch.faces.cpu().detach()
+                pred_vertices_ = pred_vertices.cpu().detach()
                 
                 v_list = [
                     vertices[0],
                     vertices[1],
                     vertices[HB],
-                    vertices[BS-1],
-                    pred_vertices[0].cpu().detach(),
-                    pred_vertices[1].cpu().detach(),
-                    pred_vertices[HB].cpu().detach(),
-                    pred_vertices[BS-1].cpu().detach(),
+                    vertices[-1],
+                    pred_vertices_[0],
+                    pred_vertices_[1],
+                    pred_vertices_[HB],
+                    pred_vertices_[-1],
                 ]
                 len_v = len(v_list)
                 f_list=[faces[0]] * len_v
                 save_logdir = f"{self.opts.log_dir}/img"
                 save_img_name = f"{index:04d}"
-                #import pdb;pdb.set_trace()
+                
                 plot_image_array(
                     v_list, f_list, 
                     rot_list=[[0,0,0]]*len_v,
@@ -570,10 +576,13 @@ if __name__ == "__main__":
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --num_cage_v 640 --data_selection -1
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --num_cage_v 640 --data_selection -1
 
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --num_cage_v 640 --data_selection 0 --realtest
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --num_cage_v 640 --data_selection 0 --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection 0 --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --realtest
     
     """
+    mp.set_start_method('spawn', force=True)
+    
     # argparse configs
     opts = Options()
     
