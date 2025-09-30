@@ -423,7 +423,9 @@ class Trainer():
         selection = data_name_list[self.opts.data_selection]
         
         
-        self.dataset = EvalDataset(data_name=selection)
+        self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
+        #self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
+        
         self.dataloader = torch.utils.data.DataLoader(
             self.dataset,
             batch_size=self.opts.batch_size,
