@@ -38,6 +38,7 @@ from dataloader_CBD import (
 # from utils.mesh_utils import Renderer #, calc_cent
 from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
+
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 # from utils.exp_utils import Model_mk1, Model_mk3_1
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
@@ -70,6 +71,11 @@ def Options():
                         help='input type (0: position, 1: position + normal')
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
+    #### Choose a last layer activation for key_weight_model()
+    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none"],
+        help="Choose a last layer activation for NGBC.key_weight_model()"
+    )
+    
     
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
@@ -170,15 +176,22 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
 
+        last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
+        last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         if opts.version==0:
             from models import NFS
+            from utils.nfr_utils import get_dfn_info
+            self.get_dfn_info = get_dfn_info
             self.model = NFS(self.opts, None, print_param=True).to(self.device)
             
         elif opts.version==1:
-            self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+            self.model = CageNet(
+                device=self.device,
+                optim_cage=self.opts.optim_cage
+            )
         elif opts.version==2:
             self.model = NeuralGeneralizedBarycentricCoordinate(
-                opts, 
+                self.opts, 
                 hid_dim=256,
                 num_cage_vertices=self.opts.num_cage_v,
                 num_layers=4,
@@ -192,8 +205,11 @@ class Trainer():
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
-                use_elu=False,
-                use_relu=True,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
                 device=self.device,
@@ -204,8 +220,11 @@ class Trainer():
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
-                use_elu=False,
-                use_relu=True,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
                 device=self.device,
@@ -364,7 +383,7 @@ class Trainer():
                 
                 HB = batch.vertices.shape[0] // 2
                 
-                losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
+            losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
         
             
@@ -439,7 +458,7 @@ class Trainer():
         # make logdir --------------------------------------------------------------------------------------------
         os.makedirs(self.opts.log_dir, exist_ok=True)
                             
-        ckpt_path = self.opts.ckpt.split('ckpts_CBD')[-1][1:]
+        ckpt_path = self.opts.ckpt.split('/')[-1]
         self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection)
         
         os.makedirs(self.opts.log_dir, exist_ok=True)
@@ -479,19 +498,82 @@ class Trainer():
             "MSE": 0.0,
         }
         mesh_data = self.dataset.data_name
-        
+                
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
             
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
-                    batch.template, batch.vertices, 
-                    batch.template_normal, batch.vertices_normal,
-                    mesh_data=batch.mesh_data, epoch=0
-                )
-            
-                # Metric                
+                
+                ### only for NFS #############################################################
+                if self.opts.version==0:
+                    if index==0:
+                        src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                        
+                        ## common routine
+                        dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                        img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                        img_feat = self.model.get_img_feat(img)
+                        vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            
+                        with torch.no_grad():
+                            pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+                    else:
+                        if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
+                            src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                    
+                            ## common routine
+                            dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                            
+                            img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                            img_feat = self.model.get_img_feat(img)
+                            vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            
+                            with torch.no_grad():
+                                pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                                pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+
+                    vert_feat_exp = []
+                    for gt_v in batch.vertices:
+                        _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
+                        vert_feat_exp.append(_tmp_)
+                    vert_feat_exp = torch.vstack(vert_feat_exp)
+
+                    with torch.no_grad():
+                        pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
+                    
+                        inputs = (
+                            vert_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                            None, batch.template[0][None], batch.faces[0], None
+                        )
+                        pred_vertices, _ = self.model.decode(inputs, batch_process=True)
+
+                    # pred_vertices = self.model.inference(
+                    #     gt_vertices=batch.vertices, 
+                    #     src_mesh=src_mesh, 
+                    #     tgt_mesh=src_mesh,
+                    #     batch_process=True
+                    # )
+                    
+                    # losses_val, pred_vertices, _, pred_exp_coeff, pred_id_coeff, pred_seg = self.model.evaluate(
+                    #     batch, \
+                    #     batch_process=False, \
+                    #     return_all=True, \
+                    #     stage=1, \
+                    #     epoch=500
+                    # )
+                ##############################################################################
+                
+                else:
+                    #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
+                    pred_vertices, _, _, _, _, _ = self.model(
+                        batch.template, batch.vertices, 
+                        batch.template_normal, batch.vertices_normal,
+                        mesh_data=batch.mesh_data, epoch=0
+                    )
+                    
+                # Metric
                 losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
         
@@ -571,17 +653,32 @@ if __name__ == "__main__":
 
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-53-39-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0
 
-        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-25-18-27-55-NGBCv8 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-26-10-16-32-NGBCv5 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
+        ######
+        # model arch testing
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-25-18-27-55-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-26-10-16-32-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
         
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --num_cage_v 640 --data_selection -1
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --num_cage_v 640 --data_selection -1
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --num_cage_v 640 --data_selection -1
+        ## experiment
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection -1 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection -1 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection -1 --last_activation relu
 
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection 0 --realtest
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --realtest
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --realtest
-    
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection 0 --last_activation relu --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation relu --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --last_activation relu --realtest
+        
+        
+        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-08-05-11-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-14-50-34-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation softplus --realtest
+        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-29-00-17-41-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation none --realtest
+        
+        
+        ## NFS
+        python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-06-09-10-57-34-all --data_selection 0 --realtest
+        python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-07-08-06-27-12-all --data_selection 0 --realtest
+        
     """
     mp.set_start_method('spawn', force=True)
     
@@ -589,12 +686,22 @@ if __name__ == "__main__":
     opts = Options()
     
     # base configs (yaml)
+    if opts.version==0:
+        opts.config='config/train.yml'
     opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
         
     # update with argparse configs
     opts_ = vars(opts)
     opts_yaml.update(opts_)
     opts = argparse.Namespace(**opts_yaml)
+        
+    if opts.version==0:
+        opts.img_feat_dim=128
+        opts.design="new2"
+        opts.feature_type="cents&norms"
+        opts.scale_exp=1.0
+        opts.dec_type="disp"
+        opts.ict_face_only=False
     
     trainer = Trainer(opts)
     if opts.realtest:
@@ -602,3 +709,5 @@ if __name__ == "__main__":
     else:
         trainer.evaluate() ## pca test data
 
+
+        
