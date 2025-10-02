@@ -600,6 +600,7 @@ class LinearEncoder(nn.Module):
                  use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
                  use_least_N=False, use_least_N_on_V=False,no_activation=False,
                  use_gate_layer=False,
+                 use_pou=True,
                  act='lrelu', nrm='layer',
                  tau=1e-2, use_K=False, K_dim=8,
                 ):
@@ -619,6 +620,7 @@ class LinearEncoder(nn.Module):
         self.use_least_N_on_V = use_least_N_on_V
         self.use_gate_layer = use_gate_layer
         self.no_activation=no_activation
+        self.use_pou = use_pou
         
         self.out_type = out_type
         self.use_K = use_K
@@ -689,47 +691,48 @@ class LinearEncoder(nn.Module):
         
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
-        
-        if self.use_softmax:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
-            
-        if self.use_relu:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.relu(out)
-            
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
-        if self.use_softplus:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.softplus(out)
-            
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
 
-        if self.use_elu:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.elu(out, alpha=0.5)
-            
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
-        if self.use_least_N:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.relu(out)
-            
-            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
-            out = out * mask
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
-        if self.use_least_N_on_V:
-            NZ = V // 16
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.relu(out)
-            
-            mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
-            out = out * mask
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
-        if self.no_activation:
+        if not self.no_activation:
+            if self.use_softmax:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
+                
+            if self.use_relu:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.relu(out)
+                
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+                
+            if self.use_softplus:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.softplus(out)
+                
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+    
+            if self.use_elu:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.elu(out, alpha=0.5)
+                
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+                
+            if self.use_least_N:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.relu(out)
+                
+                mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+                out = out * mask
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+                
+            if self.use_least_N_on_V:
+                NZ = V // 16
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.relu(out)
+                
+                mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
+                out = out * mask
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+        
+        if self.use_pou and not self.use_softmax:
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         return out
@@ -761,7 +764,8 @@ class LinearEncoder2(nn.Module):
                  in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
                  num_layers=4, use_style=True, out_type='vertices',
                  use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
-                 use_least_N=False, use_least_N_on_V=False,no_activation=False,
+                 use_least_N=False, use_least_N_on_V=False,
+                 no_activation=False, use_pou=True,
                  use_residual=True, use_K=False, K_dim=8,
                  act='lrelu', nrm='layer',
                  use_gate_layer=False,
@@ -782,6 +786,7 @@ class LinearEncoder2(nn.Module):
         self.use_residual=use_residual
         self.use_least_N=use_least_N # not used
         self.use_least_N_on_V=use_least_N_on_V # not used
+        self.use_pou=use_pou
 
         self.use_gate_layer = use_gate_layer
         self.use_K = use_K
@@ -844,46 +849,47 @@ class LinearEncoder2(nn.Module):
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
 
-        if self.use_softmax:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
-
-        if self.use_relu:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.relu(out)
-            
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
-        if self.use_elu:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.elu(out)
-            
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-
-        if self.use_softplus:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.softplus(out)
-            
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
-        if self.use_least_N:
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.relu(out)
-            
-            mask = self.least_N_zeros_gate(out, N=N, dim=-1)
-            out = out * mask
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
-        if self.use_least_N_on_V:
-            NZ = V // 16
-            out = F.normalize(out, dim=-2) # normalize for each column (key points)
-            out = F.relu(out)
-            
-            mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
-            out = out * mask
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-
-        if self.no_activation:
+        if not self.no_activation:
+            if self.use_softmax:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = torch.softmax((out) * self._tau, dim=-1) # softmax for each mesh vertex
+    
+            if self.use_relu:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.relu(out)
+                
+                # out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+                
+            if self.use_elu:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.elu(out)
+                
+                # out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+    
+            if self.use_softplus:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.softplus(out)
+                
+                # out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+                
+            if self.use_least_N:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.relu(out)
+                
+                mask = self.least_N_zeros_gate(out, N=N, dim=-1)
+                out = out * mask
+                # out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+                
+            if self.use_least_N_on_V:
+                NZ = V // 16
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.relu(out)
+                
+                mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
+                out = out * mask
+                # out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+        
+        if self.use_pou and not self.use_softmax:
             out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         return out

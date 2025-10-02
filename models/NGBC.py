@@ -222,7 +222,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
         
-        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source
+        hat_mask=None
+        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_weight
 
 
 class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
@@ -251,6 +252,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
                  use_exp_recon=False, # was not necessary
                  use_shp_recon=True, # necessary for training, but not needed for inference
                  use_shp=True,
+                 use_pou=True,
                  use_full_vertex=False, # default: false (= delta form)
                  no_activation=False,
                 ):
@@ -273,6 +275,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
         self.use_exp_recon = use_exp_recon        
         self.use_full_vertex = use_full_vertex
         self.no_activation = no_activation
+        self.use_pou = use_pou
         
         ###### NN input type settings
         ## key_weight model | key_d_model 
@@ -313,6 +316,14 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             
             from utils.exp_utils import from_6D_to_rotation_matrix_torch as _6D_to_rot_
             self._6D_to_rot_ = _6D_to_rot_
+        elif self.out_type == 3: # transform matrix (compskin setting)
+            self.use_full_vertex = False
+            self.out_dim = 6 # (6D + translation 3) will be reshaped into 3x4 matrix
+            M_ = num_cage_vertices
+            num_cage_vertices = num_cage_vertices * 4
+            
+            from utils.exp_utils import create_BN
+            self._6D_to_rot_ = create_BN
         else:
             raise NotImplementedError('out_type not implemented')
             
@@ -332,6 +343,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             use_least_N=use_least_N,
             use_least_N_on_V=use_least_N_on_V,
             no_activation=no_activation,
+            use_pou=use_pou,
         ).to(device)
 
         # expression encoder
@@ -365,14 +377,14 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             self.key_d_model = Model_mk2_1(
                 in_dim=L,
                 style_dim=L,
-                out_dim= M_*self.out_dim if self.out_type == 2 else M*self.out_dim,
+                out_dim= M_*self.out_dim if (self.out_type == 2) or (self.out_type == 3) else M*self.out_dim,
                 num_layers=self.num_layers, 
                 use_style=True, out_type='global'
             ).to(device)
         else:
             self.key_d_model = LinearEncoder(
                 in_dim=L,
-                out_dim= M_*self.out_dim if self.out_type == 2 else M*self.out_dim,
+                out_dim= M_*self.out_dim if (self.out_type == 2) or (self.out_type == 3) else M*self.out_dim,
                 num_layers=self.num_layers, 
                 out_type='global'
             ).to(device)
@@ -390,20 +402,28 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
                     for N in N_list
                 ]).to(device)
         
-    def reshape_key_d(self, key_d, B):
+    def reshape_key_d(self, key_d, B):        
         if self.out_type == 2:
             # cage transform matrix
-            M_ = self.num_cage_vertices // 4
-            key_d = key_d.reshape(B, M_, 9)
+            key_d = key_d.reshape(B,self.num_cage_vertices, 9)
             tmp_R, tmp_t = key_d[...,:6], key_d[...,6:]
             
             tmp_R = self._6D_to_rot_(tmp_R).reshape(B, -1, 3, 3)
             key_d = torch.cat([tmp_R, tmp_t[..., None]], dim=-1) # (B, M, 3, 4)
             key_d = key_d.permute(0,1,3,2).reshape(B, -1, 3) # (B, M4, 3)
             #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
+        
+        elif self.out_type == 3:
+            # cage transform matrix
+            key_d = key_d.reshape(B,self.num_cage_vertices, 6)
+            key_d = self._6D_to_rot_(key_d)# (B, M, 3, 4)
+            key_d = key_d.permute(0,1,3,2).reshape(B, -1, 3) # (B, M4, 3)
+            #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
+        
         else:
             key_d = key_d.reshape(B, self.num_cage_vertices, 3)
             # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
+        
         return key_d
     
     def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False):
@@ -507,7 +527,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
             
-        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask
+        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_weight
 
     def retarget(self, 
                  src_neu_vert, src_neu_norm, src_def_vert, src_def_norm, tgt_neu_vert, tgt_neu_norm,
@@ -640,6 +660,7 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
                  use_exp_recon=False, # was not necessary
                  use_shp_recon=True, # necessary for training, but not needed for inference
                  use_shp=True,
+                 use_pou=True,
                  use_full_vertex=False, # default: false (= delta form)
                 ):
         super().__init__()
@@ -653,6 +674,7 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.no_activation = no_activation
+        self.use_pou = use_pou
         
         self.use_shp_recon = use_shp_recon        
         self.use_shp = use_shp
@@ -724,6 +746,7 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
             no_activation=no_activation,
             use_least_N=use_least_N,
             use_least_N_on_V=use_least_N_on_V,
+            use_pou=use_pou,
         ).to(device)
 
         # expression encoder
@@ -891,7 +914,7 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
             
-        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask #, (randperm_idx, rearange_idx)
+        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_weight #, (randperm_idx, rearange_idx)
     
     def retarget(self, 
                  src_neu_vert, src_neu_norm, src_def_vert, src_def_norm, tgt_neu_vert, tgt_neu_norm,

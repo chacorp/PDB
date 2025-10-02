@@ -386,6 +386,10 @@ class CBDDataset(data.Dataset):
             with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.voca_mesh = pickle.load(f)
             total_id = total_id + self.voca_len
+            
+            ## Added segmentation ##################################################################
+            self.voca_seg=torch.tensor(np.load('utils/voca/flame_seg_24.npy'))
+            ########################################################################################
     
             # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
@@ -415,6 +419,10 @@ class CBDDataset(data.Dataset):
                 self.biwi_mesh = pickle.load(f) # meshes
             total_id = total_id + self.biwi_len
             
+            ## Added segmentation ##################################################################
+            self.biwi_seg=torch.tensor(np.load('utils/biwi/biwi_seg_24.npy'))
+            ########################################################################################
+            
             # adj_mat = igl.adjacency_matrix(self.biwi_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -443,6 +451,10 @@ class CBDDataset(data.Dataset):
                 self.mf_SEN_mesh = pickle.load(f)
             total_id = total_id + self.mf_SEN_len
             
+            ## Added segmentation ##################################################################
+            self.mf_SEN_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
+            ########################################################################################
+            
             # adj_mat = igl.adjacency_matrix(self.mf_SEN_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -466,6 +478,10 @@ class CBDDataset(data.Dataset):
             with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.coma_mesh = pickle.load(f)
             total_id = total_id + self.coma_len
+            
+            ## Added segmentation ##################################################################
+            self.coma_seg=torch.tensor(np.load('utils/voca/flame_seg_24.npy'))
+            ########################################################################################
     
             # adj_mat = igl.adjacency_matrix(self.coma_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
@@ -494,6 +510,10 @@ class CBDDataset(data.Dataset):
             with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
                 self.mf_ROM_mesh = pickle.load(f)
             total_id = total_id + self.mf_ROM_len
+            
+            ## Added segmentation ##################################################################
+            self.mf_ROM_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
+            ########################################################################################
             
             # adj_mat = igl.adjacency_matrix(self.mf_ROM_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
@@ -574,7 +594,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal)
+        return (template, deformed, faces, template_normal, deformed_normal, self.voca_seg)
 
     def get_coma(self, index, id_index):
         #pca_index = index % self.n_components
@@ -602,7 +622,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal)
+        return (template, deformed, faces, template_normal, deformed_normal, self.coma_seg)
         
     def get_biwi(self, index, id_index):
         #pca_index = index % self.n_components
@@ -630,7 +650,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal)
+        return (template, deformed, faces, template_normal, deformed_normal, self.biwi_seg)
 
     
     def get_multiface_SEN(self, index, id_index):
@@ -658,7 +678,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal)
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg)
     
     
     def get_multiface_ROM(self, index, id_index):
@@ -682,7 +702,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal)
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg)
 
         
     def random_rotation_matrix(self, randgen=None):
@@ -989,6 +1009,7 @@ class CBDDataBatch:
             self.vertices_normal = torch.stack(transposed_data[4], 0) # [B, V, 3]
             
             self.mesh_data = transposed_data[-1][0] # 1
+            self.segmentation = torch.stack(transposed_data[-2], 0) # [B, V, 24]
     
     @property
     def get_dfn_info(self): 

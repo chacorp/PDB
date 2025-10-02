@@ -88,8 +88,17 @@ def Options():
         help="Choose a last layer activation for NGBC.key_weight_model()"
     )
     
+    parser.add_argument("--no_pou",dest='no_pou', action='store_true')
+    parser.set_defaults(no_pou=False)
+    
+    parser.add_argument("--pou_loss",dest='pou_loss', action='store_true')
+    parser.set_defaults(pou_loss=False)
+    
     parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
     parser.set_defaults(use_scheduler=False)
+    
+    parser.add_argument("--use_segment_weight",dest='use_segment_weight', action='store_true')
+    parser.set_defaults(use_segment_weight=False)
 
     parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
@@ -203,6 +212,7 @@ class Trainer():
                 no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
+                use_pou = ~self.opts.no_pou,
                 device=self.device,
             )
         elif opts.version==8:
@@ -218,6 +228,7 @@ class Trainer():
                 no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
+                use_pou = ~self.opts.no_pou,
                 device=self.device,
             )
         else:
@@ -759,6 +770,7 @@ class Trainer():
                     loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
                 if self.model.use_full_vertex:
                     loss_dict['exp-v'] = F.mse_loss(batch.template, pred_source) # for expression AE
+
                 # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
 
                 
@@ -1083,7 +1095,8 @@ class Trainer():
             "recon-neu": self.opts.lambda_vert,
             "exp-z": self.opts.lambda_vert * 0.5,
             "exp-v": self.opts.lambda_vert,
-            "shape": self.opts.lambda_vert,
+            "shape": self.opts.lambda_vert,            
+            "pou": self.opts.lambda_vert,
             # symm 
         }
         
@@ -1105,6 +1118,8 @@ class Trainer():
                 "shape": 0.0,
                 "total": 0.0
             }
+            if self.opts.pou_loss:
+                running_losses['pou']=0.0
             
             self.model.train()
             train_counter = 0
@@ -1123,8 +1138,8 @@ class Trainer():
                         
                     ## random sampling and random permutation
                     N=batch.template.shape[1]
-                    N_range = torch.randint(100, N//6, (1,)).item()
-                    randperm_idx = torch.randperm(N)[:N-N_range]
+                    N_range = N-torch.randint(100, N//6, (1,)).item()
+                    randperm_idx = torch.randperm(N)[:N_range]
                     
                     # randperm_idx = torch.multinomial(_p, 2048)
                     rearange_idx = torch.argsort(randperm_idx)
@@ -1138,13 +1153,23 @@ class Trainer():
                     # t_mask = plateau_hat_points(batch_template_v) + 1.0
                     
                 # model prediction -------------------------------------------------------------------------------
+                ## B: number of batch, Nv : number of vertices, Nc: number of control vertices
                 ## weight prediction: (B, Nv, Nc)
                 ## key_d prediction:  (B, Nc, 3+3) [deformed cage]
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, t_mask = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, t_mask, pred_key_weight = self.model(
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
                 t_mask = t_mask + 1.0
+                
+                ## use segmentation for loss weight
+                ## -> re-weighting based on facial region area
+                if self.opts.use_segment_weight:
+                    with torch.no_grad():
+                        # batch.segmentation # (B, Nv, 24)
+                        segment_weight = batch.segmentation.sum(1) / N #batch.segmentation.sum(1).sum(1) # (B, 24)
+                        batch_segment_weight = (batch.segmentation * segment_weight[:, None])[:, randperm_idx]
+                        t_mask = t_mask * batch_segment_weight
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
@@ -1169,6 +1194,12 @@ class Trainer():
                         recon_vertices[:,randperm_idx[rearange_idx]]*t_mask
                     ) # for expression AE
                 # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
+                
+                if self.opts.pou_loss:
+                    #import pdb;pdb.set_trace()
+                    loss_dict['pou'] = F.mse_loss(
+                        pred_key_weight.sum(-1), torch.ones(BS, N_range).to(self.device)
+                    )
 
                 
                 # get total loss (lambda weights are multiplied here!)
@@ -1235,10 +1266,7 @@ class Trainer():
                         pred_vertices[2].cpu().detach(),
                         pred_vertices[3].cpu().detach(),
                     ]
-                    # v_list = [ v for v in vertices[frame:frame+2] ] + \
-                    #     [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
                     
-                    #v_list = [v for v in vertices[frame:frame+2]]+[batch.template.cpu()[0]]*2
                     len_v = len(v_list)
                     f_list = [faces] * len_v
                     save_logdir = f"{self.opts.log_dir}/img/train/mesh"
