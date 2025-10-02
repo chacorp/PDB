@@ -11,12 +11,12 @@ from functools import partial
 import trimesh
 import igl
 
-import sys
-from pathlib import Path
-__abs_path__ = str(Path(__file__).parents[1].absolute())
+# import sys
+# from pathlib import Path
+# __abs_path__ = str(Path(__file__).parents[1].absolute())
 
-if not __abs_path__ in sys.path:
-    sys.path+=[__abs_path__]
+# if not __abs_path__ in sys.path:
+#     sys.path+=[__abs_path__]
 
 
 import torch
@@ -28,6 +28,9 @@ from dataloader_CBD import (
     CBDdataSampler,
     CBDDataset,
     CBD_collate_wrapper,
+    EvalDataset,
+    CBDDataBatch_eval,
+    CBD_collate_wrapper_eval,
     # CBDDataset2,
     # CBD_collate_wrapper2,
 )
@@ -35,6 +38,7 @@ from dataloader_CBD import (
 # from utils.mesh_utils import Renderer #, calc_cent
 from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
+
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 # from utils.exp_utils import Model_mk1, Model_mk3_1
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
@@ -46,7 +50,9 @@ from models.NGBC import (
     NeuralGeneralizedBarycentricCoordinate8,
 )
 
-sys.path = list(set(sys.path))
+import torch.multiprocessing as mp
+
+# sys.path = list(set(sys.path))
 
 def Options():
     parser = argparse.ArgumentParser(description='neural generalized barycentric coordinate for FA retargeting')
@@ -65,6 +71,13 @@ def Options():
                         help='input type (0: position, 1: position + normal')
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
+    #### Choose a last layer activation for key_weight_model()
+    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none"],
+        help="Choose a last layer activation for NGBC.key_weight_model()"
+    )
+    
+    parser.add_argument("--no_pou",dest='no_pou', action='store_true')
+    parser.set_defaults(no_pou=False)
     
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
@@ -84,6 +97,10 @@ def Options():
     
     parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
     parser.set_defaults(use_scheduler=False)
+
+    
+    parser.add_argument("--realtest",dest='realtest', action='store_true')
+    parser.set_defaults(realtest=False)
 
     parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
@@ -161,11 +178,22 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
 
-        if opts.version==1:
-            self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+        last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
+        last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
+        if opts.version==0:
+            from models import NFS
+            from utils.nfr_utils import get_dfn_info
+            self.get_dfn_info = get_dfn_info
+            self.model = NFS(self.opts, None, print_param=True).to(self.device)
+            
+        elif opts.version==1:
+            self.model = CageNet(
+                device=self.device,
+                optim_cage=self.opts.optim_cage
+            )
         elif opts.version==2:
             self.model = NeuralGeneralizedBarycentricCoordinate(
-                opts, 
+                self.opts, 
                 hid_dim=256,
                 num_cage_vertices=self.opts.num_cage_v,
                 num_layers=4,
@@ -179,10 +207,14 @@ class Trainer():
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
-                use_elu=False,
-                use_relu=True,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
+                use_pou = ~self.opts.no_pou,
                 device=self.device,
             )
         elif opts.version==8:
@@ -191,10 +223,14 @@ class Trainer():
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
-                use_elu=False,
-                use_relu=True,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
+                use_pou = ~self.opts.no_pou,
                 device=self.device,
             )
         else:
@@ -284,13 +320,11 @@ class Trainer():
         import datetime
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
-        
-        tag = "-NGBC"
-        if self.opts.optim_cage:
-            tag += "-optim_cage"
-            
-        ckpt_path = self.opts.ckpt.split('ckpts_CBD')[-1][1:]
-        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval-'+now)
+                    
+        # ckpt_path = self.opts.ckpt.split('ckpts_CBD')[-1][1:]
+        # self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval-'+now)
+        ckpt_path = self.opts.ckpt.split('/')[-1]
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection+'-pca_data')
         
         os.makedirs(self.opts.log_dir, exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
@@ -336,7 +370,7 @@ class Trainer():
             
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
                     batch.template, batch.vertices, 
                     batch.template_normal, batch.vertices_normal,
                     batch.mesh_data, epoch=0
@@ -351,7 +385,7 @@ class Trainer():
                 
                 HB = batch.vertices.shape[0] // 2
                 
-                losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
+            losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
         
             
@@ -396,6 +430,198 @@ class Trainer():
         self.logger.write(log_text+"\n")                
         print('done!')
 
+    
+    def evaluate2(self):
+        ##########################################################################################################
+        # define dataset -----------------------------------------------------------------------------------------
+        BS = self.opts.batch_size
+        HB = BS // 2
+        device=self.device
+        
+        if self.opts.data_selection == -1:
+            raise NotImplementedError('only works for individual data')
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM']
+        selection = data_name_list[self.opts.data_selection]
+        
+        
+        self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
+        #self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
+        
+        self.dataloader = torch.utils.data.DataLoader(
+            self.dataset,
+            batch_size=self.opts.batch_size,
+            collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
+            #num_workers=8,
+        )
+        ##########################################################################################################
+        
+        
+        ###### Logging ###########################################################################################
+        # make logdir --------------------------------------------------------------------------------------------
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+                            
+        ckpt_path = self.opts.ckpt.split('/')[-1]
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection)
+        
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+        
+        # save options as json -----------------------------------------------------------------------------------
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+            
+        # save train option as yml
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+        
+        # self logger
+        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
+        print(f'Saving log at: {self.opts.log_dir}')
+        
+        print(self.dataset.get_data_config())
+        self.logger.write(self.dataset.get_data_config())
+        #---------------------------------------------------------------------------------------------------------
+        ##########################################################################################################
+        
+        
+        
+        # eval loop ##############################################################################################
+        
+        global_step = 0
+        BEST_LOSS = 100_000_000
+        
+        check_usage = False
+        
+        len_data = len(self.dataloader)
+        denom = 1 / len_data
+        
+        self.model.eval()
+        
+        losses_val = {
+            "MSE": 0.0,
+        }
+        mesh_data = self.dataset.data_name
+                
+        pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
+        for index, batch in pbar:
+            
+            # model forward ----------------------------------------------------------------------------------
+            with torch.no_grad():
+                
+                ### only for NFS #############################################################
+                if self.opts.version==0:
+                    if index==0:
+                        src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                        
+                        ## common routine
+                        dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                        img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                        img_feat = self.model.get_img_feat(img)
+                        vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            
+                        with torch.no_grad():
+                            pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+                    else:
+                        if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
+                            src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                    
+                            ## common routine
+                            dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                            
+                            img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                            img_feat = self.model.get_img_feat(img)
+                            vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            
+                            with torch.no_grad():
+                                pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                                pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+
+                    vert_feat_exp = []
+                    for gt_v in batch.vertices:
+                        _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
+                        vert_feat_exp.append(_tmp_)
+                    vert_feat_exp = torch.vstack(vert_feat_exp)
+
+                    with torch.no_grad():
+                        pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
+                    
+                        inputs = (
+                            vert_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                            None, batch.template[0][None], batch.faces[0], None
+                        )
+                        pred_vertices, _ = self.model.decode(inputs, batch_process=True)
+
+                    # pred_vertices = self.model.inference(
+                    #     gt_vertices=batch.vertices, 
+                    #     src_mesh=src_mesh, 
+                    #     tgt_mesh=src_mesh,
+                    #     batch_process=True
+                    # )
+                    
+                    # losses_val, pred_vertices, _, pred_exp_coeff, pred_id_coeff, pred_seg = self.model.evaluate(
+                    #     batch, \
+                    #     batch_process=False, \
+                    #     return_all=True, \
+                    #     stage=1, \
+                    #     epoch=500
+                    # )
+                ##############################################################################
+                
+                else:
+                    #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
+                    pred_vertices, _, _, _, _, _ = self.model(
+                        batch.template, batch.vertices, 
+                        batch.template_normal, batch.vertices_normal,
+                        mesh_data=batch.mesh_data, epoch=0
+                    )
+                    
+                # Metric
+                losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
+            # ------------------------------------------------------------------------------------------------
+        
+            
+            # ------------------------------------------------------------------------------------------------
+            interv_val = round(len_data / 10)
+            if index % interv_val == 0:
+                # for visualization
+                vertices = batch.vertices.cpu().detach()
+                faces = batch.faces.cpu().detach()
+                pred_vertices_ = pred_vertices.cpu().detach()
+                
+                v_list = [
+                    vertices[0],
+                    vertices[1],
+                    vertices[HB],
+                    vertices[-1],
+                    pred_vertices_[0],
+                    pred_vertices_[1],
+                    pred_vertices_[HB],
+                    pred_vertices_[-1],
+                ]
+                len_v = len(v_list)
+                f_list=[faces[0]] * len_v
+                save_logdir = f"{self.opts.log_dir}/img"
+                save_img_name = f"{index:04d}"
+                
+                plot_image_array(
+                    v_list, f_list, 
+                    rot_list=[[0,0,0]]*len_v,
+                    size=1, bg_black=False, mode='shade', 
+                    logdir=save_logdir, 
+                    name=save_img_name, save=True
+                )
+                # 11649/(11649+6309) + 6309/(11649+6309)
+        ##########################################################################################################
+        
+        # write log
+        log_text = f"[Eval] "
+        for key, value in losses_val.items():
+            txt = f"{key}: {value:.6e} "
+            print(txt)
+            log_text += txt
+        self.logger.write(log_text+"\n")                
+        print('done!')
+        
     @staticmethod
     def set_seed(opts):
         # set seed
@@ -429,21 +655,65 @@ if __name__ == "__main__":
 
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-53-39-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0
 
-        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-25-18-27-55-NGBCv8 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
+        ######
+        # model arch testing 
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-25-18-27-55-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-26-10-16-32-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
         
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-26-10-16-32-NGBCv5 --in_type 1 --out_type 1 --num_cage_v 640 --data_selection 0
+        ## experiment w/ pca test
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --last_activation relu        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-08-05-11-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-14-50-34-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation softplus            
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-29-00-17-41-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation none        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-30-16-28-51-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation none
+
+        ## experiment w/ real test
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection 0 --last_activation relu --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation relu --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --last_activation relu --realtest        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-08-05-11-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-14-50-34-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation softplus --realtest        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-29-00-17-41-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation none --realtest
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-30-16-28-51-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation none --realtest
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-29-14-42-44-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation none --realtest
+
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-10-02-00-06-28-NGBCv5 --in_type 1 --out_type 2 --data_selection 0 --last_activation 'relu' --realtest
+        
+        ## NFS
+        python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-06-09-10-57-34-all --data_selection 0 --realtest
+        python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-07-08-06-27-12-all --data_selection 0 --realtest
+        
     """
+    mp.set_start_method('spawn', force=True)
+    
     # argparse configs
     opts = Options()
     
     # base configs (yaml)
+    if opts.version==0:
+        opts.config='config/train.yml'
     opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
         
     # update with argparse configs
     opts_ = vars(opts)
     opts_yaml.update(opts_)
     opts = argparse.Namespace(**opts_yaml)
+        
+    if opts.version==0:
+        opts.img_feat_dim=128
+        opts.design="new2"
+        opts.feature_type="cents&norms"
+        opts.scale_exp=1.0
+        opts.dec_type="disp"
+        opts.ict_face_only=False
     
     trainer = Trainer(opts)
-    trainer.evaluate()
+    if opts.realtest:
+        trainer.evaluate2() ## real test frames
+    else:
+        trainer.evaluate() ## pca test data
 
+
+        
