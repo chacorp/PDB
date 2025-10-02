@@ -76,6 +76,8 @@ def Options():
         help="Choose a last layer activation for NGBC.key_weight_model()"
     )
     
+    parser.add_argument("--no_pou",dest='no_pou', action='store_true')
+    parser.set_defaults(no_pou=False)
     
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
@@ -212,6 +214,7 @@ class Trainer():
                 no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
+                use_pou = ~self.opts.no_pou,
                 device=self.device,
             )
         elif opts.version==8:
@@ -227,6 +230,7 @@ class Trainer():
                 no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
+                use_pou = ~self.opts.no_pou,
                 device=self.device,
             )
         else:
@@ -316,13 +320,11 @@ class Trainer():
         import datetime
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
-        
-        tag = "-NGBC"
-        if self.opts.optim_cage:
-            tag += "-optim_cage"
-            
-        ckpt_path = self.opts.ckpt.split('ckpts_CBD')[-1][1:]
-        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval-'+now)
+                    
+        # ckpt_path = self.opts.ckpt.split('ckpts_CBD')[-1][1:]
+        # self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval-'+now)
+        ckpt_path = self.opts.ckpt.split('/')[-1]
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection+'-pca_data')
         
         os.makedirs(self.opts.log_dir, exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
@@ -654,26 +656,30 @@ if __name__ == "__main__":
         python eval_CBD.py --version 2 --ckpt ./ckpts_CBD/2025-09-11-17-53-39-NGBC --in_type 0 --out_type 2 --num_cage_v 640 --data_selection 0
 
         ######
-        # model arch testing
+        # model arch testing 
         python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-25-18-27-55-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-26-10-16-32-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
         
-        ## experiment
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection -1 --last_activation relu
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection -1 --last_activation relu
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection -1 --last_activation relu
+        ## experiment w/ pca test
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --last_activation relu        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-08-05-11-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-14-50-34-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation softplus            
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-29-00-17-41-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation none        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-30-16-28-51-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation none
 
+        ## experiment w/ real test
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-12-04-29-NGBCv5 --in_type 1 --out_type 0 --data_selection 0 --last_activation relu --realtest
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-15-27-33-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation relu --realtest
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --last_activation relu --realtest
-        
-        
-        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-07-44-28-NGBCv5 --in_type 2 --out_type 1 --data_selection 0 --last_activation relu --realtest        
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-27-08-05-11-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation relu --realtest
-        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-14-50-34-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation softplus --realtest
-        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-28-14-50-34-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation softplus --realtest        
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-29-00-17-41-NGBCv5 --in_type 2 --out_type 0 --data_selection 0 --last_activation none --realtest
-        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-09-30-16-28-51-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation none --realtest
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-29-14-42-44-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation none --realtest
+
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-10-02-00-06-28-NGBCv5 --in_type 1 --out_type 2 --data_selection 0 --last_activation 'relu' --realtest
         
         ## NFS
         python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-06-09-10-57-34-all --data_selection 0 --realtest
