@@ -322,8 +322,8 @@ class EvalDataset(data.Dataset):
 class CBDDataset(data.Dataset):
     def __init__(self, 
                  opts,
-                 # data_basedir='/data/sihun', # char-s02
-                 data_basedir='/data/sihun/pca', # char-s05
+                 toggle=False,
+                 data_basedir='/data/sihun', # char-s02
                  is_train=False,
                  is_valid=False,
                  window_size=8, # batch size
@@ -337,6 +337,7 @@ class CBDDataset(data.Dataset):
                  use_biwi=True,
                  use_mf_SEN=True,
                  use_mf_ROM=True,
+                 use_ict=False,
                 ):
         super().__init__()
         # get basenames
@@ -353,7 +354,13 @@ class CBDDataset(data.Dataset):
         self.use_biwi=use_biwi
         self.use_mf_SEN=use_mf_SEN
         self.use_mf_ROM=use_mf_ROM
+        self.use_ict = use_ict
         
+        if toggle:
+            # /data/sihun/pca
+            data_basedir=data_basedir+'/pca' # char-s05
+        else:
+            data_basedir=data_basedir # char-s02
         #self.data_config(self.opts, window_size)
         
         self.mode = 'test'
@@ -366,11 +373,46 @@ class CBDDataset(data.Dataset):
         total_len = 0
         total_id = 0
         
-        _, voca_data_split, biwi_data_split, mf_data_split, _ = get_data_splits()
+        ict_data_split, voca_data_split, biwi_data_split, mf_data_split, _ = get_data_splits()
         
         ## to make no leftover for each mesh id
         self.min_sample = self.n_components % self.opts.batch_size
         self.len_list=[]
+        
+        if self.use_ict:
+            from utils.remesh_utils import ICT_face_model
+            self.set_ict_synth()
+            self.ict_face_model=ICT_face_model()
+            
+            # self.ict_pca_holder_list=[]
+            # self.ict_id_list=[]
+            # for id_name in ict_data_split[self.mode]:
+            #     self.voca_id_list.append(id_name)
+            #     npz_file = f"{data_basedir}/VOCA-COMA/VOCASET/{self.mode}/{id_name}_pca.npz"
+            #     self.ict_pca_holder_list.append(PCA_holder(npz_file))
+            # assert len(self.ict_pca_holder_list) == len(self.ict_id_list), "mismatch in voca"
+            # self.ict_len = len(self.ict_pca_holder_list)
+            
+            self.ict_len = len(self.iden_vecs)
+            self.ict_exp_len = len(self.expression_vecs)
+            # self.ict_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            # with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
+            #     self.ict_mesh = pickle.load(f)
+            total_id = total_id + self.ict_len
+            
+            ict_min_sample = self.ict_exp_len % (self.ict_len * self.opts.batch_size)
+            
+            ## Added segmentation ##################################################################
+            self.ict_seg=torch.tensor(np.load('utils/ict/ICT_segment_onehot_24.npy'))
+            ########################################################################################
+    
+            # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.voca_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.voca_adj_list = igl.adjacency_list(self.voca_mesh["face"])
+                    
+            self.len_list.append([(self.ict_exp_len+ict_min_sample), self.get_ict, torch.tensor(5), self.ict_len])
         
         if self.use_voca:
             self.voca_pca_holder_list=[]
@@ -568,6 +610,48 @@ class CBDDataset(data.Dataset):
             self.use_decimate = self.opts.use_decimate
             self.WS = self.opts.window_size
             
+    def set_ict_synth(self):
+        self.iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
+        self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
+        
+        # if self.mode != 'train':
+        #     self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
+        #     self.expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
+            
+    def get_ict(self, index, id_index):
+        id_coeff  = self.iden_vecs[id_index]
+        
+        # if np.random.random(1) > 0.5:
+        #     exp_coeff = np.random.random((1, 53))
+        # else:
+        #     exp_coeff = np.random.randint(2, size=(1, 53))
+        #     exp_coeff = np.random.random((1, 53))
+        # exp_coeff = np.eye(53)[index][None] if index < 53 else np.random.randint(2, size=(1, 53))
+        if index >= self.ict_exp_len:
+            index -= self.ict_exp_len
+        exp_coeff = self.expression_vecs[index]
+        faces = self.ict_face_model.faces
+        
+        deformed, template, _ = self.ict_face_model.apply_coeffs(
+            id_coeff, exp_coeff, return_all=True
+        )
+        exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128
+        exp_coeff = torch.tensor(exp_coeff).float()        
+         
+        deformed=deformed[0]
+        template=template[0]
+        # import pdb;pdb.set_trace()
+        template_normal = igl.per_vertex_normals(template, faces)
+        deformed_normal = igl.per_vertex_normals(deformed, faces)
+        
+        template = torch.tensor(template).float()
+        deformed = torch.tensor(deformed).float()
+        faces = torch.tensor(faces).long()
+        template_normal = torch.tensor(template_normal).float()
+        deformed_normal = torch.tensor(deformed_normal).float()
+        
+        return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff)
+    
     def get_voca(self, index, id_index):
         #pca_index = index % self.n_components
         #id_index = index // (self.n_components+self.min_sample)
@@ -594,7 +678,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal, self.voca_seg)
+        return (template, deformed, faces, template_normal, deformed_normal, self.voca_seg, torch.zeros(128))
 
     def get_coma(self, index, id_index):
         #pca_index = index % self.n_components
@@ -622,7 +706,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal, self.coma_seg)
+        return (template, deformed, faces, template_normal, deformed_normal, self.coma_seg, torch.zeros(128))
         
     def get_biwi(self, index, id_index):
         #pca_index = index % self.n_components
@@ -650,7 +734,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal, self.biwi_seg)
+        return (template, deformed, faces, template_normal, deformed_normal, self.biwi_seg, torch.zeros(128))
 
     
     def get_multiface_SEN(self, index, id_index):
@@ -678,7 +762,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg)
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg, torch.zeros(128))
     
     
     def get_multiface_ROM(self, index, id_index):
@@ -702,7 +786,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg)
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128))
 
         
     def random_rotation_matrix(self, randgen=None):
@@ -791,6 +875,9 @@ class CBDDataset(data.Dataset):
         elif mesh_data == 4:
             datas = self.get_multiface_ROM(idx, id_mesh)
             mesh_data = 2
+        elif mesh_data == 5:
+            datas = self.get_ict(idx, id_mesh)
+            mesh_data = 5
         else:
             raise ValueError('got wrong number')
             
@@ -887,7 +974,7 @@ class CBDdataSampler(data.Sampler):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.reverse = reverse
-        self.data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf'])
+        self.data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])
         self.n_sampling = n_sampling
         self.n_ = n_
         self.epoch = 0
@@ -1009,7 +1096,9 @@ class CBDDataBatch:
             self.vertices_normal = torch.stack(transposed_data[4], 0) # [B, V, 3]
             
             self.mesh_data = transposed_data[-1][0] # 1
-            self.segmentation = torch.stack(transposed_data[-2], 0) # [B, V, 24]
+            self.segmentation = torch.stack(transposed_data[5], 0) # [B, V, 24]
+            
+            self.exp_coeff = torch.stack(transposed_data[6], 0) # [B, V, 24]
     
     @property
     def get_dfn_info(self): 
@@ -1156,7 +1245,17 @@ if __name__ == "__main__":
     opts.batch_size = 16
     print(f'use batch_size: {opts.batch_size}')
     
-    dataset = CBDDataset(opts, is_train=True, is_valid=False)
+    dataset = CBDDataset(
+        opts,
+        is_train=True, is_valid=False,
+        toggle=False,
+        use_voca=False,
+        use_coma=False,
+        use_biwi=False,
+        use_mf_SEN=True,
+        use_mf_ROM=True,
+        use_ict=True,
+    )
     print(dataset.get_data_config())
     
         
@@ -1164,7 +1263,7 @@ if __name__ == "__main__":
     sampler = CBDdataSampler(
         dataset.len_list, 
         opts.batch_size,
-        shuffle=False,
+        shuffle=True,
         balance=False,
         n_sampling=opts.n_sampling,
         n_=opts.batch_size,
@@ -1204,7 +1303,7 @@ if __name__ == "__main__":
     for idx, batch in pbar:
         #print(batch.vertices.shape, batch.template.shape)
         
-        mode = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data]
+        mode = np.array(['voca', 'biwi', 'mf', ',',',','ict'])[batch.mesh_data]
         
         #pbar.set_description(f"{idx}-{mode}")
         pbar.set_description(f"{idx}-{mode},{batch.vertices.shape}, {batch.template.shape}")
@@ -1221,4 +1320,4 @@ if __name__ == "__main__":
         # dataset.vis_mesh(data_cat, mesh=mode,tag=f"{idx:06d}-cat-ntrl_dfrm",size=1)
         
         dataset.vis_mesh(batch.vertices.cpu(), mesh=mode,tag=f"{idx:06d}-dfrm",size=1)
-        #dataset.vis_mesh(batch.template.cpu(), mesh=mode,tag=f"{idx:06d}-ntrl",size=1)
+        dataset.vis_mesh(batch.template.cpu(), mesh=mode,tag=f"{idx:06d}-ntrl",size=1)
