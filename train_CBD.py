@@ -100,6 +100,12 @@ def Options():
     parser.add_argument("--use_segment_weight",dest='use_segment_weight', action='store_true')
     parser.set_defaults(use_segment_weight=False)
 
+    
+    parser.add_argument("--use_data2",dest='use_data2', action='store_true')
+    parser.set_defaults(use_data2=False)
+    parser.add_argument("--use_data3",dest='use_data3', action='store_true')
+    parser.set_defaults(use_data3=False)
+
     parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
     
@@ -214,6 +220,7 @@ class Trainer():
                 is_train=True,
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
+                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
             )
         elif opts.version==8:
             self.model = NeuralGeneralizedBarycentricCoordinate8(
@@ -230,6 +237,7 @@ class Trainer():
                 is_train=True,
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
+                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
             )
         else:
             raise NotImplementedError('No matching model version')
@@ -408,7 +416,7 @@ class Trainer():
                 
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------                
-                mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                                 
                 template_expanded = batch.template
                 
@@ -759,7 +767,7 @@ class Trainer():
                 
                 # loss -------------------------------------------------------------------------------------------
                 mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf'])[mesh_data_num]
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
@@ -986,20 +994,28 @@ class Trainer():
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
-        self.train_dataset = CBDDataset(self.opts, is_train=True)
         
-        self.neighbor_maps = {
-            i: igl.adjacency_list(mesh_info['face'])
-            for i, mesh_info in enumerate([
-                self.train_dataset.voca_mesh,
-                self.train_dataset.biwi_mesh,
-                self.train_dataset.mf_SEN_mesh,
-            ])
-        }
-        self.neighbor_pad_mask = {}
-        for i in self.neighbor_maps.keys():
-            # (idx_pad, mask)
-            self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device)
+        if self.opts.use_data2 or self.opts.use_data3:
+            if self.opts.use_data2:
+                self.train_dataset = CBDDataset(self.opts, is_train=True,
+                     use_voca=False,
+                     use_coma=False,
+                     use_biwi=False,
+                     use_mf_SEN=True,
+                     use_mf_ROM=True,
+                     use_ict=True,
+                )
+            if self.opts.use_data3:
+                self.train_dataset = CBDDataset(self.opts, is_train=True,
+                     use_voca=True,
+                     use_coma=True,
+                     use_biwi=True,
+                     use_mf_SEN=True,
+                     use_mf_ROM=True,
+                     use_ict=True,
+                )
+        else:
+            self.train_dataset = CBDDataset(self.opts, is_train=True)
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -1017,7 +1033,28 @@ class Trainer():
         )
         
         
-        self.valid_dataset = CBDDataset(self.opts, is_valid=True)        
+        if self.opts.use_data2 or self.opts.use_data3:
+            if self.opts.use_data2:
+                self.valid_dataset = CBDDataset(self.opts, is_valid=True,
+                     use_voca=False,
+                     use_coma=False,
+                     use_biwi=False,
+                     use_mf_SEN=True,
+                     use_mf_ROM=True,
+                     use_ict=True,
+                )
+            if self.opts.use_data3:
+                self.valid_dataset = CBDDataset(self.opts, is_valid=True,
+                     use_voca=True,
+                     use_coma=True,
+                     use_biwi=True,
+                     use_mf_SEN=True,
+                     use_mf_ROM=True,
+                     use_ict=True,
+                )
+        else:
+            self.valid_dataset = CBDDataset(self.opts, is_valid=True)
+            
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
             self.opts.batch_size,
@@ -1174,7 +1211,7 @@ class Trainer():
                 
                 # loss -------------------------------------------------------------------------------------------
                 mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf'])[mesh_data_num]
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
@@ -1198,7 +1235,13 @@ class Trainer():
                 if self.opts.pou_loss:
                     #import pdb;pdb.set_trace()
                     loss_dict['pou'] = F.mse_loss(
-                        pred_key_weight.sum(-1), torch.ones(BS, N_range).to(self.device)
+                        torch.ones(BS, N_range).to(self.device),
+                        pred_key_weight.sum(-1), 
+                    )
+                    
+                if (self.opts.use_data2 or self.opts.use_data3) and mesh_data=='ict':
+                    loss_dict['exp-z'] = F.mse_loss(
+                        batch.exp_coeff.unsqueeze(1), exp_z
                     )
 
                 
@@ -1334,7 +1377,7 @@ class Trainer():
                 # loss ------------------------------------------------------------------------------------------- 
                 with torch.no_grad():
                     mesh_data_num = batch.mesh_data.cpu().numpy()
-                    mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf'])[mesh_data_num]
+                    mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
                     HB = batch.vertices.shape[0] // 2
