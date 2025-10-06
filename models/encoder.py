@@ -600,7 +600,7 @@ class LinearEncoder(nn.Module):
                  use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
                  use_least_N=False, use_least_N_on_V=False,no_activation=False,
                  use_gate_layer=False,
-                 use_pou=True,
+                 use_pou=False,
                  act='lrelu', nrm='layer',
                  tau=1e-2, use_K=False, K_dim=8,
                 ):
@@ -731,9 +731,9 @@ class LinearEncoder(nn.Module):
                 mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
                 out = out * mask
                 #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-        
-        if self.use_pou and not self.use_softmax:
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+            if self.use_pou and not self.use_softmax:
+                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         return out
         
@@ -765,7 +765,8 @@ class LinearEncoder2(nn.Module):
                  num_layers=4, use_style=True, out_type='vertices',
                  use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
                  use_least_N=False, use_least_N_on_V=False,
-                 no_activation=False, use_pou=True,
+                 no_activation=False, 
+                 use_pou=False,
                  use_residual=True, use_K=False, K_dim=8,
                  act='lrelu', nrm='layer',
                  use_gate_layer=False,
@@ -889,8 +890,8 @@ class LinearEncoder2(nn.Module):
                 out = out * mask
                 # out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
         
-        if self.use_pou and not self.use_softmax:
-            out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            if self.use_pou and not self.use_softmax:
+                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         return out
         

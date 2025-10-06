@@ -805,20 +805,28 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
                     for N in N_list
                 ]).to(device)
         
-    def reshape_key_d(self, key_d, B):
+    def reshape_key_d(self, key_d, B):        
         if self.out_type == 2:
             # cage transform matrix
-            M_ = self.num_cage_vertices*2 // 4
-            key_d = key_d.reshape(B, M_, 9)
+            key_d = key_d.reshape(B, self.num_cage_vertices*2, 9)
             tmp_R, tmp_t = key_d[...,:6], key_d[...,6:]
             
             tmp_R = self._6D_to_rot_(tmp_R).reshape(B, -1, 3, 3)
             key_d = torch.cat([tmp_R, tmp_t[..., None]], dim=-1) # (B, M, 3, 4)
             key_d = key_d.permute(0,1,3,2).reshape(B, -1, 3) # (B, M4, 3)
             #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
+        
+        elif self.out_type == 3:
+            # cage transform matrix
+            key_d = key_d.reshape(B,self.num_cage_vertices*2, 6)
+            key_d = self._6D_to_rot_(key_d)# (B, M, 3, 4)
+            key_d = key_d.permute(0,1,3,2).reshape(B, -1, 3) # (B, M4, 3)
+            #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
+        
         else:
             key_d = key_d.reshape(B, self.num_cage_vertices*2, 3)
             # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
+        
         return key_d
     
     def forward(self, source_vert, deform_vert, source_norm, deform_norm, hat_mask=None, mesh_data=0, epoch=0, out_kw=False, recon_out=True):
@@ -867,7 +875,9 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
         
         key_s_key_d = self.reshape_key_d(key_s_key_d, B) # (B, 2M, 3)
         
-        M = self.num_cage_vertices
+        # M = self.num_cage_vertices
+        M = key_s_key_d.shape[1]//2
+        # import pdb;pdb.set_trace()
         key_s, key_d = key_s_key_d[:,:M], key_s_key_d[:,M:]+key_s_key_d[:,:M]
         ### ---------------------------------------------------------
 
@@ -978,7 +988,8 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
             key_weight = self.key_weight_model(tgt_in, exp_z, N=self.NZ) # (B, N, M)
             # --> (B, N, 4M) if self.opts.out_type == 2
         
-            M = self.num_cage_vertices
+            # M = self.num_cage_vertices
+            M = key_s_key_d.shape[1]//2
             key_s, key_d = key_s_key_d[:,:M], key_s_key_d[:,M:]+key_s_key_d[:,M:]
             
             #print(key_d.shape)

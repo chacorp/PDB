@@ -569,7 +569,7 @@ class Trainer():
                 
                 else:
                     #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
-                    pred_vertices, _, _, _, _, _ = self.model(
+                    pred_vertices, _, _, _, _, _, _ = self.model(
                         batch.template, batch.vertices, 
                         batch.template_normal, batch.vertices_normal,
                         mesh_data=batch.mesh_data, epoch=0
@@ -680,6 +680,14 @@ if __name__ == "__main__":
         python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-29-14-42-44-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation none --realtest
 
         python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-10-02-00-06-28-NGBCv5 --in_type 1 --out_type 2 --data_selection 0 --last_activation 'relu' --realtest
+        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-10-03-15-28-36-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation 'relu' --realtest --no_pou
+        
+        python eval_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-10-03-22-40-03-NGBCv5 --in_type 1 --out_type 1 --data_selection 0 --last_activation 'relu' --realtest --no_pou
+
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-29-14-48-17-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation 'relu' --realtest
+        python eval_CBD.py --version 8 --ckpt ./ckpts_CBD/2025-09-29-14-53-53-NGBCv8 --in_type 1 --out_type 1 --data_selection 0 --last_activation 'softplus' --realtest
+        
         
         ## NFS
         python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-06-09-10-57-34-all --data_selection 0 --realtest
