@@ -570,10 +570,10 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             src_hat_mask = plateau_hat_points(src_neu_vert)
             src_in = torch.cat([src_in, src_hat_mask], dim=-1)
             deform_in_s = torch.cat([deform_in_s, src_hat_mask], dim=-1)
+            deform_in_d = torch.cat([deform_in_d, src_hat_mask], dim=-1)
             
             tgt_hat_mask = plateau_hat_points(tgt_neu_vert)
             tgt_in = torch.cat([tgt_in, tgt_hat_mask], dim=-1)
-            deform_in_d = torch.cat([deform_in_d, tgt_hat_mask], dim=-1)
             
         with torch.no_grad():
             if self.use_shp:
@@ -605,8 +605,8 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             pred_deformed = delta_dv
             pred_source = delta_sv
         else:
-            pred_deformed = delta_dv + source_vert
-            pred_source = delta_sv + source_vert
+            pred_deformed = delta_dv + tgt_neu_vert
+            pred_source = delta_sv + tgt_neu_vert
         
         # supple networks -------------------------------------
         # ## necessary -- not really...
@@ -1000,8 +1000,8 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
             pred_deformed = def_v
             pred_source = src_v
         else:
-            pred_deformed = def_v + source_vert
-            pred_source = src_v + source_vert
+            pred_deformed = def_v + tgt_neu_vert
+            pred_source = src_v + tgt_neu_vert
         
         if out_kw:
             return pred_deformed, pred_source, exp_z, key_d, exp_z, key_s, key_weight
@@ -1366,8 +1366,8 @@ class NeuralGeneralizedBarycentricCoordinate10(nn.Module):
             pred_deformed = delta_dv
             pred_source = delta_sv
         else:
-            pred_deformed = delta_dv + source_vert
-            pred_source = delta_sv + source_vert
+            pred_deformed = delta_dv + tgt_neu_vert
+            pred_source = delta_sv + tgt_neu_vert
         
         if out_kw:
             return pred_deformed, pred_source, exp_z_d, key_d, exp_z_s, key_s, key_weight

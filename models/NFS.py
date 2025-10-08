@@ -293,13 +293,13 @@ class NFS(nn.Module):
         
         #---------------------------------------------------------------------------------
         if self.opts.seg_dim == 20:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot.npy'
         elif self.opts.seg_dim == 24:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot_24.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_24.npy'
         elif self.opts.seg_dim == 14:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot_14.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_14.npy'
         elif self.opts.seg_dim == 6:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot_06.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_06.npy'
         else:
             raise NotImplementedError(f"no segment map for seg_dim: {self.opts.seg_dim}")
         
@@ -315,7 +315,7 @@ class NFS(nn.Module):
             from utils.nfr_utils import reconstruct_jacobians
             from utils.deformation_transfer import deformation_gradient
             
-            self.normalizer = Normalizer(f"{abs_path}/{self.opts.std_file}", self.device)
+            self.normalizer = Normalizer(f"{__abs_path__}/{self.opts.std_file}", self.device)
             self.myfunc = deformation_gradient.apply
         #---------------------------------------------------------------------------------
 
