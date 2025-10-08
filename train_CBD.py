@@ -173,6 +173,22 @@ def norm_loss(normals_before, normals_after):
     """
     return torch.mean(1.0 - F.cosine_similarity(normals_before, normals_after, dim=-1))
 
+def non_ict_loss(pred):
+    """Reference from Neural Face Rigging for Animating and Retargeting Facial Meshes in the Wild [Qin et al. 2023], Eq.(3)
+    L_FACS = {   
+         -x, x < 0 
+          0, 0 <= x < 1
+        x-1, x > 1
+    }
+    Args:
+        pred (torch.tensor): predicted expression code
+    
+    Returns:
+        loss
+    """
+    
+    loss = torch.where(pred < 0, -pred, torch.where(pred > 1, pred - 1, torch.zeros_like(pred))).mean()
+    return loss
 
 class Logger():
     def __init__(self, file_path):
@@ -1003,7 +1019,7 @@ class Trainer():
                      use_biwi=False,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,
+                     use_ict=True,toggle=True
                 )
             if self.opts.use_data3:
                 self.train_dataset = CBDDataset(self.opts, is_train=True,
@@ -1012,10 +1028,10 @@ class Trainer():
                      use_biwi=True,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,
+                     use_ict=True,toggle=True
                 )
         else:
-            self.train_dataset = CBDDataset(self.opts, is_train=True)
+            self.train_dataset = CBDDataset(self.opts, is_train=True,toggle=True)
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -1041,7 +1057,7 @@ class Trainer():
                      use_biwi=False,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,
+                     use_ict=True,toggle=True
                 )
             if self.opts.use_data3:
                 self.valid_dataset = CBDDataset(self.opts, is_valid=True,
@@ -1050,10 +1066,10 @@ class Trainer():
                      use_biwi=True,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,
+                     use_ict=True,toggle=True,
                 )
         else:
-            self.valid_dataset = CBDDataset(self.opts, is_valid=True)
+            self.valid_dataset = CBDDataset(self.opts, is_valid=True,toggle=True)
             
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
@@ -1167,7 +1183,7 @@ class Trainer():
             pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
             for index, batch in pbar:
                 self.optimizer.zero_grad()
-
+                
                 with torch.no_grad():
                     ## sampling points with probability
                     # margin = 0.8
@@ -1239,10 +1255,14 @@ class Trainer():
                         pred_key_weight.sum(-1), 
                     )
                     
-                if (self.opts.use_data2 or self.opts.use_data3) and mesh_data=='ict':
-                    loss_dict['exp-z'] = F.mse_loss(
-                        batch.exp_coeff.unsqueeze(1), exp_z
-                    )
+                if (self.opts.use_data2 or self.opts.use_data3):
+                    if mesh_data=='ict':
+                        loss_dict['exp-z'] = F.mse_loss(
+                            batch.exp_coeff.unsqueeze(1), exp_z
+                        )
+                    else:
+                        loss_dict['exp-z'] = non_ict_loss(exp_z)
+                        # pass
 
                 
                 # get total loss (lambda weights are multiplied here!)
