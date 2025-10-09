@@ -12,8 +12,8 @@ from matplotlib_rnd import *
 import trimesh
 import random
 
-torch.arange(4)
-qwe = torch.randperm(4)
+# torch.arange(4)
+# qwe = torch.randperm(4)
 
 class load_obj_mesh():
     def __init__(self, obj_file, to_torch=False, device='cpu'):
@@ -654,7 +654,7 @@ class ICT_face_model():
             return mesh, mesh_v_idx
         return mesh
 
-    def apply_coeffs(self, id_coeff, exp_coeffs=None, mesh_v_idx=None, return_all=False, region=0):
+    def apply_coeffs(self, id_coeff, exp_coeffs=None, mesh_v_idx=None, return_all=False, region=-1):
         """
         Args:
             id_coeff (np.ndarray): [100] ICT-facekit identity coeff
@@ -666,7 +666,6 @@ class ICT_face_model():
         
         # exp vertices
         exp_disp = self.get_exp_disp(exp_coeffs)
-        
         id_verts = self.neutral_verts + id_disps
         id_exp_verts = id_verts + exp_disp
         

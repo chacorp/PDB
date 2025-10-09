@@ -620,6 +620,8 @@ class CBDDataset(data.Dataset):
             
     def get_ict(self, index, id_index):
         id_coeff  = self.iden_vecs[id_index]
+
+        # region_dice = np.random.randint(3, size=(1))
         
         # if np.random.random(1) > 0.5:
         #     exp_coeff = np.random.random((1, 53))
@@ -627,13 +629,14 @@ class CBDDataset(data.Dataset):
         #     exp_coeff = np.random.randint(2, size=(1, 53))
         #     exp_coeff = np.random.random((1, 53))
         # exp_coeff = np.eye(53)[index][None] if index < 53 else np.random.randint(2, size=(1, 53))
+        
         if index >= self.ict_exp_len:
             index -= self.ict_exp_len
         exp_coeff = self.expression_vecs[index]
         faces = self.ict_face_model.faces
         
         deformed, template, _ = self.ict_face_model.apply_coeffs(
-            id_coeff, exp_coeff, return_all=True
+            id_coeff, exp_coeff, return_all=True, #region=region_dice
         )
         exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128
         exp_coeff = torch.tensor(exp_coeff).float()        
@@ -1242,7 +1245,7 @@ if __name__ == "__main__":
 
     
     
-    opts.batch_size = 16
+    opts.batch_size = 4
     print(f'use batch_size: {opts.batch_size}')
     
     dataset = CBDDataset(
@@ -1252,8 +1255,8 @@ if __name__ == "__main__":
         use_voca=False,
         use_coma=False,
         use_biwi=False,
-        use_mf_SEN=True,
-        use_mf_ROM=True,
+        use_mf_SEN=False,
+        use_mf_ROM=False,
         use_ict=True,
     )
     print(dataset.get_data_config())
