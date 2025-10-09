@@ -990,7 +990,7 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
         
             # M = self.num_cage_vertices
             M = key_s_key_d.shape[1]//2
-            key_s, key_d = key_s_key_d[:,:M], key_s_key_d[:,M:]+key_s_key_d[:,M:]
+            key_s, key_d = key_s_key_d[:,:M], key_s_key_d[:,M:]+key_s_key_d[:,:M]
             
             #print(key_d.shape)
             def_v = torch.einsum('bnc,bci->bni',key_weight,key_d) # (B, N, 3)
