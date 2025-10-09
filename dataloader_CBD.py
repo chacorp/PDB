@@ -1248,7 +1248,7 @@ if __name__ == "__main__":
     dataset = CBDDataset(
         opts,
         is_train=True, is_valid=False,
-        toggle=False,
+        toggle=True,
         use_voca=False,
         use_coma=False,
         use_biwi=False,

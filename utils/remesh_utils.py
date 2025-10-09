@@ -672,10 +672,13 @@ class ICT_face_model():
         
         # apply std
         if mesh_v_idx is not None:
-            id_exp_verts = id_exp_verts[mesh_v_idx]
+            id_exp_verts = id_exp_verts[:, mesh_v_idx]
         
-        id_verts = id_verts[:self.region[region][0]]
-        id_exp_verts = id_exp_verts[:self.region[region][0]]
+        # id_verts = id_verts[:self.region[region][0]]
+        # id_exp_verts = id_exp_verts[:self.region[region][0]]
+        # import pdb;pdb.set_trace()
+        id_verts = id_verts[:, :self.region[region][0]]
+        id_exp_verts = id_exp_verts[:, :self.region[region][0]]
         
         if return_all:
             return id_exp_verts, id_verts, exp_disp
