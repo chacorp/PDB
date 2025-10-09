@@ -224,6 +224,7 @@ class Trainer():
         elif opts.version==5:
             self.model = NeuralGeneralizedBarycentricCoordinate5(
                 opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
@@ -238,9 +239,10 @@ class Trainer():
                 device=self.device,
                 hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
             )
-        elif opts.version==8:
+        elif opts.version==8: 
             self.model = NeuralGeneralizedBarycentricCoordinate8(
                 opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
@@ -1019,7 +1021,7 @@ class Trainer():
                      use_biwi=False,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,toggle=True
+                     use_ict=True,toggle=False
                 )
             if self.opts.use_data3:
                 self.train_dataset = CBDDataset(self.opts, is_train=True,
@@ -1028,10 +1030,10 @@ class Trainer():
                      use_biwi=True,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,toggle=True
+                     use_ict=True,toggle=False
                 )
         else:
-            self.train_dataset = CBDDataset(self.opts, is_train=True,toggle=True)
+            self.train_dataset = CBDDataset(self.opts, is_train=True,toggle=False)
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -1057,7 +1059,7 @@ class Trainer():
                      use_biwi=False,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,toggle=True
+                     use_ict=True,toggle=False
                 )
             if self.opts.use_data3:
                 self.valid_dataset = CBDDataset(self.opts, is_valid=True,
@@ -1066,10 +1068,10 @@ class Trainer():
                      use_biwi=True,
                      use_mf_SEN=True,
                      use_mf_ROM=True,
-                     use_ict=True,toggle=True,
+                     use_ict=True,toggle=False,
                 )
         else:
-            self.valid_dataset = CBDDataset(self.opts, is_valid=True,toggle=True)
+            self.valid_dataset = CBDDataset(self.opts, is_valid=True,toggle=False)
             
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
