@@ -97,6 +97,11 @@ def Options():
     
     parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
     parser.set_defaults(use_scheduler=False)
+    
+    parser.add_argument("--use_data2",dest='use_data2', action='store_true')
+    parser.set_defaults(use_data2=False)
+    parser.add_argument("--use_data3",dest='use_data3', action='store_true')
+    parser.set_defaults(use_data3=False)
 
     
     parser.add_argument("--realtest",dest='realtest', action='store_true')
@@ -217,6 +222,7 @@ class Trainer():
                 is_train=True,
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
+                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
             )
         elif opts.version==8:
             self.model = NeuralGeneralizedBarycentricCoordinate8(
@@ -234,6 +240,7 @@ class Trainer():
                 is_train=True,
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
+                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
             )
         else:
             raise NotImplementedError('No matching model version')
@@ -383,7 +390,7 @@ class Trainer():
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
                 mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf'])[mesh_data_num]
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
                 
@@ -442,12 +449,12 @@ class Trainer():
         
         if self.opts.data_selection == -1:
             raise NotImplementedError('only works for individual data')
-        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM']
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
         selection = data_name_list[self.opts.data_selection]
         
         
-        # self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
-        self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
+        self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
+        # self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
         
         self.dataloader = torch.utils.data.DataLoader(
             self.dataset,
@@ -503,6 +510,209 @@ class Trainer():
         }
         mesh_data = self.dataset.data_name
                 
+        pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
+        for index, batch in pbar:
+            
+            # model forward ----------------------------------------------------------------------------------
+            with torch.no_grad():
+                
+                ### only for NFS #############################################################
+                if self.opts.version==0:
+                    if index==0:
+                        src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                        
+                        ## common routine
+                        dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                        img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                        img_feat = self.model.get_img_feat(img)
+                        vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            
+                        with torch.no_grad():
+                            pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+                    else:
+                        if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
+                            src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                    
+                            ## common routine
+                            dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                            
+                            img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                            img_feat = self.model.get_img_feat(img)
+                            vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            
+                            with torch.no_grad():
+                                pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                                pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+
+                    vert_feat_exp = []
+                    for gt_v in batch.vertices:
+                        _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
+                        vert_feat_exp.append(_tmp_)
+                    vert_feat_exp = torch.vstack(vert_feat_exp)
+
+                    with torch.no_grad():
+                        pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
+                    
+                        inputs = (
+                            vert_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                            None, batch.template[0][None], batch.faces[0], None
+                        )
+                        pred_vertices, _ = self.model.decode(inputs, batch_process=True)
+
+                    # pred_vertices = self.model.inference(
+                    #     gt_vertices=batch.vertices, 
+                    #     src_mesh=src_mesh, 
+                    #     tgt_mesh=src_mesh,
+                    #     batch_process=True
+                    # )
+                    
+                    # losses_val, pred_vertices, _, pred_exp_coeff, pred_id_coeff, pred_seg = self.model.evaluate(
+                    #     batch, \
+                    #     batch_process=False, \
+                    #     return_all=True, \
+                    #     stage=1, \
+                    #     epoch=500
+                    # )
+                ##############################################################################
+                
+                else:
+                    #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
+                    pred_vertices, _, _, _, _, _, _ = self.model(
+                        batch.template, batch.vertices, 
+                        batch.template_normal, batch.vertices_normal,
+                        mesh_data=batch.mesh_data, epoch=0
+                    )
+                    
+                # Metric
+                losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
+            # ------------------------------------------------------------------------------------------------
+        
+            
+            # ------------------------------------------------------------------------------------------------
+            interv_val = round(len_data / 10)
+            if index % interv_val == 0:
+                # for visualization
+                vertices = batch.vertices.cpu().detach()
+                faces = batch.faces.cpu().detach()
+                pred_vertices_ = pred_vertices.cpu().detach()
+                
+                v_list = [
+                    vertices[0],
+                    vertices[1],
+                    vertices[HB],
+                    vertices[-1],
+                    pred_vertices_[0],
+                    pred_vertices_[1],
+                    pred_vertices_[HB],
+                    pred_vertices_[-1],
+                ]
+                len_v = len(v_list)
+                f_list=[faces[0]] * len_v
+                save_logdir = f"{self.opts.log_dir}/img"
+                save_img_name = f"{index:04d}"
+                
+                plot_image_array(
+                    v_list, f_list, 
+                    rot_list=[[0,0,0]]*len_v,
+                    size=1, bg_black=False, mode='shade', 
+                    logdir=save_logdir, 
+                    name=save_img_name, save=True
+                )
+                # 11649/(11649+6309) + 6309/(11649+6309)
+        ##########################################################################################################
+        
+        # write log
+        log_text = f"[Eval] "
+        for key, value in losses_val.items():
+            txt = f"{key}: {value:.6e} "
+            print(txt)
+            log_text += txt
+        self.logger.write(log_text+"\n")                
+        print('done!')
+    
+    def evaluate3(self):
+        ##########################################################################################################
+        # define dataset -----------------------------------------------------------------------------------------
+        BS = self.opts.batch_size
+        HB = BS // 2
+        device=self.device
+        
+        if self.opts.data_selection == -1:
+            raise NotImplementedError('only works for individual data')
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
+        selection = data_name_list[self.opts.data_selection]
+        
+        
+        # self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
+        # # self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
+        
+        # self.dataloader = torch.utils.data.DataLoader(
+        #     self.dataset,
+        #     batch_size=self.opts.batch_size,
+        #     collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
+        #     #num_workers=8,
+        # )
+        from dataloader_mesh import (
+            NFSDataset,
+            # InvRigDataset,
+        )
+        self.opts.window_size=8
+        self.opts.ict_face_only=False
+        self.opts.selection=2 ## ICT-all (ICT-capture + ICT-synthetic)
+        self.opts.seg_dim=20
+        self.dataset = NFSDataset(self.opts, is_train=False, is_valid=False, return_audio_dir=True)
+       
+        self.dataloader = torch.utils.data.DataLoader(self.dataset, batch_size=1, shuffle=False, num_workers=0)
+        ##########################################################################################################
+        
+        
+        ###### Logging ###########################################################################################
+        # make logdir --------------------------------------------------------------------------------------------
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+                            
+        ckpt_path = self.opts.ckpt.split('/')[-1]
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection)
+        
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+        
+        # save options as json -----------------------------------------------------------------------------------
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+            
+        # save train option as yml
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+        
+        # self logger
+        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
+        print(f'Saving log at: {self.opts.log_dir}')
+        
+        print(self.dataset.get_data_config())
+        self.logger.write(self.dataset.get_data_config())
+        #---------------------------------------------------------------------------------------------------------
+        ##########################################################################################################
+        
+        
+        
+        # eval loop ##############################################################################################
+        
+        global_step = 0
+        BEST_LOSS = 100_000_000
+        
+        check_usage = False
+        
+        len_data = len(self.dataloader)
+        denom = 1 / len_data
+        
+        self.model.eval()
+        
+        losses_val = {
+            "MSE": 0.0,
+        }
+        mesh_data = 'ict'
+        
+        import pdb;pdb.set_trace()
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
             
@@ -723,7 +933,10 @@ if __name__ == "__main__":
     if opts.realtest:
         trainer.evaluate2() ## real test frames
     else:
-        trainer.evaluate() ## pca test data
+        if opts.use_data2:
+            trainer.evaluate3() ## pca test data
+        else:
+            trainer.evaluate() ## pca test data
 
 
         
