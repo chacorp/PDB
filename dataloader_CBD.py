@@ -30,11 +30,12 @@ class EvalDataset(data.Dataset):
         self.mode = 'test'
         
         #data_name_list = ['voca','mf_SEN','biwi','coma','mf_ROM']
-        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM']
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
         self.data_name = data_name
         
         d_mask = [dn==data_name for dn in data_name_list]
-        self.mesh_data = torch.tensor([0,1,2,3,4])[d_mask]
+        # self.mesh_data = torch.tensor([0,1,2,3,4,5])[d_mask]
+        self.mesh_data = torch.arange(len(data_name_list))[d_mask]
         
         if not self.data_name in data_name_list:
             #voca, mf_SEN, biwi, coma, mf_ROM
@@ -54,6 +55,18 @@ class EvalDataset(data.Dataset):
         self.len = 0
         self.write_all_data_as_txt()
         
+        if self.data_name=='ict':
+            from utils.remesh_utils import ICT_face_model
+            self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
+            self.expression_vecs = np.load('./data/ICT_live_100/expression_vecs_test.npy')
+            
+            self.ict_face_model=ICT_face_model()
+            self.ict_len = len(self.iden_vecs)
+            self.ict_exp_len = len(self.expression_vecs)
+            self.len = self.ict_len * self.ict_exp_len
+            self.get_data = self.get_ict
+            
+            
         if self.data_name=='voca':
             self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
             with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
@@ -212,6 +225,35 @@ class EvalDataset(data.Dataset):
                 logger.close()
             self.biwi_datalist = self.load_data_txt(logger_file)
             self.len += len(self.biwi_datalist)
+            
+    def get_ict(self, index):
+        id_index = index // self.ict_exp_len
+        index = index % self.ict_exp_len
+        
+        id_coeff  = self.iden_vecs[id_index]
+        
+        exp_coeff = self.expression_vecs[index]
+        faces = self.ict_face_model.faces
+        
+        vertices, template, _ = self.ict_face_model.apply_coeffs(
+            id_coeff, exp_coeff, return_all=True, #region=region_dice
+        )
+        # exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128
+        # exp_coeff = torch.tensor(exp_coeff).float()
+         
+        vertices=vertices[0]
+        template=template[0]
+        # import pdb;pdb.set_trace()
+        template_normal = igl.per_vertex_normals(template, faces)
+        vertices_normal = igl.per_vertex_normals(vertices, faces)
+        
+        template = torch.tensor(template).float()
+        vertices = torch.tensor(vertices).float()
+        faces = torch.tensor(faces).long()
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
         
     def get_voca(self, index):
         file_path=self.voca_datalist[index]
@@ -366,7 +408,7 @@ class CBDDataset(data.Dataset):
         self.mode = 'test'
         if is_train:
             self.mode = 'train'
-            self.scale = 2.0
+            self.scale = 1.5
         elif is_valid:
             self.mode = 'val'
         
@@ -611,8 +653,15 @@ class CBDDataset(data.Dataset):
             self.WS = self.opts.window_size
             
     def set_ict_synth(self):
-        self.iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
-        self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
+        # self.iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
+        # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
+        self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
+        expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
+        self.expression_vecs = np.r_[np.eye(53), expression_vecs]
+
+        # tmp = asd.sum(1)
+        # [tmp%1==0]
+        # import pdb;pdb.set_trace()
         
         # if self.mode != 'train':
         #     self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
