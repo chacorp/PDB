@@ -204,6 +204,7 @@ class Trainer():
         elif opts.version==5:
             self.model = NeuralGeneralizedBarycentricCoordinate5(
                 opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
@@ -220,6 +221,7 @@ class Trainer():
         elif opts.version==8:
             self.model = NeuralGeneralizedBarycentricCoordinate8(
                 opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
                 use_shp_recon=False, # not used yet
                 use_shp=False,
@@ -444,8 +446,8 @@ class Trainer():
         selection = data_name_list[self.opts.data_selection]
         
         
-        self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
-        #self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
+        # self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
+        self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
         
         self.dataloader = torch.utils.data.DataLoader(
             self.dataset,
