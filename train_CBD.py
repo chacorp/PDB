@@ -37,6 +37,7 @@ from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 from utils.exp_utils import plateau_hat_points
+from utils.mesh_utils import calc_norm_torch
 
 # from utils.exp_utils import Model_mk1, Model_mk3_1
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
@@ -105,6 +106,8 @@ def Options():
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
+    parser.add_argument("--data_toggle",dest='data_toggle', action='store_true')
+    parser.set_defaults(data_toggle=False)
 
     parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
@@ -265,13 +268,14 @@ class Trainer():
     
     def load_weight(self):
         if self.opts.ckpt:
+            print(f"Loading... {self.opts.ckpt}")
             if self.opts.continue_ckpt:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
             else:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
-            print(f"Loading... {ckpt}")
             ckpt_dict = torch.load(ckpt)            
             self.model.load_state_dict(ckpt_dict)
+            print(f"Loaded! {ckpt}")
         else:
             print('no ckpt found, training from scratch!')
 
@@ -1015,25 +1019,31 @@ class Trainer():
         
         if self.opts.use_data2 or self.opts.use_data3:
             if self.opts.use_data2:
-                self.train_dataset = CBDDataset(self.opts, is_train=True,
-                     use_voca=False,
-                     use_coma=False,
-                     use_biwi=False,
-                     use_mf_SEN=True,
-                     use_mf_ROM=True,
-                     use_ict=True,toggle=False
+                self.train_dataset = CBDDataset(
+                    self.opts, is_train=True,
+                    use_voca=False,
+                    use_coma=False,
+                    use_biwi=False,
+                    use_mf_SEN=True,
+                    use_mf_ROM=True,
+                    use_ict=True,
+                    toggle=self.opts.data_toggle
                 )
             if self.opts.use_data3:
-                self.train_dataset = CBDDataset(self.opts, is_train=True,
-                     use_voca=True,
-                     use_coma=True,
-                     use_biwi=True,
-                     use_mf_SEN=True,
-                     use_mf_ROM=True,
-                     use_ict=True,toggle=False
+                self.train_dataset = CBDDataset(
+                    self.opts, is_train=True,
+                    use_voca=True,
+                    use_coma=True,
+                    use_biwi=True,
+                    use_mf_SEN=True,
+                    use_mf_ROM=True,
+                    use_ict=True,
+                    toggle=self.opts.data_toggle,
                 )
         else:
-            self.train_dataset = CBDDataset(self.opts, is_train=True,toggle=False)
+            self.train_dataset = CBDDataset(
+                self.opts, is_train=True, toggle=self.opts.data_toggle
+            )
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -1053,25 +1063,32 @@ class Trainer():
         
         if self.opts.use_data2 or self.opts.use_data3:
             if self.opts.use_data2:
-                self.valid_dataset = CBDDataset(self.opts, is_valid=True,
-                     use_voca=False,
-                     use_coma=False,
-                     use_biwi=False,
-                     use_mf_SEN=True,
-                     use_mf_ROM=True,
-                     use_ict=True,toggle=False
+                self.valid_dataset = CBDDataset(
+                    self.opts, is_valid=True,
+                    use_voca=False,
+                    use_coma=False,
+                    use_biwi=False,
+                    use_mf_SEN=True,
+                    use_mf_ROM=True,
+                    use_ict=True,
+                    toggle=self.opts.data_toggle
                 )
             if self.opts.use_data3:
-                self.valid_dataset = CBDDataset(self.opts, is_valid=True,
-                     use_voca=True,
-                     use_coma=True,
-                     use_biwi=True,
-                     use_mf_SEN=True,
-                     use_mf_ROM=True,
-                     use_ict=True,toggle=False,
+                self.valid_dataset = CBDDataset(
+                    self.opts, is_valid=True,
+                    use_voca=True,
+                    use_coma=True,
+                    use_biwi=True,
+                    use_mf_SEN=True,
+                    use_mf_ROM=True,
+                    use_ict=True,
+                    toggle=self.opts.data_toggle,
                 )
+            
         else:
-            self.valid_dataset = CBDDataset(self.opts, is_valid=True,toggle=False)
+            self.valid_dataset = CBDDataset(
+                self.opts, is_valid=True, toggle=self.opts.data_toggle
+            )
             
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
@@ -1192,11 +1209,14 @@ class Trainer():
                     # _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
                         
                     ## random sampling and random permutation
-                    N=batch.template.shape[1]
-                    N_range = N-torch.randint(100, N//6, (1,)).item()
-                    randperm_idx = torch.randperm(N)[:N_range]
-                    
-                    # randperm_idx = torch.multinomial(_p, 2048)
+                    N = batch.template.shape[1]
+                    use_perm = torch.rand(1) > 0.3
+                    if use_perm:
+                        N_range = N-torch.randint(100, N//6, (1,)).item()
+                        randperm_idx = torch.randperm(N)[:N_range]
+                    else:
+                        randperm_idx = torch.arange(N)
+                        # randperm_idx = torch.multinomial(_p, 2048)
                     rearange_idx = torch.argsort(randperm_idx)
                     
                     batch_template_v = batch.template[:, randperm_idx]
@@ -1229,7 +1249,7 @@ class Trainer():
                 
                 # loss -------------------------------------------------------------------------------------------
                 mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
@@ -1258,6 +1278,14 @@ class Trainer():
                     )
                     
                 if (self.opts.use_data2 or self.opts.use_data3):
+                    # python train_CBD.py --max_epoch 400 --lr 2E-4 --sc_step 20 --version 5 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --use_data2 --last_activation 'relu' 
+                    if not use_perm:
+                        # import pdb;pdb.set_trace()
+                        pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
+                        pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts') # [1, V, 3]
+                        loss_dict['recon-def'] += F.mse_loss(batch_vertices_n*t_mask, pred_vertices_norm*t_mask) * 0.1
+                        loss_dict['recon-neu'] += F.mse_loss(batch_template_n*t_mask, pred_template_norm*t_mask) * 0.1
+                    
                     if mesh_data=='ict':
                         loss_dict['exp-z'] = F.mse_loss(
                             batch.exp_coeff.unsqueeze(1), exp_z
@@ -1280,6 +1308,10 @@ class Trainer():
                 
                 # backward ---------------------------------------------------------------------------------------
                 loss.backward()
+                # try:
+                #     loss.backward()
+                # except:
+                #     import pdb;pdb.set_trace()
                 self.optimizer.step()
                 # ------------------------------------------------------------------------------------------------
 
