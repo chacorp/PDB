@@ -57,7 +57,8 @@ class EvalDataset(data.Dataset):
         
         if self.data_name=='ict':
             from utils.remesh_utils import ICT_face_model
-            self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
+            # self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
+            self.iden_vecs = np.zeros((100,))
             self.expression_vecs = np.load('./data/ICT_live_100/expression_vecs_test.npy')
             
             self.ict_face_model=ICT_face_model()
@@ -230,7 +231,8 @@ class EvalDataset(data.Dataset):
         id_index = index // self.ict_exp_len
         index = index % self.ict_exp_len
         
-        id_coeff  = self.iden_vecs[id_index]
+        #id_coeff  = self.iden_vecs[id_index]
+        id_coeff  = self.iden_vecs
         
         exp_coeff = self.expression_vecs[index]
         faces = self.ict_face_model.faces
@@ -657,11 +659,11 @@ class CBDDataset(data.Dataset):
         # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
         self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
         expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
-        self.expression_vecs = np.r_[np.eye(53), expression_vecs]
-
-        # tmp = asd.sum(1)
-        # [tmp%1==0]
-        # import pdb;pdb.set_trace()
+        #self.expression_vecs = np.r_[.eye(53), expression_vecs]
+        if self.mode == 'train':
+            self.expression_vecs = np.r_[np.eye(53), expression_vecs]
+        else:
+            self.expression_vecs = expression_vecs
         
         # if self.mode != 'train':
         #     self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
@@ -680,8 +682,10 @@ class CBDDataset(data.Dataset):
         # exp_coeff = np.eye(53)[index][None] if index < 53 else np.random.randint(2, size=(1, 53))
         
         if index >= self.ict_exp_len:
-            index -= self.ict_exp_len
-        exp_coeff = self.expression_vecs[index]
+            index = index % self.ict_exp_len
+        exp_coeff = self.expression_vecs[index] 
+        exp_coeff = exp_coeff * self.scale
+        
         faces = self.ict_face_model.faces
         
         deformed, template, _ = self.ict_face_model.apply_coeffs(

@@ -711,13 +711,25 @@ class Trainer():
             "MSE": 0.0,
         }
         mesh_data = 'ict'
+        from easydict import EasyDict
+        from utils.mesh_utils import calc_norm_torch
         
         # import pdb;pdb.set_trace()
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
-        for index, batch in pbar:
-            
+        for index, data in pbar:
+            batch=EasyDict()
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
+                # dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, mesh_data, corr_feat=data
+                _, batch.id_coeff, batch.exp_coeff, batch.template, batch.dfn_info, batch.operators, batch.vertices, batch.vertices_normal, batch.faces, batch.img, batch.mesh_data, batch.corr_feat=data
+                
+                batch.vertices = batch.vertices.squeeze(0).to(self.device)
+                batch.vertices_normal = batch.vertices_normal.squeeze(0).to(self.device)
+                # batch.template = batch.template.squeeze(0)
+                batch.faces = batch.faces.squeeze(0)
+                batch.template_normal = calc_norm_torch(batch.template, batch.faces, 'vert').repeat(self.dataset.WS,1,1).to(self.device)
+                batch.template = batch.template.repeat(self.dataset.WS,1,1).to(self.device)
+                batch.faces = batch.faces.to(self.device)
                 
                 ### only for NFS #############################################################
                 if self.opts.version==0:
@@ -788,7 +800,9 @@ class Trainer():
                     )
                     
                 # Metric
-                losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
+                loss_ = F.mse_loss(batch.vertices, pred_vertices).item() # for NGBC model
+                pbar.set_description(f'loss: {loss_:.5e}')
+                losses_val['MSE'] += loss_ * denom
             # ------------------------------------------------------------------------------------------------
         
             
@@ -799,6 +813,7 @@ class Trainer():
                 vertices = batch.vertices.cpu().detach()
                 faces = batch.faces.cpu().detach()
                 pred_vertices_ = pred_vertices.cpu().detach()
+                # import pdb;pdb.set_trace()
                 
                 v_list = [
                     vertices[0],
@@ -811,7 +826,7 @@ class Trainer():
                     pred_vertices_[-1],
                 ]
                 len_v = len(v_list)
-                f_list=[faces[0]] * len_v
+                f_list=[faces] * len_v
                 save_logdir = f"{self.opts.log_dir}/img"
                 save_img_name = f"{index:04d}"
                 
