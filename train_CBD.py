@@ -100,6 +100,10 @@ def Options():
     
     parser.add_argument("--use_segment_weight",dest='use_segment_weight', action='store_true')
     parser.set_defaults(use_segment_weight=False)
+    parser.add_argument("--use_laplacian",dest='use_laplacian', action='store_true')
+    parser.set_defaults(use_laplacian=False)
+    parser.add_argument("--use_normal_loss",dest='use_normal_loss', action='store_true')
+    parser.set_defaults(use_normal_loss=False)
 
     
     parser.add_argument("--use_data2",dest='use_data2', action='store_true')
@@ -191,6 +195,37 @@ def non_ict_loss(pred):
     """
     
     loss = torch.where(pred < 0, -pred, torch.where(pred > 1, pred - 1, torch.zeros_like(pred))).mean()
+    return loss
+
+def laplacian_loss(batch, pred_key_weight, dataset, mesh_data_num, device):
+    """
+    Args:
+        batch: data class
+        pred_key_weight: coordinate prediction (B,V,C)
+        dataset: train dataset
+        device: cpu, cuda
+    Returns:
+        laplacian smoothing loss
+    """
+    loss = 0
+    
+    if mesh_data_num == 0:
+        cotmatrix = dataset.voca_cotmatrix[batch.id_name].to(device)
+    elif mesh_data_num == 1:
+        cotmatrix = dataset.biwi_cotmatrix[batch.id_name].to(device)
+    elif mesh_data_num == 2:
+        cotmatrix = dataset.mf_SEN_cotmatrix[batch.id_name].to(device)
+    elif mesh_data_num == 3:
+        cotmatrix = dataset.coma_cotmatrix[batch.id_name].to(device)
+    elif mesh_data_num == 4:
+        cotmatrix = dataset.mf_ROM_cotmatrix[batch.id_name].to(device)
+    elif mesh_data_num == 5:
+        cotmatrix = dataset.ict_cotmatrix[batch.id_name].to(device)
+        
+    for pred_key_w in pred_key_weight:
+        pred_key_w_lap = cotmatrix @ pred_key_w
+        loss += pred_key_w_lap.sum(0).pow(2).mean()
+        
     return loss
 
 class Logger():
@@ -1016,6 +1051,7 @@ class Trainer():
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
+        BS_denom = 1 / BS
         
         if self.opts.use_data2 or self.opts.use_data3:
             if self.opts.use_data2:
@@ -1168,9 +1204,13 @@ class Trainer():
             "exp-z": self.opts.lambda_vert * 0.5,
             "exp-v": self.opts.lambda_vert,
             "shape": self.opts.lambda_vert,            
-            "pou": self.opts.lambda_vert,
+            # "pou": self.opts.lambda_vert,
             # symm 
         }
+        if self.opts.pou_loss:
+            self.loss_lambda['pou'] = 1.0
+        if self.opts.use_laplacian:
+            self.loss_lambda['lap'] = 1.0
         
         check_usage = False
         
@@ -1192,6 +1232,8 @@ class Trainer():
             }
             if self.opts.pou_loss:
                 running_losses['pou']=0.0
+            if self.opts.use_laplacian:
+                running_losses['lap']=0.0
             
             self.model.train()
             train_counter = 0
@@ -1277,12 +1319,26 @@ class Trainer():
                         pred_key_weight.sum(-1), 
                     )
                     
+                if self.opts.use_laplacian and not use_perm:
+                    #import pdb;pdb.set_trace()
+                    loss_dict['lap'] = laplacian_loss(
+                        batch, pred_key_weight, self.train_dataset, mesh_data_num, self.device
+                    ) * BS_denom
+                    
+                    # with torch.no_grad():
+                    #     batch_vertices_lap = cotmatrix @ batch_vertices_v
+                    #     batch_template_lap = cotmatrix @ batch_template_v
+                    # pred_vertices_lap = cotmatrix @ pred_vertices
+                    # pred_source_lap = cotmatrix @ pred_source
+                    
+                    # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
+                    # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
+                    
                 if (self.opts.use_data2 or self.opts.use_data3):
-                    # python train_CBD.py --max_epoch 400 --lr 2E-4 --sc_step 20 --version 5 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --use_data2 --last_activation 'relu' 
-                    if not use_perm:
-                        # import pdb;pdb.set_trace()
+                    if not use_perm and self.opts.use_normal_loss:
                         pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
-                        pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts') # [1, V, 3]
+                        pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
+                        
                         loss_dict['recon-def'] += F.mse_loss(batch_vertices_n*t_mask, pred_vertices_norm*t_mask) * 0.1
                         loss_dict['recon-neu'] += F.mse_loss(batch_template_n*t_mask, pred_template_norm*t_mask) * 0.1
                     

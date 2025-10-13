@@ -425,7 +425,35 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
         
         return key_d
-    
+        
+    @torch.no_grad()
+    def get_coordinate(self, source_vert, source_norm, out_kw=False):
+        """
+        Args:
+            source_vert (torch.tensor): [B, N, 3] source mesh vertice
+            source_norm (torch.tensor): [B, N, 3] source mesh vertex normals
+            mesh_data (int): indicator for data (0: voca, 1: biwi, 2: multiface)
+            epoch (int): train epoch (epoch != iteration)
+        Returns:
+            coordinates [B, N, C]
+        """
+        B, N, _ = source_vert.shape
+        
+        source_in = source_vert
+            
+        if self.in_type > 0:
+            source_in = torch.cat([source_in, source_norm], dim=-1)
+        if self.in_type==2:
+            hat_mask = plateau_hat_points(source_vert)
+            source_in = torch.cat([source_in, hat_mask], dim=-1)
+        
+        key_weight = self.key_weight_model(
+            source_in,
+            N=self.NZ # (not used!)
+        ) # (B, N, M)
+        
+        return key_weight
+        
     def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False):
         """
         Args:
@@ -442,11 +470,12 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             reconstructed source mesh
         """
         B, N, _ = deform_vert.shape
-        hat_mask = plateau_hat_points(source_vert)
         
         source_in = source_vert
         deform_in = deform_vert-source_vert # as a delta
         # deform_in = deform_vert # as a vertex
+        
+        hat_mask = plateau_hat_points(source_vert)
             
         if self.in_type > 0:
             source_in = torch.cat([source_in, source_norm], dim=-1)
@@ -847,18 +876,19 @@ class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
             reconstructed source mesh
         """
         B, N, _ = deform_vert.shape
-        hat_mask = plateau_hat_points(source_vert)
         
         source_in = source_vert
         deform_in = deform_vert-source_vert # as a delta
         # deform_in = deform_vert # as a vertex
+        
+        hat_mask = plateau_hat_points(source_vert)
         
         if self.in_type > 0:
             source_in = torch.cat([source_in, source_norm], dim=-1)
             deform_in = torch.cat([deform_in, deform_norm], dim=-1)
         deform_in = torch.cat([deform_in, source_in], dim=-1)
         
-        if self.in_type == 2:
+        if self.in_type == 2:            
             source_in = torch.cat([source_in, hat_mask], dim=-1)
             deform_in = torch.cat([deform_in, hat_mask], dim=-1)
 
