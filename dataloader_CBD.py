@@ -309,15 +309,18 @@ class EvalDataset(data.Dataset):
         file_path=self.mf_SEN_datalist[index]
         id_name = file_path.split('/')[7]
         
+        template_np = self.mf_SEN_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
         vertices_np = np.load(file_path)
+        R, t, _ = procrustes_LDM(vertices_np, template_np)
+        vertices_np = vertices_np @ R.T + t        
         vertices = torch.tensor(vertices_np).float()
         
         # faces_np = self.mf_SEN_std['new_f']
         # faces = torch.tensor(faces_np).long()
         faces = self.mf_SEN_std['new_f'].long()
         
-        template_np = self.mf_SEN_mesh[id_name]
-        template = torch.tensor(template_np).float()
         
         template_normal = igl.per_vertex_normals(template_np, faces.numpy())
         vertices_normal = igl.per_vertex_normals(vertices_np, faces.numpy())
