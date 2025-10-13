@@ -102,6 +102,8 @@ def Options():
     parser.set_defaults(use_segment_weight=False)
     parser.add_argument("--use_laplacian",dest='use_laplacian', action='store_true')
     parser.set_defaults(use_laplacian=False)
+    parser.add_argument("--use_normal_loss",dest='use_normal_loss', action='store_true')
+    parser.set_defaults(use_normal_loss=False)
 
     
     parser.add_argument("--use_data2",dest='use_data2', action='store_true')
@@ -1333,7 +1335,7 @@ class Trainer():
                     # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
                     
                 if (self.opts.use_data2 or self.opts.use_data3):
-                    if not use_perm:
+                    if not use_perm and self.opts.use_normal_loss:
                         pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
                         pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
                         
