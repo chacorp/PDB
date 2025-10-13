@@ -22,6 +22,14 @@ from utils.remesh_utils import map_vertices, decimate_mesh_vertex
 from utils.mesh_utils import get_dfn_info2, get_mesh_operators
 from utils.exp_utils import PCA_holder, adjacency_matrix
 
+
+import sys
+from pathlib import Path
+__abs_path__ = str(Path(__file__).parents[0].absolute())
+
+if not __abs_path__ in sys.path:
+    sys.path+=[__abs_path__]
+
 class EvalDataset(data.Dataset):
     def __init__(self, opts=None, is_train=False, data_basedir='/data/sihun', data_name='coma', toggle=True):
         super().__init__()
@@ -69,7 +77,7 @@ class EvalDataset(data.Dataset):
             
             
         if self.data_name=='voca':
-            self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            self.voca_std = np.load(f"{__abs_path__}/utils/voca/standardization.npy", allow_pickle=True).item()
             with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.voca_mesh = pickle.load(f)
             self.get_data = self.get_voca
@@ -77,13 +85,13 @@ class EvalDataset(data.Dataset):
         
         if self.data_name=='biwi':
             ## already std applied
-            #self.biwi_std = np.load("utils/biwi/standardization.npy", allow_pickle=True).item()
-            with open(f"{self.template_data_basedir}/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
+            #self.biwi_std = np.load(f"{__abs_path__}/biwi/standardization.npy", allow_pickle=True).item()
+            with open(f"{self.template_data_basedir}/utils/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
                 self.biwi_mesh = pickle.load(f) # meshes
             self.get_data = self.get_biwi
         
         if self.data_name=='mf_SEN':
-            self.mf_SEN_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+            self.mf_SEN_std = np.load(f"{__abs_path__}/utils/mf/standardization.npy", allow_pickle=True).item()
             with open(f"{self.template_data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
                 self.mf_SEN_mesh = pickle.load(f)
             self.get_data = self.get_mf_SEN
@@ -95,7 +103,7 @@ class EvalDataset(data.Dataset):
 
         
         if self.data_name=='coma':
-            self.coma_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            self.coma_std = np.load(f"{__abs_path__}/utils/voca/standardization.npy", allow_pickle=True).item()
             with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.coma_mesh = pickle.load(f)
             self.get_data = self.get_coma
@@ -107,7 +115,7 @@ class EvalDataset(data.Dataset):
 
 
         if self.data_name=='mf_ROM':
-            self.mf_ROM_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+            self.mf_ROM_std = np.load(f"{__abs_path__}/utils/mf/standardization.npy", allow_pickle=True).item()
             with open(f"{self.template_data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
                 self.mf_ROM_mesh = pickle.load(f)
             self.get_data = self.get_mf_ROM
@@ -142,7 +150,7 @@ class EvalDataset(data.Dataset):
         reads the folder and writes a list of files in the folder as a .txt format
         """
         if self.data_name=='mf_ROM':
-            logger_file = f"utils/data/mf_ROM_vertex_data_{self.mode}.txt"
+            logger_file = f"{__abs_path__}/utils/data/mf_ROM_vertex_data_{self.mode}.txt"
             if os.path.exists(logger_file):
                 print(f'mf ROM data list exists: {logger_file}')
             else:
@@ -160,7 +168,7 @@ class EvalDataset(data.Dataset):
             self.len += len(self.mf_ROM_datalist)
         
         if self.data_name=='mf_SEN':
-            logger_file = f"utils/data/mf_SEN_vertex_data_{self.mode}.txt"
+            logger_file = f"{__abs_path__}/utils/data/mf_SEN_vertex_data_{self.mode}.txt"
             if os.path.exists(logger_file):
                 print(f'mf SEN data list exists: {logger_file}')
             else:
@@ -178,7 +186,7 @@ class EvalDataset(data.Dataset):
             self.len += len(self.mf_SEN_datalist)
             
         if self.data_name=='coma':
-            logger_file = f"utils/data/coma_vertex_data_{self.mode}.txt"
+            logger_file = f"{__abs_path__}/utils/data/coma_vertex_data_{self.mode}.txt"
             if os.path.exists(logger_file):
                 print(f'coma data list exists: {logger_file}')
             else:
@@ -194,7 +202,7 @@ class EvalDataset(data.Dataset):
             self.len += len(self.coma_datalist)
         
         if self.data_name=='voca':
-            logger_file = f"utils/data/voca_vertex_data_{self.mode}.txt"
+            logger_file = f"{__abs_path__}/utils/data/voca_vertex_data_{self.mode}.txt"
             if os.path.exists(logger_file):
                 print(f'voca data list exists: {logger_file}')
             else:
@@ -210,7 +218,7 @@ class EvalDataset(data.Dataset):
             self.len += len(self.voca_datalist)
 
         if self.data_name=='biwi':
-            logger_file = f"utils/data/biwi_vertex_data_{self.mode}.txt"
+            logger_file = f"{__abs_path__}/utils/data/biwi_vertex_data_{self.mode}.txt"
             if os.path.exists(logger_file):
                 print(f'biwi data list exists: {logger_file}')
             else:
