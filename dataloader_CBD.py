@@ -31,14 +31,21 @@ if not __abs_path__ in sys.path:
     sys.path+=[__abs_path__]
 
 class EvalDataset(data.Dataset):
-    def __init__(self, opts=None, is_train=False, data_basedir='/data/sihun', data_name='coma', toggle=True):
+    def __init__(self,
+                 opts=None,
+                 is_train=False,
+                 data_basedir='/data/sihun',
+                 data_name='coma',
+                 toggle=True,
+                 ict_cap_id_num=2, # 0~20
+                ):
         super().__init__()
         self.opts = opts
         self.is_train = False
         self.mode = 'test'
         
         #data_name_list = ['voca','mf_SEN','biwi','coma','mf_ROM']
-        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict','ict-cap']
         self.data_name = data_name
         
         d_mask = [dn==data_name for dn in data_name_list]
@@ -66,14 +73,27 @@ class EvalDataset(data.Dataset):
         if self.data_name=='ict':
             from utils.remesh_utils import ICT_face_model
             # self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
-            self.iden_vecs = np.zeros((100,))
-            self.expression_vecs = np.load('./data/ICT_live_100/expression_vecs_test.npy')
+            #self.iden_vecs = np.zeros((100,))
+            self.iden_vecs = torch.load(f'{__abs_path__}/ict_face_pt/ict_id_vecs_test.pt').numpy()
+            self.expression_vecs = np.load(f'{__abs_path__}/data/ICT_live_100/expression_vecs_test.npy')
             
             self.ict_face_model=ICT_face_model()
             self.ict_len = len(self.iden_vecs)
             self.ict_exp_len = len(self.expression_vecs)
             self.len = self.ict_len * self.ict_exp_len
             self.get_data = self.get_ict
+
+        if self.data_name=='ict_cap':            
+            self.iden_vecs = torch.load(f'{__abs_path__}/ict_face_pt/ict_id_vecs_test.pt').numpy()
+            if ict_cap_id_num > -1:
+                self.iden_vecs = self.iden_vecs[ict_cap_id_num]
+            else:
+                self.iden_vecs = np.zeros((100,))
+            
+            self.ict_face_model=ICT_face_model()
+            self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240318_MySlate_922_exp_coeffs.npy')
+            self.len = len(self.expression_vecs)
+            self.get_data = self.get_ict_cap
             
             
         if self.data_name=='voca':
@@ -86,7 +106,7 @@ class EvalDataset(data.Dataset):
         if self.data_name=='biwi':
             ## already std applied
             #self.biwi_std = np.load(f"{__abs_path__}/biwi/standardization.npy", allow_pickle=True).item()
-            with open(f"{self.template_data_basedir}/utils/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
+            with open(f"{self.template_data_basedir}/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
                 self.biwi_mesh = pickle.load(f) # meshes
             self.get_data = self.get_biwi
         
@@ -264,19 +284,46 @@ class EvalDataset(data.Dataset):
         vertices_normal = torch.tensor(vertices_normal).float()
         
         return vertices, template, vertices_normal, template_normal, faces
+
+    def get_ict_cap(self, index):        
+        #id_coeff=np.zeros((100,))
+        id_coeff  = self.iden_vecs
+        
+        exp_coeff = self.expression_vecs[index]
+        faces = self.ict_face_model.faces
+        
+        vertices, template, _ = self.ict_face_model.apply_coeffs(
+            id_coeff, exp_coeff, return_all=True, #region=region_dice
+        ) 
+        vertices=vertices[0]
+        template=template[0]
+        
+        template_normal = igl.per_vertex_normals(template, faces)
+        vertices_normal = igl.per_vertex_normals(vertices, faces)
+        
+        template = torch.tensor(template).float()
+        vertices = torch.tensor(vertices).float()
+        faces = torch.tensor(faces).long()
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+        
+        return vertices, template, vertices_normal, template_normal, faces
         
     def get_voca(self, index):
         file_path=self.voca_datalist[index]
         id_name = file_path.split('/')[6]
         
+        template_np = self.voca_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
         vertices_np = np.load(file_path)
+        R, t, _ = procrustes_LDM(vertices_np, template_np)
+        vertices_np = vertices_np @ R.T + t
         vertices = torch.tensor(vertices_np).float()
         
         faces_np = self.voca_std['new_f']
         faces = torch.tensor(faces_np).long()
         
-        template_np = self.voca_mesh[id_name]
-        template = torch.tensor(template_np).float()
         
         template_normal = igl.per_vertex_normals(template_np, faces_np)
         vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
@@ -314,7 +361,7 @@ class EvalDataset(data.Dataset):
         
         vertices_np = np.load(file_path)
         R, t, _ = procrustes_LDM(vertices_np, template_np)
-        vertices_np = vertices_np @ R.T + t        
+        vertices_np = vertices_np @ R.T + t
         vertices = torch.tensor(vertices_np).float()
         
         # faces_np = self.mf_SEN_std['new_f']
@@ -333,14 +380,17 @@ class EvalDataset(data.Dataset):
         file_path=self.coma_datalist[index]
         id_name = file_path.split('/')[6]
         
+        template_np = self.coma_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
         vertices_np = np.load(file_path)
+        R, t, _ = procrustes_LDM(vertices_np, template_np)
+        vertices_np = vertices_np @ R.T + t
         vertices = torch.tensor(vertices_np).float()
         
         faces_np = self.coma_std['new_f']
         faces = torch.tensor(faces_np).long()
         
-        template_np = self.coma_mesh[id_name]
-        template = torch.tensor(template_np).float()
         
         template_normal = igl.per_vertex_normals(template_np, faces_np)
         vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
@@ -353,15 +403,15 @@ class EvalDataset(data.Dataset):
         file_path=self.mf_ROM_datalist[index]
         id_name = file_path.split('/')[7]
         
+        template_np = self.mf_ROM_mesh[id_name]
+        template = torch.tensor(template_np).float()
+        
         vertices_np = np.load(file_path)
         vertices = torch.tensor(vertices_np).float()
         
         # faces_np = self.mf_ROM_std['new_f']
         # faces = torch.tensor(faces_np).long()
         faces = self.mf_ROM_std['new_f'].long()
-        
-        template_np = self.mf_ROM_mesh[id_name]
-        template = torch.tensor(template_np).float()
         
         template_normal = igl.per_vertex_normals(template_np, faces.numpy())
         vertices_normal = igl.per_vertex_normals(vertices_np, faces.numpy())

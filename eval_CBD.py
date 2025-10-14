@@ -441,6 +441,9 @@ class Trainer():
 
     
     def evaluate2(self):
+        """
+            self-retargeting task
+        """
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
@@ -493,8 +496,7 @@ class Trainer():
         
         
         
-        # eval loop ##############################################################################################
-        
+        # eval loop ##############################################################################################        
         global_step = 0
         BEST_LOSS = 100_000_000
         
@@ -518,6 +520,7 @@ class Trainer():
                 
                 ### only for NFS #############################################################
                 if self.opts.version==0:
+                    ## only onces!!!
                     if index==0:
                         src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                         
@@ -527,9 +530,8 @@ class Trainer():
                         img_feat = self.model.get_img_feat(img)
                         vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
                             
-                        with torch.no_grad():
-                            pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
-                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+                        pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                        pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)
                     else:
                         if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
                             src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
@@ -541,15 +543,15 @@ class Trainer():
                             img_feat = self.model.get_img_feat(img)
                             vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
                             
-                            with torch.no_grad():
-                                pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
-                                pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
-
-                    vert_feat_exp = []
-                    for gt_v in batch.vertices:
-                        _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
-                        vert_feat_exp.append(_tmp_)
-                    vert_feat_exp = torch.vstack(vert_feat_exp)
+                            pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)
+                            
+                    # vert_feat_exp = []
+                    # for gt_v in batch.vertices:
+                    #     _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
+                    #     vert_feat_exp.append(_tmp_)
+                    # vert_feat_exp = torch.vstack(vert_feat_exp)
+                    vert_feat_exp =  self.model.get_local_feature(batch.vertices, batch.faces[0], img_feat).float()
 
                     with torch.no_grad():
                         pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
@@ -559,21 +561,6 @@ class Trainer():
                             None, batch.template[0][None], batch.faces[0], None
                         )
                         pred_vertices, _ = self.model.decode(inputs, batch_process=True)
-
-                    # pred_vertices = self.model.inference(
-                    #     gt_vertices=batch.vertices, 
-                    #     src_mesh=src_mesh, 
-                    #     tgt_mesh=src_mesh,
-                    #     batch_process=True
-                    # )
-                    
-                    # losses_val, pred_vertices, _, pred_exp_coeff, pred_id_coeff, pred_seg = self.model.evaluate(
-                    #     batch, \
-                    #     batch_process=False, \
-                    #     return_all=True, \
-                    #     stage=1, \
-                    #     epoch=500
-                    # )
                 ##############################################################################
                 
                 else:
