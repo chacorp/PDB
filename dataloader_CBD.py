@@ -266,8 +266,8 @@ class EvalDataset(data.Dataset):
         id_index = index // self.ict_exp_len
         index = index % self.ict_exp_len
         
-        #id_coeff  = self.iden_vecs[id_index]
-        id_coeff  = self.iden_vecs
+        id_coeff  = self.iden_vecs[id_index]
+        # id_coeff  = self.iden_vecs
         
         exp_coeff = self.expression_vecs[index]
         faces = self.ict_face_model.faces
@@ -294,7 +294,7 @@ class EvalDataset(data.Dataset):
 
     def get_ict_cap(self, index):        
         #id_coeff=np.zeros((100,))
-        id_coeff  = self.iden_vecs
+        id_coeff = self.iden_vecs
         
         exp_coeff = self.expression_vecs[index]
         faces = self.ict_face_model.faces
