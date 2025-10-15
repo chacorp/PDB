@@ -38,6 +38,7 @@ class EvalDataset(data.Dataset):
                  data_name='coma',
                  toggle=True,
                  ict_cap_id_num=2, # 0~20
+                 ict_cap_exp_num=0 # 0 or 1
                 ):
         super().__init__()
         self.opts = opts
@@ -83,15 +84,21 @@ class EvalDataset(data.Dataset):
             self.len = self.ict_len * self.ict_exp_len
             self.get_data = self.get_ict
 
-        if self.data_name=='ict_cap':            
+        if self.data_name=='ict-cap':
+            from utils.remesh_utils import ICT_face_model
+            self.ict_face_model=ICT_face_model()
             self.iden_vecs = torch.load(f'{__abs_path__}/ict_face_pt/ict_id_vecs_test.pt').numpy()
+            
             if ict_cap_id_num > -1:
                 self.iden_vecs = self.iden_vecs[ict_cap_id_num]
             else:
                 self.iden_vecs = np.zeros((100,))
+
+            if ict_cap_exp_num==0:
+                self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240318_MySlate_922_exp_coeffs.npy')
+            else:
+                self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240325_MySlate_924_exp_coeffs.npy')
             
-            self.ict_face_model=ICT_face_model()
-            self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240318_MySlate_922_exp_coeffs.npy')
             self.len = len(self.expression_vecs)
             self.get_data = self.get_ict_cap
             
@@ -483,7 +490,8 @@ class CBDDataset(data.Dataset):
         ## to make no leftover for each mesh id
         self.min_sample = self.n_components % self.opts.batch_size
         self.len_list=[]
-        
+
+        ## add face only and narrow face too
         if self.use_ict:
             from utils.remesh_utils import ICT_face_model
             self.ict_face_model=ICT_face_model()
