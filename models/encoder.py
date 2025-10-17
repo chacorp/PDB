@@ -552,7 +552,7 @@ class MLP(nn.Sequential):
         elif nrm == 'layer':
             norm_func=nn.LayerNorm
         else:
-            norm_func = lambda x: x
+            norm_func=nn.Identity
             
         self.num_layers = len(layer_sizes)
         
@@ -641,11 +641,11 @@ class LinearEncoder(nn.Module):
         )
         
         self.adains_m = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm='layer')
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
             for _ in range(num_layers)
         ])
         self.adains_s = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm='layer')
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
             for _ in range(num_layers)
         ])
         

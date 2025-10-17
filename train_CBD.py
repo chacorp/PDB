@@ -49,6 +49,7 @@ from models.NGBC import (
     NeuralGeneralizedBarycentricCoordinate, 
     NeuralGeneralizedBarycentricCoordinate5,
     NeuralGeneralizedBarycentricCoordinate8,
+    NeuralGeneralizedBarycentricCoordinate55,
 )
 
 
@@ -285,6 +286,24 @@ class Trainer():
             )
         elif opts.version==8: 
             self.model = NeuralGeneralizedBarycentricCoordinate8(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                use_least_N_on_V=False,
+                is_train=True,
+                use_pou = ~self.opts.no_pou,
+                device=self.device,
+                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+            )
+        elif opts.version==55:
+            self.model = NeuralGeneralizedBarycentricCoordinate55(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
@@ -1661,7 +1680,7 @@ if __name__ == "__main__":
         trainer.train_v1(epochs=opts.max_epoch)
     elif opts.version==2:
         trainer.train_v2(epochs=opts.max_epoch)
-    elif opts.version==5 or opts.version==8:
+    elif opts.version==5 or opts.version==8 or opts.version==55:
         trainer.train_v5(epochs=opts.max_epoch)
     else:
         raise NotImplementedError('no matching version!')
