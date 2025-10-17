@@ -14,9 +14,11 @@ import igl
 import sys
 from pathlib import Path
 __abs_path__ = str(Path(__file__).parents[1].absolute())
+__deep_cage_path__ = f'{__abs_path__}/third_party/deep_cage'
 
-if not __abs_path__ in sys.path:
-    sys.path+=[__abs_path__]
+for __util_path__ in [__abs_path__, __deep_cage_path__]:
+    if not __util_path__ in sys.path:
+        sys.path+=[__util_path__]
 
 
 import torch
@@ -48,6 +50,7 @@ from models.NGBC import (
     NeuralGeneralizedBarycentricCoordinate5,
     NeuralGeneralizedBarycentricCoordinate8,
 )
+
 
 
 sys.path = list(set(sys.path))
@@ -248,7 +251,10 @@ class Trainer():
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         
         if opts.version==1:
-            self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+            from deep_cage import NetworkFull
+            
+            self.model = NetworkFull(device=self.device, optim_cage=self.opts.optim_cage).to(self.device)
+            #self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
         elif opts.version==2:
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
@@ -317,6 +323,9 @@ class Trainer():
     def train_v1(self, epochs):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
         
+        if self.opts.optim_cage:
+            self.model.cage_v = nn.Parameter(self.model.cage_v)
+            self.optimizer_cage = torch.optim.AdamW([self.model.cage_v], lr=0.0005, betas=(0.9, 0.999))
         # if self.opts.use_scheduler:
         #     self.scheduler = torch.optim.lr_scheduler.StepLR(
         #         self.optimizer, 
@@ -327,8 +336,9 @@ class Trainer():
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
-        self.train_dataset = CBDDataset(self.opts, is_train=True)
-        
+        self.train_dataset = CBDDataset(
+                self.opts, is_train=True, toggle=self.opts.data_toggle
+            )
         self.neighbor_maps = {
             i: igl.adjacency_list(mesh_info['face'])
             for i, mesh_info in enumerate([
@@ -357,8 +367,9 @@ class Trainer():
             num_workers=0,
         )
         
-        
-        self.valid_dataset = CBDDataset(self.opts, is_valid=True)
+        self.valid_dataset = CBDDataset(
+                self.opts, is_train=True, toggle=self.opts.data_toggle
+            )
         
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
@@ -466,14 +477,19 @@ class Trainer():
             for index, batch in pbar:
                 
                 self.optimizer.zero_grad()
+                if self.opts.optim_cage:
+                    self.optimizer_cage.zero_grad()
                 
                 # model prediction -------------------------------------------------------------------------------
-                pred_vertices, mvc_weights = self.model(batch.template[0,None], batch.vertices, epoch=epoch)
+                pred_vertices, mvc_weights, source_cage_v, deform_cage_v = self.model(
+                    batch.template[0,None], batch.vertices, epoch=epoch, return_cage=True
+                )
                 # ------------------------------------------------------------------------------------------------
                 
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------                
-                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
+                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                                 
                 template_expanded = batch.template
                 
@@ -506,7 +522,10 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 # backward
                 loss.backward()
-                self.optimizer.step()                
+                self.optimizer.step()
+                
+                if self.opts.optim_cage:
+                    self.optimizer_cage.step()                
                 # ------------------------------------------------------------------------------------------------
                 
                 global_step += 1
@@ -526,16 +545,26 @@ class Trainer():
                     frame = BS//2
                     v_list = [ v for v in vertices[frame:frame+2] ] + \
                         [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
-                    
+                                            
                     #v_list = [v for v in vertices[frame:frame+2]]+[batch.template.cpu()[0]]*2
                     len_v = len(v_list)
                     f_list = [faces] * len_v
+
+                    # import pdb;pdb.set_trace()
+                    cv_list = [ v for v in source_cage_v[frame:frame+2].cpu().detach() ] + \
+                        [ v for v in deform_cage_v[frame:frame+2].cpu().detach() ] + \
+                        [ self.model.cage_v.cpu().detach() ]
+                    len_cv = len(cv_list)
+                    cf_list = [self.model.cage_f.cpu().detach()] * len_cv
+                    v_list += cv_list
+                    f_list += cf_list
+                    
                     save_logdir = f"{self.opts.log_dir}/img/train/mesh"
                     save_img_name = f"{epoch:03d}_{index:04d}"
 
                     plot_image_array(
                         v_list, f_list, 
-                        rot_list=[[0,0,0]] * len_v, 
+                        rot_list=[[0,0,0]] * (len_v + len_cv),
                         size=1, bg_black=False, mode='shade',
                         logdir=save_logdir,
                         name=save_img_name, save=True
@@ -585,7 +614,8 @@ class Trainer():
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------ 
                 with torch.no_grad():
-                    mesh_data = np.array(['voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
+                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data = np.array(['voca', 'biwi', 'mf','voca','mf','ict'])[mesh_data_num]
                     template_expanded = batch.template#.expand_as(pred_vertices)
                     #neighbors = self.neighbor_maps[batch.mesh_data.item()]
                     
@@ -597,7 +627,7 @@ class Trainer():
                     
                     loss_dict['mvc'] = mvc_loss(mvc_weights)
                     loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                    loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
+                    loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)
                     loss_dict['norm']  = norm_loss(normals_before, normals_after)
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
@@ -1063,6 +1093,7 @@ class Trainer():
                     use_mf_SEN=True,
                     use_mf_ROM=True,
                     use_ict=True,
+                    use_ict_narrow=True,
                     toggle=self.opts.data_toggle
                 )
             if self.opts.use_data3:
@@ -1074,6 +1105,7 @@ class Trainer():
                     use_mf_SEN=True,
                     use_mf_ROM=True,
                     use_ict=True,
+                    use_ict_narrow=True,
                     toggle=self.opts.data_toggle,
                 )
         else:
@@ -1277,6 +1309,7 @@ class Trainer():
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
+                inv_t_mask = 2.0 - t_mask
                 t_mask = t_mask + 1.0
                 
                 ## use segmentation for loss weight
@@ -1296,7 +1329,9 @@ class Trainer():
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
                 
-                loss_dict['recon-def'] = F.mse_loss(batch_vertices_v*t_mask, pred_vertices*t_mask) # for NGBC model
+                loss_dict['recon-def'] = F.mse_loss(batch_vertices_v*t_mask, pred_vertices*t_mask) ## focus on face
+                loss_dict['recon-def'] += F.mse_loss(batch_template_v*inv_t_mask, pred_vertices*inv_t_mask) # static on elsewhere
+                
                 if self.model.use_full_vertex:
                     loss_dict['recon-neu'] = F.mse_loss(batch_template_v*t_mask, pred_source*t_mask)
                 
@@ -1313,7 +1348,6 @@ class Trainer():
                 # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
                 
                 if self.opts.pou_loss:
-                    #import pdb;pdb.set_trace()
                     loss_dict['pou'] = F.mse_loss(
                         torch.ones(BS, N_range).to(self.device),
                         pred_key_weight.sum(-1), 
@@ -1347,7 +1381,12 @@ class Trainer():
                             batch.exp_coeff.unsqueeze(1), exp_z
                         )
                     else:
-                        loss_dict['exp-z'] = non_ict_loss(exp_z)
+                        exp_z_facs, exp_z_ext = exp_z[...,:53], exp_z[...,53:]
+                        loss_dict['exp-z'] = non_ict_loss(exp_z_facs)
+                        loss_dict['exp-z'] += F.mse_loss(
+                            torch.zeros_like(exp_z_ext).to(self.device),
+                            exp_z_ext
+                        )
                         # pass
 
                 

@@ -450,6 +450,7 @@ class CBDDataset(data.Dataset):
                  use_mf_SEN=True,
                  use_mf_ROM=True,
                  use_ict=False,
+                 use_ict_narrow=False,
                 ):
         super().__init__()
         # get basenames
@@ -467,6 +468,7 @@ class CBDDataset(data.Dataset):
         self.use_mf_SEN=use_mf_SEN
         self.use_mf_ROM=use_mf_ROM
         self.use_ict = use_ict
+        self.use_ict_narrow = use_ict_narrow
         
         if toggle:
             # /data/sihun/pca
@@ -478,7 +480,7 @@ class CBDDataset(data.Dataset):
         self.mode = 'test'
         if is_train:
             self.mode = 'train'
-            self.scale = 1.5
+            self.scale = 2.0
         elif is_valid:
             self.mode = 'val'
         
@@ -496,7 +498,7 @@ class CBDDataset(data.Dataset):
             from utils.remesh_utils import ICT_face_model
             self.ict_face_model=ICT_face_model()
                         
-            self.set_ict_synth()
+            self.iden_vecs, self.expression_vecs = self.get_ict_params()
             self.ict_len = len(self.iden_vecs)
             self.ict_exp_len = len(self.expression_vecs)
             total_id = total_id + self.ict_len
@@ -539,6 +541,65 @@ class CBDDataset(data.Dataset):
             # self.voca_adj_list = igl.adjacency_list(self.voca_mesh["face"])
                     
             self.len_list.append([(self.ict_exp_len+ict_min_sample), self.get_ict, torch.tensor(5), self.ict_len])
+
+        if self.use_ict_narrow:
+            from utils.remesh_utils import ICT_face_model
+            self.ict_face_model_narrow=ICT_face_model(narrow_only=True)
+            self.region_num = self.ict_face_model_narrow.get_region_num(
+                self.ict_face_model_narrow.neutral_verts
+            )
+            
+            self.iden_vecs, self.expression_vecs = self.get_ict_params()
+            self.ict_narrow_len = len(self.iden_vecs)
+            self.ict_narrow_exp_len = len(self.expression_vecs)
+            total_id = total_id + self.ict_len
+            
+            ict_min_sample = self.ict_exp_len % (self.ict_len * self.opts.batch_size)
+            
+            ## Added segmentation ##################################################################
+            self.ict_narrow_seg=torch.tensor(
+                np.load('utils/ict/ICT_segment_onehot_24.npy')
+            )[:self.ict_face_model_narrow.v_num]
+            ########################################################################################
+
+            self.ict_narrow_cotmatrix={}
+            ict_cotmatrix_path='utils/ict/ict_narrow_cotmatrix.pkl'
+            
+            if os.path.exists(ict_cotmatrix_path):
+                with open(ict_cotmatrix_path,'rb') as f:
+                    self.ict_cotmatrix = pickle.load(f)
+            else:
+                for idx, id_coeff in enumerate(self.iden_vecs):
+                    id_disps = self.ict_face_model_narrow.get_id_disp(
+                        id_coeff, region=self.region_num
+                    ).squeeze()
+                    id_verts = id_disps + self.ict_face_model_narrow.neutral_verts
+                    
+                    # import pdb;pdb.set_trace()
+    
+                    tmp_L = igl.cotmatrix(id_verts, self.ict_face_model_narrow.faces)
+                    tmp_L = torch.sparse_csc_tensor(
+                        torch.from_numpy(tmp_L.indptr).long(),
+                        torch.from_numpy(tmp_L.indices).long(),
+                        torch.from_numpy(tmp_L.data).float(),
+                        tmp_L.shape
+                    )#.to(self.device)
+                    #tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                    self.ict_narrow_cotmatrix[f"{idx:03d}"] = tmp_L
+                    
+                with open(ict_cotmatrix_path,'wb') as f:
+                    pickle.dump(self.ict_narrow_cotmatrix, f)
+                    
+            # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
+            # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
+            # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
+            # self.voca_adj_matrix = torch.tensor(adj_mat_norm.todense()).float().to_sparse().to(self.device)
+            # self.voca_adj_list = igl.adjacency_list(self.voca_mesh["face"])
+                    
+            self.len_list.append([
+                (self.ict_narrow_exp_len+ict_min_sample),
+                self.get_ict_narrow, torch.tensor(6), self.ict_narrow_len
+            ])
         
         if self.use_voca:
             self.voca_pca_holder_list=[]
@@ -806,8 +867,8 @@ class CBDDataset(data.Dataset):
             self.use_decimate = self.opts.use_decimate
             self.WS = self.opts.window_size
             
-    def set_ict_synth(self):
-        self.iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
+    def get_ict_params(self):
+        iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
         # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
         # if self.mode != 'train':
         #     self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
@@ -817,12 +878,54 @@ class CBDDataset(data.Dataset):
         if self.mode == 'train':
             # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
             expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
-            self.expression_vecs = np.r_[np.eye(53), expression_vecs]
+            expression_vecs = np.r_[np.eye(53), expression_vecs]
             # expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
             # self.expression_vecs = np.r_[np.eye(53), expression_vecs]
         else:
-            self.expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
-                    
+            expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
+
+        return iden_vecs, expression_vecs
+
+    def get_ict_narrow(self, index, id_index):
+        id_coeff = self.iden_vecs[id_index]
+        id_name = f"{id_index:03d}"
+
+        # region_dice = np.random.randint(3, size=(1))
+        
+        # if np.random.random(1) > 0.5:
+        #     exp_coeff = np.random.random((1, 53))
+        # else:
+        #     exp_coeff = np.random.randint(2, size=(1, 53))
+        #     exp_coeff = np.random.random((1, 53))
+        # exp_coeff = np.eye(53)[index][None] if index < 53 else np.random.randint(2, size=(1, 53))
+        
+        if index >= self.ict_exp_len:
+            index = index % self.ict_exp_len
+        exp_coeff = self.expression_vecs[index] 
+        exp_coeff = exp_coeff * self.scale
+        
+        faces = self.ict_face_model.faces
+        
+        deformed, template, _ = self.ict_face_model.apply_coeffs(
+            id_coeff, exp_coeff, return_all=True, #region=region_dice
+        )
+        exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128
+        exp_coeff = torch.tensor(exp_coeff).float()        
+         
+        deformed=deformed[0]
+        template=template[0]
+        
+        template_normal = igl.per_vertex_normals(template, faces)
+        deformed_normal = igl.per_vertex_normals(deformed, faces)
+        
+        template = torch.tensor(template).float()
+        deformed = torch.tensor(deformed).float()
+        faces = torch.tensor(faces).long()
+        template_normal = torch.tensor(template_normal).float()
+        deformed_normal = torch.tensor(deformed_normal).float()
+        
+        return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff, id_name)
+    
     def get_ict(self, index, id_index):
         id_coeff = self.iden_vecs[id_index]
         id_name = f"{id_index:03d}"
@@ -1073,6 +1176,9 @@ class CBDDataset(data.Dataset):
         elif mesh_data == 5:
             datas = self.get_ict(idx, id_mesh)
             mesh_data = 5
+        elif mesh_data == 6:
+            datas = self.get_ict_narrow(idx, id_mesh)
+            mesh_data = 5
         else:
             raise ValueError('got wrong number')
             
@@ -1169,7 +1275,7 @@ class CBDdataSampler(data.Sampler):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.reverse = reverse
-        self.data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])
+        self.data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict', 'ict'])
         self.n_sampling = n_sampling
         self.n_ = n_
         self.epoch = 0
@@ -1202,12 +1308,12 @@ class CBDdataSampler(data.Sampler):
         for len_data, _, mesh_data, id_len_list in self.len_list:
             
             m_data = mesh_data.numpy()
-            
+            data_name = self.data[m_data]
             padd = (len_data // id_len_list) % self.batch_size
             
             n_expressions = (len_data // id_len_list) + (self.batch_size-padd)
             
-            if self.mode == 'train':
+            if self.mode == 'train' and data_name != 'ict':
                 n_expressions = 2*n_expressions
             
             _indices = np.tile(np.arange(0, n_expressions, dtype=int), id_len_list)
@@ -1217,8 +1323,9 @@ class CBDdataSampler(data.Sampler):
             indices = np.r_[indices, _indices]
             labels = np.r_[labels, _labels]
             id_mesh = np.r_[id_mesh, _id_mesh]
+            
             self.len_data.append(len(_indices))
-            self.mesh_data.append(self.data[m_data])
+            self.mesh_data.append(data_name)
             
         indices = indices.reshape(-1, self.batch_size)
         labels = labels.reshape(-1, self.batch_size)
