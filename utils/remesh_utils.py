@@ -654,7 +654,7 @@ class ICT_face_model():
             return mesh, mesh_v_idx
         return mesh
 
-    def apply_coeffs(self, id_coeff, exp_coeffs=None, mesh_v_idx=None, return_all=False, region=-1):
+    def apply_coeffs(self, id_coeff, exp_coeffs=None, mesh_v_idx=None, return_all=False, region=0):
         """
         Args:
             id_coeff (np.ndarray): [100] ICT-facekit identity coeff
