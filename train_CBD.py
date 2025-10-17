@@ -252,10 +252,10 @@ class Trainer():
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         
         if opts.version==1:
-            from deep_cage import NetworkFull
+            # from deep_cage import NetworkFull
             
-            self.model = NetworkFull(device=self.device, optim_cage=self.opts.optim_cage).to(self.device)
-            #self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+            # self.model = NetworkFull(device=self.device, optim_cage=self.opts.optim_cage).to(self.device)
+            self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
         elif opts.version==2:
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, 
@@ -344,7 +344,7 @@ class Trainer():
         
         if self.opts.optim_cage:
             self.model.cage_v = nn.Parameter(self.model.cage_v)
-            self.optimizer_cage = torch.optim.AdamW([self.model.cage_v], lr=0.0005, betas=(0.9, 0.999))
+            self.optimizer_cage = torch.optim.AdamW([self.model.cage_v], lr=0.0002, betas=(0.9, 0.999))
         # if self.opts.use_scheduler:
         #     self.scheduler = torch.optim.lr_scheduler.StepLR(
         #         self.optimizer, 
@@ -355,17 +355,39 @@ class Trainer():
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
-        self.train_dataset = CBDDataset(
+        if self.opts.use_data2:
+            self.train_dataset = CBDDataset(
+                self.opts, is_train=True,
+                use_voca=False,
+                use_coma=False,
+                use_biwi=False,
+                use_mf_SEN=True,
+                use_mf_ROM=True,
+                use_ict=True,
+                use_ict_narrow=False,
+                toggle=self.opts.data_toggle
+            )
+        else:
+            self.train_dataset = CBDDataset(
                 self.opts, is_train=True, toggle=self.opts.data_toggle
             )
-        self.neighbor_maps = {
-            i: igl.adjacency_list(mesh_info['face'])
+        if self.opts.use_data2:
+            self.neighbor_maps = {
+            i: igl.adjacency_list(mesh_info)
             for i, mesh_info in enumerate([
-                self.train_dataset.voca_mesh,
-                self.train_dataset.biwi_mesh,
-                self.train_dataset.mf_SEN_mesh,
+                self.train_dataset.mf_SEN_mesh['face'],
+                self.train_dataset.ict_face_model.faces,
             ])
         }
+        else:
+            self.neighbor_maps = {
+                i: igl.adjacency_list(mesh_info['face'])
+                for i, mesh_info in enumerate([
+                    self.train_dataset.voca_mesh,
+                    self.train_dataset.biwi_mesh,
+                    self.train_dataset.mf_SEN_mesh,
+                ])
+            }
         self.neighbor_pad_mask = {}
         for i in self.neighbor_maps.keys():
             # (idx_pad, mask)
@@ -385,8 +407,20 @@ class Trainer():
             collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
             num_workers=0,
         )
-        
-        self.valid_dataset = CBDDataset(
+        if self.opts.use_data2:
+            self.valid_dataset = CBDDataset(
+                self.opts, is_train=True,
+                use_voca=False,
+                use_coma=False,
+                use_biwi=False,
+                use_mf_SEN=True,
+                use_mf_ROM=True,
+                use_ict=True,
+                use_ict_narrow=False,
+                toggle=self.opts.data_toggle
+            )
+        else:
+            self.valid_dataset = CBDDataset(
                 self.opts, is_train=True, toggle=self.opts.data_toggle
             )
         
@@ -1336,7 +1370,7 @@ class Trainer():
                 if self.opts.use_segment_weight:
                     with torch.no_grad():
                         # batch.segmentation # (B, Nv, 24)
-                        segment_weight = batch.segmentation.sum(1) / N #batch.segmentation.sum(1).sum(1) # (B, 24)
+                        segment_weight = batch.segmentation.sum(1) / N # batch.segmentation.sum(1).sum(1) # (B, 24)
                         batch_segment_weight = (batch.segmentation * segment_weight[:, None])[:, randperm_idx]
                         t_mask = t_mask * batch_segment_weight
                 # ------------------------------------------------------------------------------------------------
@@ -1364,7 +1398,6 @@ class Trainer():
                         batch_vertices_v[:,rearange_idx]*t_mask,
                         recon_vertices[:,randperm_idx[rearange_idx]]*t_mask
                     ) # for expression AE
-                # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
                 
                 if self.opts.pou_loss:
                     loss_dict['pou'] = F.mse_loss(
@@ -1373,7 +1406,6 @@ class Trainer():
                     )
                     
                 if self.opts.use_laplacian and not use_perm:
-                    #import pdb;pdb.set_trace()
                     loss_dict['lap'] = laplacian_loss(
                         batch, pred_key_weight, self.train_dataset, mesh_data_num, self.device
                     ) * BS_denom
