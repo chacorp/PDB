@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 from utils.exp_utils import Model_mk1, Model_mk3_1
 from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
+from models import LinearEncoder, PointNet_small, MLP
 
 
 class CageNet(nn.Module):
@@ -47,19 +48,20 @@ class CageNet(nn.Module):
         self.C = test_cage.vertices.shape[0]        
         
         self.cage_v = torch.tensor(test_cage.vertices).float().to(device)
-        if self.optim_cage:
-            self.cage_v = nn.Parameter(self.cage_v)
         self.cage_f = torch.tensor(test_cage.faces).long().to(device)
+        # if self.optim_cage:
+        #     self.cage_v = nn.Parameter(self.cage_v)
         
         # poinnet encoder
-        self.encoder = Model_mk3_1(in_dim, hid_dim).to(device)
+        # self.encoder = Model_mk3_1(in_dim, hid_dim).to(device)
+        self.encoder = PointNet_small(in_dim, hid_dim, out_type='global').to(device)
         
         # atlasnet decoder
         self.nc_decoder = Model_mk1(in_dim+hid_dim, out_dim).to(device)
         self.nd_decoder = Model_mk1(in_dim+hid_dim+hid_dim, out_dim).to(device)
         
         
-    def forward(self, source_mesh, deform_mesh, epoch=0):
+    def forward(self, source_mesh, deform_mesh, epoch=0, return_cage=False):
         """
         Args:
             source_mesh (torch.tensor) [1, N, 3]: input source mesh
@@ -72,10 +74,9 @@ class CageNet(nn.Module):
         
         #shares same encoder!
         x = torch.cat([deform_mesh, source_mesh], dim=0) # [B+1, N, 3]
-        out, _ = self.encoder(x) # [B+1, 512]
-        out = out.unsqueeze(1) # [B+1, 1, 512]
-        
-        #t_code, s_code = out.unsqueeze(1).chunk(2)
+        out, _ = self.encoder(x, return_all=True) # [B+1, 512]
+        # out, _ = self.encoder(x) # [B+1, 512]
+        # out = out.unsqueeze(1) # [B+1, 1, 512]
         t_code, s_code = out[:B], out[B:] # [B, 1, 512] & [1, 1, 512]
         
         cage_v = self.cage_v.view(1, -1, 3) # [1, C, 3]
@@ -93,7 +94,7 @@ class CageNet(nn.Module):
             t_code.expand(-1, self.C, -1),
             source_cage_v_expand
         ],dim=-1) # [B, C, 512+512+3]
-        deform_cage_v = self.nd_decoder(x_nd) + source_cage_v # [B, C, 3]
+        deform_cage_v = self.nd_decoder(x_nd) + source_cage_v_expand # [B, C, 3]
         
         mvc = compute_MVC_vertexwise(
             source_mesh.squeeze(0), 
@@ -103,4 +104,6 @@ class CageNet(nn.Module):
         
         predicted_mesh = mvc @ deform_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3]
         
+        if return_cage:
+            return predicted_mesh, mvc, source_cage_v_expand, deform_cage_v            
         return predicted_mesh, mvc
