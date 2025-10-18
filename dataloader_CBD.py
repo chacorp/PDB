@@ -552,9 +552,9 @@ class CBDDataset(data.Dataset):
             self.iden_vecs, self.expression_vecs = self.get_ict_params()
             self.ict_narrow_len = len(self.iden_vecs)
             self.ict_narrow_exp_len = len(self.expression_vecs)
-            total_id = total_id + self.ict_len
+            total_id = total_id + self.ict_narrow_len
             
-            ict_min_sample = self.ict_exp_len % (self.ict_len * self.opts.batch_size)
+            ict_min_sample = self.ict_narrow_exp_len % (self.ict_narrow_len * self.opts.batch_size)
             
             ## Added segmentation ##################################################################
             self.ict_narrow_seg=torch.tensor(
@@ -899,15 +899,17 @@ class CBDDataset(data.Dataset):
         #     exp_coeff = np.random.random((1, 53))
         # exp_coeff = np.eye(53)[index][None] if index < 53 else np.random.randint(2, size=(1, 53))
         
-        if index >= self.ict_exp_len:
-            index = index % self.ict_exp_len
+        if index >= self.ict_narrow_exp_len:
+            index = index % self.ict_narrow_exp_len
         exp_coeff = self.expression_vecs[index] 
         exp_coeff = exp_coeff * self.scale
-        
-        faces = self.ict_face_model.faces
+
+        # self.ict_face_model_narrow=ICT_face_model(narrow_only=True)
+        # self.region_num
+        faces = self.ict_face_model_narrow.faces
         
         deformed, template, _ = self.ict_face_model.apply_coeffs(
-            id_coeff, exp_coeff, return_all=True, #region=region_dice
+            id_coeff, exp_coeff, return_all=True, region=self.region_num
         )
         exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128
         exp_coeff = torch.tensor(exp_coeff).float()        

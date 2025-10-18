@@ -743,6 +743,53 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
         
         return pred_deformed, key_d
 
+    @torch.no_grad()
+    def blendshape(
+        self, 
+        exp_z,
+        key_weight,
+        tgt_neu_vert=None, # required if the model is delta prediction!
+        src_neu_vert=None,
+        src_neu_norm=None,
+    ):
+        """
+        Args:
+            exp_z (torch.tensor): [B, 1, 128] blendshape coefficient for the expression
+            
+            key_weight (torch.tensor):   [B, M, K] target neutral mesh vertex normals
+            tgt_neu_vert (torch.tensor): [B, M, 3] target neutral mesh vertex positions
+
+            src_neu_vert (torch.tensor): [B, N, 3] source neutral mesh vertex positions # iff self.use_shp==True
+            src_neu_norm (torch.tensor): [B, N, 3] source neutral mesh vertex normals # iff self.use_shp==True
+        Returns:
+            (pred_deformed): [B, M, 3] predicted target deformed mesh vertices
+        """
+        B = exp_z.shape[0]
+        
+        if self.use_shp:
+            src_in = src_neu_vert            
+            if self.in_type > 0:
+                src_in = torch.cat([src_in, src_neu_norm], dim=-1)            
+            if self.in_type == 2:
+                src_hat_mask = plateau_hat_points(src_neu_vert)
+                src_in = torch.cat([src_in, src_hat_mask], dim=-1)
+            z_ID_B = self.shape_model(src_in) # (B, 1, L)
+            
+            key_d = self.key_d_model(exp_z, z_ID_B) # (B, 3K)
+        else:
+            key_d = self.key_d_model(exp_z) # (B, 3K)
+        
+        key_d = self.reshape_key_d(key_d, B) # (B, K, 3)
+        
+        cage_v = torch.einsum('bnc,bci->bni', key_weight, key_d)
+        
+        if self.use_full_vertex:
+            pred_deformed = cage_v
+        else:
+            pred_deformed = cage_v + tgt_neu_vert
+        
+        return pred_deformed, key_d
+
 
 class NeuralGeneralizedBarycentricCoordinate8(nn.Module):
     """

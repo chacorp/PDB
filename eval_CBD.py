@@ -82,7 +82,7 @@ def Options():
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
     
-    parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
+    parser.add_argument("--batch_size",   type=int,   default=1,      help='batch size')
 
     parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
     parser.add_argument("--ckpt",         type=str,   default=None)    
@@ -103,6 +103,8 @@ def Options():
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
 
+    parser.add_argument("--use_eval_data2",dest='use_eval_data2', action='store_true')
+    parser.set_defaults(use_eval_data2=False)
     
     parser.add_argument("--realtest",dest='realtest', action='store_true')
     parser.set_defaults(realtest=False)
@@ -577,36 +579,37 @@ class Trainer():
         
             
             # ------------------------------------------------------------------------------------------------
-            interv_val = round(len_data / 10)
-            if index % interv_val == 0:
-                # for visualization
-                vertices = batch.vertices.cpu().detach()
-                faces = batch.faces.cpu().detach()
-                pred_vertices_ = pred_vertices.cpu().detach()
-                
-                v_list = [
-                    vertices[0],
-                    vertices[1],
-                    vertices[HB],
-                    vertices[-1],
-                    pred_vertices_[0],
-                    pred_vertices_[1],
-                    pred_vertices_[HB],
-                    pred_vertices_[-1],
-                ]
-                len_v = len(v_list)
-                f_list=[faces[0]] * len_v
-                save_logdir = f"{self.opts.log_dir}/img"
-                save_img_name = f"{index:04d}"
-                
-                plot_image_array(
-                    v_list, f_list, 
-                    rot_list=[[0,0,0]]*len_v,
-                    size=1, bg_black=False, mode='shade', 
-                    logdir=save_logdir, 
-                    name=save_img_name, save=True
-                )
-                # 11649/(11649+6309) + 6309/(11649+6309)
+            # visualization for debugging
+            if self.opts.batch_size > 1:
+                interv_val = round(len_data / 10)
+                if index % interv_val == 0:
+                    vertices = batch.vertices.cpu().detach()
+                    faces = batch.faces.cpu().detach()
+                    pred_vertices_ = pred_vertices.cpu().detach()
+                    
+                    v_list = [
+                        vertices[0],
+                        vertices[1],
+                        vertices[HB],
+                        vertices[-1],
+                        pred_vertices_[0],
+                        pred_vertices_[1],
+                        pred_vertices_[HB],
+                        pred_vertices_[-1],
+                    ]
+                    len_v = len(v_list)
+                    f_list=[faces[0]] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img"
+                    save_img_name = f"{index:04d}"
+                    
+                    plot_image_array(
+                        v_list, f_list, 
+                        rot_list=[[0,0,0]]*len_v,
+                        size=1, bg_black=False, mode='shade', 
+                        logdir=save_logdir, 
+                        name=save_img_name, save=True
+                    )
+                    # 11649/(11649+6309) + 6309/(11649+6309)
         ##########################################################################################################
         
         # write log
@@ -935,7 +938,7 @@ if __name__ == "__main__":
     if opts.realtest:
         trainer.evaluate2() ## real test frames
     else:
-        if opts.use_data2:
+        if opts.use_eval_data2:
             trainer.evaluate3() ## pca test data
         else:
             trainer.evaluate() ## pca test data
