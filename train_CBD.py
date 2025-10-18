@@ -11,14 +11,14 @@ from functools import partial
 import trimesh
 import igl
 
-import sys
-from pathlib import Path
-__abs_path__ = str(Path(__file__).parents[1].absolute())
-__deep_cage_path__ = f'{__abs_path__}/third_party/deep_cage'
+# import sys
+# from pathlib import Path
+# __abs_path__ = str(Path(__file__).parents[1].absolute())
+# __deep_cage_path__ = f'{__abs_path__}/third_party/deep_cage'
 
-for __util_path__ in [__abs_path__, __deep_cage_path__]:
-    if not __util_path__ in sys.path:
-        sys.path+=[__util_path__]
+# for __util_path__ in [__abs_path__, __deep_cage_path__]:
+#     if not __util_path__ in sys.path:
+#         sys.path+=[__util_path__]
 
 
 import torch
@@ -54,7 +54,7 @@ from models.NGBC import (
 
 
 
-sys.path = list(set(sys.path))
+# sys.path = list(set(sys.path))
 def Options():
     parser = argparse.ArgumentParser(description='neural generalized barycentric coordinate for FA retargeting')
     parser.add_argument('-c', '--config', default='config/train_CBD.yml', help='config file path')
@@ -372,13 +372,28 @@ class Trainer():
                 self.opts, is_train=True, toggle=self.opts.data_toggle
             )
         if self.opts.use_data2:
-            self.neighbor_maps = {
-            i: igl.adjacency_list(mesh_info)
-            for i, mesh_info in enumerate([
-                self.train_dataset.mf_SEN_mesh['face'],
-                self.train_dataset.ict_face_model.faces,
-            ])
-        }
+            self.neighbor_pad_mask = {
+                2: build_padded_neighbors(
+                    igl.adjacency_list(
+                        self.train_dataset.mf_SEN_mesh['face']
+                    ), device=self.device
+                ),
+                4: build_padded_neighbors(
+                    igl.adjacency_list(
+                        self.train_dataset.mf_SEN_mesh['face']
+                    ), device=self.device
+                ),
+                5: build_padded_neighbors(
+                    igl.adjacency_list(
+                        self.train_dataset.ict_face_model.faces
+                    ), device=self.device
+                ),
+                6: build_padded_neighbors(
+                    igl.adjacency_list(
+                        self.train_dataset.ict_face_model.faces
+                    ), device=self.device
+                ),
+            }
         else:
             self.neighbor_maps = {
                 i: igl.adjacency_list(mesh_info['face'])
@@ -388,10 +403,10 @@ class Trainer():
                     self.train_dataset.mf_SEN_mesh,
                 ])
             }
-        self.neighbor_pad_mask = {}
-        for i in self.neighbor_maps.keys():
-            # (idx_pad, mask)
-            self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device) 
+            self.neighbor_pad_mask = {}
+            for i in self.neighbor_maps.keys():
+                # (idx_pad, mask)
+                self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device) 
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -534,8 +549,9 @@ class Trainer():
                     self.optimizer_cage.zero_grad()
                 
                 # model prediction -------------------------------------------------------------------------------
-                pred_vertices, mvc_weights, source_cage_v, deform_cage_v = self.model(
-                    batch.template[0,None], batch.vertices, epoch=epoch, return_cage=True
+                pred_vertices, pred_template, mvc_weights, source_cage_v, deform_cage_v = self.model(
+                    batch.template, batch.vertices, epoch=epoch, return_cage=True
+                    # batch.template[0,None], batch.vertices, epoch=epoch, return_cage=True
                 )
                 # ------------------------------------------------------------------------------------------------
                 
@@ -553,7 +569,7 @@ class Trainer():
                 loss_dict = {} # make it as a dictionary
                                 
                 loss_dict['mvc'] = mvc_loss(mvc_weights)
-                loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
+                loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices) + F.mse_loss(batch.template, pred_template)
                 loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
                 loss_dict['norm']  = norm_loss(normals_before, normals_after)
                 # ------------------------------------------------------------------------------------------------
@@ -660,7 +676,9 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, mvc_weights = self.model(batch.template[0,None], batch.vertices, epoch=epoch)
+                    pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
+                if torch.isnan(pred_vertices).any():
+                    continue
                 # ------------------------------------------------------------------------------------------------
                 
                 
@@ -670,7 +688,7 @@ class Trainer():
                     mesh_data_num = batch.mesh_data.cpu().numpy()
                     mesh_data = np.array(['voca', 'biwi', 'mf','voca','mf','ict'])[mesh_data_num]
                     template_expanded = batch.template#.expand_as(pred_vertices)
-                    #neighbors = self.neighbor_maps[batch.mesh_data.item()]
+                    
                     
                     idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
                     normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
