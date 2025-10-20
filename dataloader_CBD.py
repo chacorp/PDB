@@ -908,7 +908,7 @@ class CBDDataset(data.Dataset):
         # self.region_num
         faces = self.ict_face_model_narrow.faces
         
-        deformed, template, _ = self.ict_face_model.apply_coeffs(
+        deformed, template, _ = self.ict_face_model_narrow.apply_coeffs(
             id_coeff, exp_coeff, return_all=True, region=self.region_num
         )
         exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128

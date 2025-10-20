@@ -94,8 +94,8 @@ def plateau_hat_r(
 def plateau_hat_points(
         X: torch.Tensor,
         C: torch.Tensor=torch.tensor([[0.0, 0.0, 0.5]]), 
-        r0: float=0.75,
-        r1: float=1.65,
+        r0: float=0.95,
+        r1: float=2.15,
         kind: str = "quintic",
         normalize=None,
         eps=1e-12
@@ -1995,10 +1995,10 @@ class Model_mk1(nn.Module):
             MLP = nn.Sequential(
                     nn.Linear(dim_list[i], dim_list[i]//2),
                     self.act,
-                    nn.LayerNorm(dim_list[i]//2),
+                    # nn.LayerNorm(dim_list[i]//2),
                     nn.Linear(dim_list[i]//2, dim_list[i]//4),
                     self.act,
-                    nn.LayerNorm(dim_list[i]//4),
+                    # nn.LayerNorm(dim_list[i]//4),
                     nn.Linear(dim_list[i]//4, dim_list[i+1]),
                 )
             self.linears.append(MLP)

@@ -662,10 +662,10 @@ class ICT_face_model():
             mesh_v_idx (np.ndarray): <int> array of std mesh vertex indices
         """
         # id vertices
-        id_disps = self.get_id_disp(id_coeff)
+        id_disps = self.get_id_disp(id_coeff, region=region)
         
         # exp vertices
-        exp_disp = self.get_exp_disp(exp_coeffs)
+        exp_disp = self.get_exp_disp(exp_coeffs, region=region)
         id_verts = self.neutral_verts + id_disps
         id_exp_verts = id_verts + exp_disp
         
@@ -676,8 +676,8 @@ class ICT_face_model():
         # id_verts = id_verts[:self.region[region][0]]
         # id_exp_verts = id_exp_verts[:self.region[region][0]]
         # import pdb;pdb.set_trace()
-        id_verts = id_verts[:, :self.region[region][0]]
-        id_exp_verts = id_exp_verts[:, :self.region[region][0]]
+        # id_verts = id_verts[:, :self.region[region][0]]
+        # id_exp_verts = id_exp_verts[:, :self.region[region][0]]
         
         if return_all:
             return id_exp_verts, id_verts, exp_disp
