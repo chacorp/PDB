@@ -547,9 +547,11 @@ class Trainer():
                 self.optimizer.zero_grad()
                 if self.opts.optim_cage:
                     self.optimizer_cage.zero_grad()
+
                 
                 # model prediction -------------------------------------------------------------------------------
                 pred_vertices, pred_template, mvc_weights, source_cage_v, deform_cage_v = self.model(
+                    # batch_template_v, batch_vertices_v, epoch=epoch, return_cage=True
                     batch.template, batch.vertices, epoch=epoch, return_cage=True
                     # batch.template[0,None], batch.vertices, epoch=epoch, return_cage=True
                 )
@@ -560,17 +562,22 @@ class Trainer():
                 mesh_data_num = batch.mesh_data.cpu().numpy()
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                                 
-                template_expanded = batch.template
                 
                 idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
-                normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
+                normals_before = pca_normal_axis_vectorized(batch.template, idx_pad, mask)
                 normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
                                 
                 loss_dict = {} # make it as a dictionary
                                 
                 loss_dict['mvc'] = mvc_loss(mvc_weights)
-                loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices) + F.mse_loss(batch.template, pred_template)
-                loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)                
+                loss_dict['align'] = F.mse_loss(
+                    batch.vertices,
+                    pred_vertices,
+                ) + F.mse_loss(
+                    batch.template,
+                    pred_template,
+                )
+                loss_dict['p2f']   = p2f_loss(batch.template, pred_vertices, normals_before, normals_after)                
                 loss_dict['norm']  = norm_loss(normals_before, normals_after)
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
@@ -591,6 +598,10 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 # backward
                 loss.backward()
+
+                if True:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                
                 self.optimizer.step()
                 
                 if self.opts.optim_cage:
@@ -602,6 +613,12 @@ class Trainer():
                                 
                 interv_train = round(len_train_data / 10)
                 if train_counter % interv_train == 1:
+                    
+                    # with torch.no_grad():
+                    #     pred_vertices, pred_template, mvc_weights, source_cage_v, deform_cage_v = self.model(
+                    #         batch.template, batch.vertices, epoch=epoch, return_cage=True
+                    #     )
+                        
                     # for visualization
                     vertices = batch.vertices.cpu()
                     faces = batch.faces.cpu()
@@ -677,8 +694,6 @@ class Trainer():
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
                     pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
-                if torch.isnan(pred_vertices).any():
-                    continue
                 # ------------------------------------------------------------------------------------------------
                 
                 
@@ -760,6 +775,10 @@ class Trainer():
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+            else:
+                log_txt_val = f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6f} (Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d})\n"
+                self.logger.write(log_txt_val)
+                print(log_txt_val)
     
     def train_v2(self, epochs):
         self.optimizer = torch.optim.AdamW(
