@@ -18,17 +18,18 @@ for __util_path__ in [__abs_path__, __mesh_util_path__]:
 
 import torch
 import torch.nn as nn
-from utils.exp_utils import Model_mk1, Model_mk3_1
 from utils.remesh_utils import (
     compute_MVC_vertexwise,
     apply_MVC_weights_batch,
     build_padded_neighbors,
     pca_normal_axis_vectorized,
     mvc_weights_torch,
-    # MVC_vertexwise_batched,
 )
-from models import LinearEncoder, PointNet_small, MLP
-
+from utils.cages import mean_value_coordinates_3D
+from utils.exp_utils import Model_mk1, Model_mk3_1
+from utils.exp_utils import plateau_hat_points
+from models import PointNet_small, PointNet_large, MLP
+from torch.utils.checkpoint import checkpoint
 
 class CageNet(nn.Module):
     """
@@ -54,52 +55,57 @@ class CageNet(nn.Module):
         ## may need a better mesh!
         self.C = test_cage.vertices.shape[0]        
         
-        self.cage_v = torch.tensor(test_cage.vertices).float().to(device)*1.2
+        self.cage_v = torch.tensor(test_cage.vertices+np.array([0,0.1,0])).float().to(device)#*1.2
         self.cage_f = torch.tensor(test_cage.faces).long().to(device)
         # if self.optim_cage:
         #     self.cage_v = nn.Parameter(self.cage_v)
         
         ## poinnet encoder
         # self.encoder = Model_mk3_1(in_dim, hid_dim).to(device)
-        self.encoder = PointNet_small(in_dim, hid_dim, out_type='global').to(device)
+        self.encoder = PointNet_small(
+            in_dim, hid_dim, out_type='global',
+            no_norm_layer=True
+        ).to(device)
+        # self.encoder = PointNet_large(in_dim, hid_dim, out_type='global').to(device)
         
         ## atlasnet decoder => MLP
         self.nc_decoder = MLP(
             # [in_dim+hid_dim]+[hid_dim]*3+[out_dim], 
-            # [hid_dim]+[hid_dim]*3+[out_dim], 
-            # [in_dim]+[hid_dim]*3+[out_dim], 
-            [hid_dim]+[hid_dim]*3+[out_dim*self.C], 
+            [hid_dim]+[hid_dim]*2+[out_dim*self.C], 
             act='lrelu', nrm='none', #dropout=True, p=.2
         ).to(device)
         self.nd_decoder = MLP(
             # [in_dim+hid_dim+hid_dim]+[hid_dim]*3+[out_dim], 
-            # [hid_dim+hid_dim]+[hid_dim]*3+[out_dim], 
-            [hid_dim+hid_dim]+[hid_dim]*3+[out_dim*self.C], 
+            [hid_dim+hid_dim]+[hid_dim]*2+[out_dim*self.C], 
             act='lrelu', nrm='none', #dropout=True, p=.2
         ).to(device)
-        # self.nc_decoder = LinearEncoder(
-        #     # in_dim+hid_dim,out_dim*self.C,
-        #     hid_dim, out_dim*self.C,
-        #     act='relu', nrm='batch',
-        # ).to(device)
-        # self.nd_decoder = LinearEncoder(
-        #     # in_dim+hid_dim+hid_dim, out_dim*self.C,
-        #     hid_dim+hid_dim, out_dim*self.C,
-        #     act='relu', nrm='batch',
-        # ).to(device)
         
     def forward(self, source_mesh, deform_mesh, epoch=0, return_cage=False):
         """
         Args:
-            source_mesh (torch.tensor) [1, N, 3]: input source mesh
+            source_mesh (torch.tensor) [B, N, 3]: input source mesh
             deform_mesh (torch.tensor) [B, N, 3]: input deformed mesh
         Return:
             predicted deformed mesh
         """
         _, N, _ = source_mesh.shape
         B, N, _ = deform_mesh.shape
+
+        
+        # with torch.no_grad():
+        #     ## sampling points with probability
+        #     margin = 0.8
+        #     _p = (plateau_hat_points(source_mesh[0]).squeeze() + margin) / (1 + margin)
+                
+        #     ## random sampling and random permutation
+        #     randperm_idx = torch.multinomial(_p, 1024)
+        #     rearange_idx = torch.argsort(randperm_idx)
+            
+        #     source_sampled_v = source_mesh[:, randperm_idx]
+        #     deform_sampled_v = deform_mesh[:, randperm_idx]
         
         ## shares same encoder!
+        # x = torch.cat([deform_sampled_v, source_sampled_v], dim=0) # [B+1, N, 3]
         x = torch.cat([deform_mesh, source_mesh], dim=0) # [B+1, N, 3]
         out, _ = self.encoder(x, return_all=True) # [B+1, 512]
         # out, _ = self.encoder(x) # [B+1, 512]
@@ -138,15 +144,34 @@ class CageNet(nn.Module):
             B, self.C, 3
         ) + source_cage_v # [B, C, 3]
         
-        mvc = mvc_weights_torch(
-            # source_mesh.squeeze(0), 
-            # source_cage_v.squeeze(0), 
-            source_mesh[0], 
-            source_cage_v[0], 
-            self.cage_f
-        ) # [N, C]
+        # mvc = mvc_weights_torch(
+        #     # source_mesh.squeeze(0), 
+        #     # source_cage_v.squeeze(0), 
+        #     source_mesh[0], 
+        #     source_cage_v[0], 
+        #     self.cage_f
+        # ) # [N, C]
         
-        predicted_src_mesh = mvc @ source_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3]
+        # mvc, mvc_unnormed = mean_value_coordinates_3D(source_mesh[0,None], source_cage_v[0,None], self.cage_f[None], verbose=True)
+        # mvc = mean_value_coordinates_3D(
+        #     source_mesh[0][None], source_cage_v[0][None], self.cage_f[None]
+        # )
+        ############### use gradient checkpointing if COO happens..! ###############
+        q_chunk = 1024
+        q_slices = [(s, min(N, s + q_chunk)) for s in range(0, N, q_chunk)]
+        
+        # import pdb;pdb.set_trace()
+        mvc = torch.empty((1, N, self.C), dtype=s_code.dtype, device=s_code.device)
+        for s, e in q_slices:
+            q_chunk_t = source_mesh[:1, s:e, :].to(s_code.device, non_blocking=True)
+            mvc[:, s:e] = checkpoint(
+                mean_value_coordinates_3D, 
+                q_chunk_t, source_cage_v[0][None], self.cage_f[None],
+                use_reentrant=False,
+            )
+        ###########################################################################
+        
+        predicted_src_mesh = mvc @ source_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3] #### not needed?
         predicted_def_mesh = mvc @ deform_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3]
         
         if return_cage:
