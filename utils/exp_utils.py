@@ -77,7 +77,9 @@ def plateau_hat_r(
         r: torch.Tensor,
         r0: float,
         r1: float,
-        kind: str = "quintic"
+        kind: str = "quintic",
+        min_val=0.0,
+        max_val=1.0,
     ):
     """
     Top-hat function for range r
@@ -87,15 +89,15 @@ def plateau_hat_r(
         
     t = (r - r0) / (r1 - r0)
     S = _smoothstep(t, kind=kind)
-    f = torch.where(r <= r0, torch.ones_like(r), 1 - S)
-    f = torch.where(r >= r1, torch.zeros_like(r), f)
+    f = torch.where(r <= r0, torch.ones_like(r)*max_val, max_val - S)
+    f = torch.where(r >= r1, torch.zeros_like(r)*min_val, f)
     return f
 
 def plateau_hat_points(
         X: torch.Tensor,
         C: torch.Tensor=torch.tensor([[0.0, 0.0, 0.5]]), 
-        r0: float=0.95,
-        r1: float=2.15,
+        r0: float=1.0,
+        r1: float=2.25,
         kind: str = "quintic",
         normalize=None,
         eps=1e-12
