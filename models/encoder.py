@@ -315,10 +315,10 @@ class PointNet_large(nn.Module):
             self.layer4 = nn.Linear(self.out_dim//4, self.out_dim//2)
             self.layer5 = nn.Linear(self.out_dim//2, self.out_dim)
             #self.dropout = nn.Dropout(p=0.4)
-            self.bns1 = nn.BatchNorm1d(256)
-            self.bns2 = nn.BatchNorm1d(256)
-            self.bns3 = nn.BatchNorm1d(self.out_dim//4)
-            self.bns4 = nn.BatchNorm1d(self.out_dim//2)
+            self.bns1 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns2 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns3 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(self.out_dim//4)
+            self.bns4 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(self.out_dim//2)
             
         else:
             # self.convs1 = torch.nn.Conv1d(4944-16, 256, 1)
@@ -327,10 +327,10 @@ class PointNet_large(nn.Module):
             self.layer3 = nn.Conv1d(256, self.out_dim//4, 1)
             self.layer4 = nn.Conv1d(self.out_dim//4, self.out_dim//2, 1)
             self.layer5 = nn.Conv1d(self.out_dim//2, self.out_dim, 1)
-            self.bns1 = nn.BatchNorm1d(256)
-            self.bns2 = nn.BatchNorm1d(256)
-            self.bns3 = nn.BatchNorm1d(self.out_dim//4)
-            self.bns4 = nn.BatchNorm1d(self.out_dim//2)
+            self.bns1 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns2 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns3 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(self.out_dim//4)
+            self.bns4 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(self.out_dim//2)
     
     def least_N_zeros_gate(self, out, N: int=128, dim: int = -1):
         """
