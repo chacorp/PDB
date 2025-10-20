@@ -110,6 +110,10 @@ def Options():
     parser.set_defaults(use_normal_loss=False)
 
     
+    parser.add_argument("--no_t_mask",dest='use_normal_loss', action='store_true')
+    parser.set_defaults(no_t_mask=False)
+
+    
     parser.add_argument("--use_data2",dest='use_data2', action='store_true')
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
@@ -1380,8 +1384,12 @@ class Trainer():
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
-                inv_t_mask = 2.0 - t_mask
-                t_mask = t_mask + 1.0
+                
+                if self.opts.no_t_mask:
+                    t_mask = 1; inv_t_mask = 1
+                else:
+                    inv_t_mask = 2.0 - t_mask
+                    t_mask = t_mask + 1.0
                 
                 ## use segmentation for loss weight
                 ## -> re-weighting based on facial region area
