@@ -527,7 +527,7 @@ class MLP(nn.Sequential):
     '''
     A simple MLP with configurable hidden layer sizes.
     '''
-    def __init__(self, layer_sizes, num_gn=32, dropout=False, act='relu', nrm='batch', name="MLP", p=.5):
+    def __init__(self, layer_sizes, num_gn=32, dropout=False, act='relu', nrm='layer', name="MLP", p=.5):
         super(MLP, self).__init__()
 
         if act == 'sigmoid':
@@ -735,7 +735,9 @@ class LinearEncoder(nn.Module):
             
             if self.use_pou and not self.use_softmax:
                 out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-            
+        else:
+            if self.use_pou:
+                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
         return out
         
         
@@ -892,6 +894,9 @@ class LinearEncoder2(nn.Module):
                 # out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
         
             if self.use_pou and not self.use_softmax:
+                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+        else:
+            if self.use_pou:
                 out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
         return out
