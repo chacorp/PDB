@@ -31,7 +31,7 @@ from models.blocks import *
 
 
 class PointNetEncoder_small(nn.Module):
-    def __init__(self, in_dim=3, out_dim=512, global_feat=True, feature_transform=False):
+    def __init__(self, in_dim=3, out_dim=512, global_feat=True, feature_transform=False,no_norm_layer=False):
         super(PointNetEncoder_small, self).__init__()
         self.out_dim = out_dim
         
@@ -39,9 +39,9 @@ class PointNetEncoder_small(nn.Module):
         self.conv1 = torch.nn.Conv1d(in_dim, 64, 1)
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
         self.conv3 = torch.nn.Conv1d(128, self.out_dim, 1)
-        self.bn1 = nn.BatchNorm1d(64)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(self.out_dim)
+        self.bn1 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(64)
+        self.bn2 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(128)
+        self.bn3 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(self.out_dim)
         
         self.global_feat = global_feat
         self.feature_transform = feature_transform
@@ -99,7 +99,7 @@ class PointNet_small(nn.Module):
                  out_type='vertices',
                  use_softmax=False, use_relu=False, use_elu=False,
                  use_least_N=False, use_least_N_on_V=False,
-                 use_gate_layer=False,
+                 use_gate_layer=False, no_norm_layer=False,
                  tau=1e-2
                 ):
         super().__init__()
@@ -136,7 +136,8 @@ class PointNet_small(nn.Module):
             in_dim=in_dim,
             out_dim=self.hid_dim,
             global_feat=self.global_feat,
-            feature_transform=True
+            feature_transform=True,
+            no_norm_layer=no_norm_layer,
         )
         
         if self.out_type == 'global':
@@ -145,9 +146,9 @@ class PointNet_small(nn.Module):
             self.layer3 = nn.Linear(256, 128)
             self.layer4 = nn.Linear(128, self.out_dim)
             #self.dropout = nn.Dropout(p=0.4)
-            self.bns1 = nn.BatchNorm1d(256)
-            self.bns2 = nn.BatchNorm1d(256)
-            self.bns3 = nn.BatchNorm1d(128)
+            self.bns1 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns2 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns3 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(128)
             
         else:
             # self.convs1 = torch.nn.Conv1d(4944-16, 256, 1)
@@ -155,9 +156,9 @@ class PointNet_small(nn.Module):
             self.layer2 = nn.Conv1d(256, 256, 1)
             self.layer3 = nn.Conv1d(256, 128, 1)
             self.layer4 = nn.Conv1d(128, self.out_dim, 1)
-            self.bns1 = nn.BatchNorm1d(256)
-            self.bns2 = nn.BatchNorm1d(256)
-            self.bns3 = nn.BatchNorm1d(128)
+            self.bns1 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns2 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(256)
+            self.bns3 = nn.Identity() if no_norm_layer else nn.BatchNorm1d(128)
     
     def least_N_zeros_gate(self, out, N: int=128, dim: int = -1):
         """
