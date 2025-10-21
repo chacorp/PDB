@@ -464,6 +464,8 @@ class CBDDataset(data.Dataset):
         self.use_ict = use_ict
         self.use_ict_narrow = use_ict_narrow
         
+        self.use_laplacian = self.opts.use_laplacian
+        
         if toggle:
             # /data/sihun/pca
             data_basedir=data_basedir+'/pca' # char-s05
@@ -502,31 +504,31 @@ class CBDDataset(data.Dataset):
             ## Added segmentation ##################################################################
             self.ict_seg=torch.tensor(np.load('utils/ict/ICT_segment_onehot_24.npy'))
             ########################################################################################
-
-            self.ict_cotmatrix={}
-            ict_cotmatrix_path='utils/ict/ict_cotmatrix.pkl'
-            
-            if os.path.exists(ict_cotmatrix_path):
-                with open(ict_cotmatrix_path,'rb') as f:
-                    self.ict_cotmatrix = pickle.load(f)
-            else:
-                for idx, id_coeff in enumerate(self.iden_vecs):
-                    id_disps = self.ict_face_model.get_id_disp(id_coeff).squeeze()
-                    id_verts = id_disps + self.ict_face_model.neutral_verts
-                    # import pdb;pdb.set_trace()
-    
-                    tmp_L = igl.cotmatrix(id_verts, self.ict_face_model.faces)
-                    tmp_L = torch.sparse_csc_tensor(
-                        torch.from_numpy(tmp_L.indptr).long(),
-                        torch.from_numpy(tmp_L.indices).long(),
-                        torch.from_numpy(tmp_L.data).float(),
-                        tmp_L.shape
-                    )#.to(self.device)
-                    #tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
-                    self.ict_cotmatrix[f"{idx:03d}"] = tmp_L
-                    
-                with open(ict_cotmatrix_path,'wb') as f:
-                    pickle.dump(self.ict_cotmatrix, f)
+            if self.use_laplacian:
+                self.ict_cotmatrix={}
+                ict_cotmatrix_path='utils/ict/ict_cotmatrix.pkl'
+                
+                if os.path.exists(ict_cotmatrix_path):
+                    with open(ict_cotmatrix_path,'rb') as f:
+                        self.ict_cotmatrix = pickle.load(f)
+                else:
+                    for idx, id_coeff in enumerate(self.iden_vecs):
+                        id_disps = self.ict_face_model.get_id_disp(id_coeff).squeeze()
+                        id_verts = id_disps + self.ict_face_model.neutral_verts
+                        # import pdb;pdb.set_trace()
+        
+                        tmp_L = igl.cotmatrix(id_verts, self.ict_face_model.faces)
+                        tmp_L = torch.sparse_csc_tensor(
+                            torch.from_numpy(tmp_L.indptr).long(),
+                            torch.from_numpy(tmp_L.indices).long(),
+                            torch.from_numpy(tmp_L.data).float(),
+                            tmp_L.shape
+                        )#.to(self.device)
+                        #tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                        self.ict_cotmatrix[f"{idx:03d}"] = tmp_L
+                        
+                    with open(ict_cotmatrix_path,'wb') as f:
+                        pickle.dump(self.ict_cotmatrix, f)
                     
             # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
@@ -556,33 +558,34 @@ class CBDDataset(data.Dataset):
             )[:self.ict_face_model_narrow.v_num]
             ########################################################################################
 
-            self.ict_narrow_cotmatrix={}
-            ict_cotmatrix_path='utils/ict/ict_narrow_cotmatrix.pkl'
-            
-            if os.path.exists(ict_cotmatrix_path):
-                with open(ict_cotmatrix_path,'rb') as f:
-                    self.ict_cotmatrix = pickle.load(f)
-            else:
-                for idx, id_coeff in enumerate(self.iden_vecs):
-                    id_disps = self.ict_face_model_narrow.get_id_disp(
-                        id_coeff, region=self.region_num
-                    ).squeeze()
-                    id_verts = id_disps + self.ict_face_model_narrow.neutral_verts
-                    
-                    # import pdb;pdb.set_trace()
-    
-                    tmp_L = igl.cotmatrix(id_verts, self.ict_face_model_narrow.faces)
-                    tmp_L = torch.sparse_csc_tensor(
-                        torch.from_numpy(tmp_L.indptr).long(),
-                        torch.from_numpy(tmp_L.indices).long(),
-                        torch.from_numpy(tmp_L.data).float(),
-                        tmp_L.shape
-                    )#.to(self.device)
-                    #tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
-                    self.ict_narrow_cotmatrix[f"{idx:03d}"] = tmp_L
-                    
-                with open(ict_cotmatrix_path,'wb') as f:
-                    pickle.dump(self.ict_narrow_cotmatrix, f)
+            if self.use_laplacian:
+                self.ict_narrow_cotmatrix={}
+                ict_cotmatrix_path='utils/ict/ict_narrow_cotmatrix.pkl'
+                
+                if os.path.exists(ict_cotmatrix_path):
+                    with open(ict_cotmatrix_path,'rb') as f:
+                        self.ict_cotmatrix = pickle.load(f)
+                else:
+                    for idx, id_coeff in enumerate(self.iden_vecs):
+                        id_disps = self.ict_face_model_narrow.get_id_disp(
+                            id_coeff, region=self.region_num
+                        ).squeeze()
+                        id_verts = id_disps + self.ict_face_model_narrow.neutral_verts
+                        
+                        # import pdb;pdb.set_trace()
+        
+                        tmp_L = igl.cotmatrix(id_verts, self.ict_face_model_narrow.faces)
+                        tmp_L = torch.sparse_csc_tensor(
+                            torch.from_numpy(tmp_L.indptr).long(),
+                            torch.from_numpy(tmp_L.indices).long(),
+                            torch.from_numpy(tmp_L.data).float(),
+                            tmp_L.shape
+                        )#.to(self.device)
+                        #tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                        self.ict_narrow_cotmatrix[f"{idx:03d}"] = tmp_L
+                        
+                    with open(ict_cotmatrix_path,'wb') as f:
+                        pickle.dump(self.ict_narrow_cotmatrix, f)
                     
             # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
@@ -614,20 +617,21 @@ class CBDDataset(data.Dataset):
             self.voca_seg=torch.tensor(np.load('utils/voca/flame_seg_24.npy'))
             ########################################################################################
 
-            self.voca_cotmatrix={}
-            voca_cotmatrix_path='utils/voca/voca_cotmatrix.pkl'
-
-            if os.path.exists(voca_cotmatrix_path):
-                with open(voca_cotmatrix_path,'rb') as f:
-                    self.voca_cotmatrix = pickle.load(f)
-            else:
-                for id_name in voca_data_split[self.mode]:                
-                    tmp_L = igl.cotmatrix(self.voca_mesh[id_name], self.voca_mesh['face'])
-                    tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
-                    self.voca_cotmatrix[id_name] = tmp_L
-                    
-                with open(voca_cotmatrix_path,'wb') as f:
-                    pickle.dump(self.voca_cotmatrix, f)
+            if self.use_laplacian:
+                self.voca_cotmatrix={}
+                voca_cotmatrix_path='utils/voca/voca_cotmatrix.pkl'
+    
+                if os.path.exists(voca_cotmatrix_path):
+                    with open(voca_cotmatrix_path,'rb') as f:
+                        self.voca_cotmatrix = pickle.load(f)
+                else:
+                    for id_name in voca_data_split[self.mode]:                
+                        tmp_L = igl.cotmatrix(self.voca_mesh[id_name], self.voca_mesh['face'])
+                        tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                        self.voca_cotmatrix[id_name] = tmp_L
+                        
+                    with open(voca_cotmatrix_path,'wb') as f:
+                        pickle.dump(self.voca_cotmatrix, f)
             # adj_mat = igl.adjacency_matrix(self.voca_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -660,20 +664,21 @@ class CBDDataset(data.Dataset):
             self.biwi_seg=torch.tensor(np.load('utils/biwi/biwi_seg_24.npy'))
             ########################################################################################
 
-            self.biwi_cotmatrix={}
-            biwi_cotmatrix_path='utils/biwi/biwi_cotmatrix.pkl'
-
-            if os.path.exists(biwi_cotmatrix_path):
-                with open(biwi_cotmatrix_path,'rb') as f:
-                    self.biwi_cotmatrix = pickle.load(f)
-            else:
-                for id_name in biwi_data_split[self.mode]:                
-                    tmp_L = igl.cotmatrix(self.biwi_mesh[id_name], self.biwi_mesh['face'])
-                    tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
-                    self.biwi_cotmatrix[id_name] = tmp_L
-                    
-                with open(biwi_cotmatrix_path,'wb') as f:
-                    pickle.dump(self.biwi_cotmatrix, f)
+            if self.use_laplacian:
+                self.biwi_cotmatrix={}
+                biwi_cotmatrix_path='utils/biwi/biwi_cotmatrix.pkl'
+    
+                if os.path.exists(biwi_cotmatrix_path):
+                    with open(biwi_cotmatrix_path,'rb') as f:
+                        self.biwi_cotmatrix = pickle.load(f)
+                else:
+                    for id_name in biwi_data_split[self.mode]:                
+                        tmp_L = igl.cotmatrix(self.biwi_mesh[id_name], self.biwi_mesh['face'])
+                        tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                        self.biwi_cotmatrix[id_name] = tmp_L
+                        
+                    with open(biwi_cotmatrix_path,'wb') as f:
+                        pickle.dump(self.biwi_cotmatrix, f)
             # adj_mat = igl.adjacency_matrix(self.biwi_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -705,21 +710,22 @@ class CBDDataset(data.Dataset):
             ## Added segmentation ##################################################################
             self.mf_SEN_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
             ########################################################################################
-
-            self.mf_SEN_cotmatrix={}
-            mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
-
-            if os.path.exists(mf_cotmatrix_path):
-                with open(mf_cotmatrix_path,'rb') as f:
-                    self.mf_SEN_cotmatrix = pickle.load(f)
-            else:
-                for id_name in mf_data_split[self.mode]:                
-                    tmp_L = igl.cotmatrix(self.mf_SEN_mesh[id_name], self.mf_SEN_mesh['face'])
-                    tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
-                    self.mf_SEN_cotmatrix[id_name] = tmp_L
-                    
-                with open(mf_cotmatrix_path,'wb') as f:
-                    pickle.dump(self.mf_SEN_cotmatrix, f)
+            
+            if self.use_laplacian:
+                self.mf_SEN_cotmatrix={}
+                mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
+    
+                if os.path.exists(mf_cotmatrix_path):
+                    with open(mf_cotmatrix_path,'rb') as f:
+                        self.mf_SEN_cotmatrix = pickle.load(f)
+                else:
+                    for id_name in mf_data_split[self.mode]:                
+                        tmp_L = igl.cotmatrix(self.mf_SEN_mesh[id_name], self.mf_SEN_mesh['face'])
+                        tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                        self.mf_SEN_cotmatrix[id_name] = tmp_L
+                        
+                    with open(mf_cotmatrix_path,'wb') as f:
+                        pickle.dump(self.mf_SEN_cotmatrix, f)
             # adj_mat = igl.adjacency_matrix(self.mf_SEN_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -748,20 +754,21 @@ class CBDDataset(data.Dataset):
             self.coma_seg=torch.tensor(np.load('utils/voca/flame_seg_24.npy'))
             ########################################################################################
 
-            self.coma_cotmatrix={}
-            coma_cotmatrix_path='utils/voca/voca_cotmatrix.pkl'
-
-            if os.path.exists(coma_cotmatrix_path):
-                with open(coma_cotmatrix_path,'rb') as f:
-                    self.coma_cotmatrix = pickle.load(f)
-            else:
-                for id_name in voca_data_split[self.mode]:                
-                    tmp_L = igl.cotmatrix(self.coma_mesh[id_name], self.coma_mesh['face'])
-                    tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
-                    self.coma_cotmatrix[id_name] = tmp_L
-                    
-                with open(coma_cotmatrix_path,'wb') as f:
-                    pickle.dump(self.coma_cotmatrix, f)
+            if self.use_laplacian:
+                self.coma_cotmatrix={}
+                coma_cotmatrix_path='utils/voca/voca_cotmatrix.pkl'
+    
+                if os.path.exists(coma_cotmatrix_path):
+                    with open(coma_cotmatrix_path,'rb') as f:
+                        self.coma_cotmatrix = pickle.load(f)
+                else:
+                    for id_name in voca_data_split[self.mode]:                
+                        tmp_L = igl.cotmatrix(self.coma_mesh[id_name], self.coma_mesh['face'])
+                        tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                        self.coma_cotmatrix[id_name] = tmp_L
+                        
+                    with open(coma_cotmatrix_path,'wb') as f:
+                        pickle.dump(self.coma_cotmatrix, f)
             # adj_mat = igl.adjacency_matrix(self.coma_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -793,21 +800,21 @@ class CBDDataset(data.Dataset):
             ## Added segmentation ##################################################################
             self.mf_ROM_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
             ########################################################################################
-            
-            self.mf_ROM_cotmatrix={}
-            mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
-
-            if os.path.exists(mf_cotmatrix_path):
-                with open(mf_cotmatrix_path,'rb') as f:
-                    self.mf_SEN_cotmatrix = pickle.load(f)
-            else:
-                for id_name in mf_data_split[self.mode]:                
-                    tmp_L = igl.cotmatrix(self.mf_ROM_mesh[id_name], self.mf_ROM_mesh['face'])
-                    tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
-                    self.mf_ROM_cotmatrix[id_name] = tmp_L
-                
-                with open(mf_cotmatrix_path, 'wb') as f:
-                    pickle.dump(self.mf_ROM_cotmatrix, f)
+            if self.use_laplacian:
+                self.mf_ROM_cotmatrix={}
+                mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
+    
+                if os.path.exists(mf_cotmatrix_path):
+                    with open(mf_cotmatrix_path,'rb') as f:
+                        self.mf_SEN_cotmatrix = pickle.load(f)
+                else:
+                    for id_name in mf_data_split[self.mode]:                
+                        tmp_L = igl.cotmatrix(self.mf_ROM_mesh[id_name], self.mf_ROM_mesh['face'])
+                        tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
+                        self.mf_ROM_cotmatrix[id_name] = tmp_L
+                    
+                    with open(mf_cotmatrix_path, 'wb') as f:
+                        pickle.dump(self.mf_ROM_cotmatrix, f)
             # adj_mat = igl.adjacency_matrix(self.mf_ROM_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat

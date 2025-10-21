@@ -215,23 +215,25 @@ def laplacian_loss(batch, pred_key_weight, dataset, mesh_data_num, device):
     Returns:
         laplacian smoothing loss
     """
-    loss = 0
     
     if mesh_data_num == 0:
-        cotmatrix = dataset.voca_cotmatrix[batch.id_name].to(device)
+        L = dataset.voca_cotmatrix[batch.id_name].to(device)
     elif mesh_data_num == 1:
-        cotmatrix = dataset.biwi_cotmatrix[batch.id_name].to(device)
+        L = dataset.biwi_cotmatrix[batch.id_name].to(device)
     elif mesh_data_num == 2:
-        cotmatrix = dataset.mf_SEN_cotmatrix[batch.id_name].to(device)
+        L = dataset.mf_SEN_cotmatrix[batch.id_name].to(device)
     elif mesh_data_num == 3:
-        cotmatrix = dataset.coma_cotmatrix[batch.id_name].to(device)
+        L = dataset.coma_cotmatrix[batch.id_name].to(device)
     elif mesh_data_num == 4:
-        cotmatrix = dataset.mf_ROM_cotmatrix[batch.id_name].to(device)
+        L = dataset.mf_ROM_cotmatrix[batch.id_name].to(device)
     elif mesh_data_num == 5:
-        cotmatrix = dataset.ict_cotmatrix[batch.id_name].to(device)
+        L = dataset.ict_cotmatrix[batch.id_name].to(device)
+    else:
+        raise ValueError(f'no data for {mesh_data_num}')
         
+    loss = 0
     for pred_key_w in pred_key_weight:
-        pred_key_w_lap = cotmatrix @ pred_key_w
+        pred_key_w_lap = L @ pred_key_w
         loss += pred_key_w_lap.sum(0).pow(2).mean()
         
     return loss
@@ -1450,7 +1452,7 @@ class Trainer():
                         pred_key_weight.sum(-1), 
                     )
                     
-                if self.opts.use_laplacian and not use_perm:
+                if not use_perm and self.opts.use_laplacian:
                     loss_dict['lap'] = laplacian_loss(
                         batch, pred_key_weight, self.train_dataset, mesh_data_num, self.device
                     ) * BS_denom
@@ -1463,23 +1465,23 @@ class Trainer():
                     
                     # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
                     # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
+                
+                if not use_perm and self.opts.use_normal_loss:
+                    pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
+                    pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
                     
+                    loss_dict['recon-def'] += 0.1 * (
+                        F.mse_loss(
+                            batch_vertices_n*t_mask, pred_vertices_norm*t_mask
+                        ) + F.mse_loss(
+                            batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask
+                        )
+                    )
+                    loss_dict['recon-neu'] += 0.1 * F.mse_loss(
+                        batch_template_n, pred_template_norm
+                    )
+                
                 if (self.opts.use_data2 or self.opts.use_data3):
-                    if not use_perm and self.opts.use_normal_loss:
-                        pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
-                        pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
-                        
-                        loss_dict['recon-def'] += 0.1 * (
-                            F.mse_loss(
-                                batch_vertices_n*t_mask, pred_vertices_norm*t_mask
-                            ) + F.mse_loss(
-                                batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask
-                            )
-                        )
-                        loss_dict['recon-neu'] += 0.1 * F.mse_loss(
-                            batch_template_n, pred_template_norm
-                        )
-                    
                     if mesh_data=='ict':
                         loss_dict['exp-z'] = F.mse_loss(
                             batch.exp_coeff.unsqueeze(1), exp_z
