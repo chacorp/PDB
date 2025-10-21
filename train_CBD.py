@@ -1407,7 +1407,8 @@ class Trainer():
                 )
                 
                 if self.opts.no_t_mask:
-                    t_mask = inv_t_mask = 1.0
+                    t_mask = 1.0
+                    inv_t_mask = 0.0
                 else:
                     inv_t_mask = 2.0 - t_mask
                 
