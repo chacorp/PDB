@@ -1405,12 +1405,15 @@ class Trainer():
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
-                
+
+                # import pdb;pdb.set_trace()
+                # vis_mask_plot(batch_template_v[0].detach().cpu(), t_mask[0].detach().cpu(), logdir='./', name='test')
+                # vis_mask_plot(batch_template_v[0].detach().cpu(), inv_t_mask[0].detach().cpu(), logdir='./', name='test')
                 if self.opts.no_t_mask:
                     t_mask = 1.0
                     inv_t_mask = 0.0
                 else:
-                    inv_t_mask = 2.0 - t_mask
+                    inv_t_mask = 1.0 - t_mask
                 
                 ## use segmentation for loss weight
                 ## -> re-weighting based on facial region area
@@ -1750,6 +1753,42 @@ class Trainer():
             yaml.dump(vars(opts), f, sort_keys=False)
 
 
+def vis_mask_plot(XX, WW, logdir='./', name='test'):
+    #import torch
+    #import numpy as np
+    import matplotlib.pyplot as plt
+    #from utils.remesh_utils import ICT_face_model
+    
+    fig1 = plt.figure(figsize=(14, 8))
+    ax3 = fig1.add_axes([0.3, 0.0, 0.5, 0.5], projection='3d') ## left bottom W H
+    
+    # Use default colormap; do not specify colors explicitly
+    p = ax3.scatter(
+        XX[:, 2].numpy(),
+        XX[:, 0].numpy(),
+        XX[:, 1].numpy(),
+        c=WW.numpy(),
+        s=5,
+        depthshade=False)
+    
+    ax3.set_title("mask", y=-0.21, fontsize=22)
+    cb = fig1.colorbar(p, ax=ax3, shrink=0.75)
+    
+    # Equal aspect
+    try:
+        ax3.set_box_aspect([1, 1, 1])
+    except Exception:
+        # Fallback for older matplotlib: approximate equal aspect
+        xyzlim = np.array([ax3.get_xlim3d(), ax3.get_ylim3d(), ax3.get_zlim3d()])
+        xyzmin = xyzlim[:, 0].min()
+        xyzmax = xyzlim[:, 1].max()
+        ax3.set_xlim3d([xyzmin, xyzmax])
+        ax3.set_ylim3d([xyzmin, xyzmax])
+        ax3.set_zlim3d([xyzmin, xyzmax])
+    plt.savefig('{}/{}.png'.format(logdir, name), bbox_inches = 'tight')
+    # plt.show()
+    plt.close(plt.gcf())
+    
 if __name__ == "__main__":
     # argparse configs
     opts = Options()
