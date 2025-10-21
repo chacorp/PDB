@@ -110,7 +110,7 @@ def Options():
     parser.set_defaults(use_normal_loss=False)
 
     
-    parser.add_argument("--no_t_mask",dest='use_normal_loss', action='store_true')
+    parser.add_argument("--no_t_mask",dest='no_t_mask', action='store_true')
     parser.set_defaults(no_t_mask=False)
     
     parser.add_argument("--use_data0",dest='use_data0', action='store_true')
