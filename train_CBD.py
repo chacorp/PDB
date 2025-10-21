@@ -1473,21 +1473,13 @@ class Trainer():
                         
                         loss_dict['recon-def'] += 0.1 * (
                             F.mse_loss(
-                                batch_vertices_n*t_mask,
-                                pred_vertices_norm*t_mask
+                                batch_vertices_n*t_mask, pred_vertices_norm*t_mask
                             ) + F.mse_loss(
-                                batch_template_n*inv_t_mask,
-                                pred_vertices_norm*inv_t_mask
+                                batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask
                             )
                         )
-                        loss_dict['recon-neu'] += 0.1 * (
-                            F.mse_loss(
-                                batch_template_n*t_mask,
-                                pred_template_norm*t_mask
-                            ) + F.mse_loss(
-                                batch_template_n*inv_t_mask,
-                                pred_template_norm*inv_t_mask
-                            )
+                        loss_dict['recon-neu'] += 0.1 * F.mse_loss(
+                            batch_template_n, pred_template_norm
                         )
                     
                     if mesh_data=='ict':
