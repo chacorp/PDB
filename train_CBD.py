@@ -1405,11 +1405,9 @@ class Trainer():
                 )
                 
                 if self.opts.no_t_mask:
-                    t_mask = 1
-                    inv_t_mask = 1
+                    t_mask = inv_t_mask = 1.0
                 else:
                     inv_t_mask = 2.0 - t_mask
-                    t_mask = t_mask + 1.0
                 
                 ## use segmentation for loss weight
                 ## -> re-weighting based on facial region area
