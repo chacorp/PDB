@@ -652,7 +652,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
         #     recon_deformed = recon_delta_v + source_vert
         # else:
         #     recon_deformed = 0
-        # -----------------------------------------------------        
+        # -----------------------------------------------------
         
         if out_kw:
             return pred_deformed, pred_source, exp_z_d, key_d, exp_z_s, key_s, key_weight
