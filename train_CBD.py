@@ -1405,7 +1405,8 @@ class Trainer():
                 )
                 
                 if self.opts.no_t_mask:
-                    t_mask = 1; inv_t_mask = 1
+                    t_mask = 1
+                    inv_t_mask = 1
                 else:
                     inv_t_mask = 2.0 - t_mask
                     t_mask = t_mask + 1.0
@@ -1432,6 +1433,7 @@ class Trainer():
                 
                 if self.model.use_full_vertex:
                     loss_dict['recon-neu'] = F.mse_loss(batch_template_v*t_mask, pred_source*t_mask)
+                    loss_dict['recon-neu'] += F.mse_loss(batch_template_v*inv_t_mask, pred_source*inv_t_mask)
                 
                 if self.model.use_shp_recon:
                     loss_dict['shape'] = F.mse_loss(
@@ -1469,8 +1471,24 @@ class Trainer():
                         pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
                         pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
                         
-                        loss_dict['recon-def'] += F.mse_loss(batch_vertices_n*t_mask, pred_vertices_norm*t_mask) * 0.1
-                        loss_dict['recon-neu'] += F.mse_loss(batch_template_n*t_mask, pred_template_norm*t_mask) * 0.1
+                        loss_dict['recon-def'] += 0.1 * (
+                            F.mse_loss(
+                                batch_vertices_n*t_mask,
+                                pred_vertices_norm*t_mask
+                            ) + F.mse_loss(
+                                batch_template_n*inv_t_mask,
+                                pred_vertices_norm*inv_t_mask
+                            )
+                        )
+                        loss_dict['recon-neu'] += 0.1 * (
+                            F.mse_loss(
+                                batch_template_n*t_mask,
+                                pred_template_norm*t_mask
+                            ) + F.mse_loss(
+                                batch_template_n*inv_t_mask,
+                                pred_template_norm*inv_t_mask
+                            )
+                        )
                     
                     if mesh_data=='ict':
                         loss_dict['exp-z'] = F.mse_loss(
