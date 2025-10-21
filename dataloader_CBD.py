@@ -11,16 +11,10 @@ import scipy
 import trimesh
 from functools import partial
 
-from utils import (
-    ICT_face_model, 
-    procrustes_LDM, 
-    plot_image_array, 
-    calc_norm_torch
-)
 from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, KEYS
-from utils.remesh_utils import map_vertices, decimate_mesh_vertex
-from utils.mesh_utils import get_dfn_info2, get_mesh_operators
+from utils.remesh_utils import map_vertices, decimate_mesh_vertex, ICT_face_model, procrustes_LDM
 from utils.exp_utils import PCA_holder, adjacency_matrix
+from utils.matplotlib_rnd import plot_image_array
 
 
 import sys

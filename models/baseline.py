@@ -28,7 +28,7 @@ from utils.remesh_utils import (
 from utils.cages import mean_value_coordinates_3D
 from utils.exp_utils import Model_mk1, Model_mk3_1
 from utils.exp_utils import plateau_hat_points
-from models import PointNet_small, PointNet_large, MLP
+from models.encoder import PointNet_small, PointNet_large, MLP
 from torch.utils.checkpoint import checkpoint
 
 class CageNet(nn.Module):
