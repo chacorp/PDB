@@ -1382,9 +1382,10 @@ class Trainer():
                     ) # for expression AE
                 
                 if self.opts.pou_loss:
+                    pred_key_weight_sum = pred_key_weight.sum(-1)
                     loss_dict['pou'] = F.mse_loss(
-                        torch.ones(BS, N_range).to(self.device),
-                        pred_key_weight.sum(-1), 
+                        torch.ones_like(pred_key_weight_sum).to(self.device),
+                        pred_key_weight_sum, 
                     )
                     
                 if not use_perm and self.opts.use_laplacian:
