@@ -112,8 +112,11 @@ def Options():
     
     parser.add_argument("--no_t_mask",dest='use_normal_loss', action='store_true')
     parser.set_defaults(no_t_mask=False)
-
     
+    parser.add_argument("--use_data0",dest='use_data0', action='store_true')
+    parser.set_defaults(use_data0=False)
+    parser.add_argument("--use_data1",dest='use_data1', action='store_true')
+    parser.set_defaults(use_data1=False)
     parser.add_argument("--use_data2",dest='use_data2', action='store_true')
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
@@ -361,22 +364,13 @@ class Trainer():
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
-        if self.opts.use_data2:
-            self.train_dataset = CBDDataset(
-                self.opts, is_train=True,
-                use_voca=False,
-                use_coma=False,
-                use_biwi=False,
-                use_mf_SEN=True,
-                use_mf_ROM=True,
-                use_ict=True,
-                use_ict_narrow=False,
-                toggle=self.opts.data_toggle
-            )
-        else:
-            self.train_dataset = CBDDataset(
-                self.opts, is_train=True, toggle=self.opts.data_toggle
-            )
+        
+        self.train_dataset = CBDDataset(
+            self.opts, is_train=True, toggle=self.opts.data_toggle
+        )
+        self.valid_dataset = CBDDataset(
+            self.opts, is_train=True, toggle=self.opts.data_toggle
+        )
         if self.opts.use_data2:
             self.neighbor_pad_mask = {
                 2: build_padded_neighbors(
@@ -428,22 +422,6 @@ class Trainer():
             collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
             num_workers=0,
         )
-        if self.opts.use_data2:
-            self.valid_dataset = CBDDataset(
-                self.opts, is_train=True,
-                use_voca=False,
-                use_coma=False,
-                use_biwi=False,
-                use_mf_SEN=True,
-                use_mf_ROM=True,
-                use_ict=True,
-                use_ict_narrow=False,
-                toggle=self.opts.data_toggle
-            )
-        else:
-            self.valid_dataset = CBDDataset(
-                self.opts, is_train=True, toggle=self.opts.data_toggle
-            )
         
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
@@ -1179,35 +1157,12 @@ class Trainer():
         BS = self.opts.batch_size
         BS_denom = 1 / BS
         
-        if self.opts.use_data2 or self.opts.use_data3:
-            if self.opts.use_data2:
-                self.train_dataset = CBDDataset(
-                    self.opts, is_train=True,
-                    use_voca=False,
-                    use_coma=False,
-                    use_biwi=False,
-                    use_mf_SEN=True,
-                    use_mf_ROM=True,
-                    use_ict=True,
-                    use_ict_narrow=True,
-                    toggle=self.opts.data_toggle
-                )
-            if self.opts.use_data3:
-                self.train_dataset = CBDDataset(
-                    self.opts, is_train=True,
-                    use_voca=True,
-                    use_coma=True,
-                    use_biwi=True,
-                    use_mf_SEN=True,
-                    use_mf_ROM=True,
-                    use_ict=True,
-                    use_ict_narrow=True,
-                    toggle=self.opts.data_toggle,
-                )
-        else:
-            self.train_dataset = CBDDataset(
-                self.opts, is_train=True, toggle=self.opts.data_toggle
-            )
+        self.train_dataset = CBDDataset(
+            self.opts, is_train=True, toggle=self.opts.data_toggle
+        )
+        self.valid_dataset = CBDDataset(
+            self.opts, is_valid=True, toggle=self.opts.data_toggle
+        )
         
         train_sampler = CBDdataSampler(
             self.train_dataset.len_list, 
@@ -1222,37 +1177,7 @@ class Trainer():
             # batch_size=8, shuffle=True,
             collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
             num_workers=0,
-        )
-        
-        
-        if self.opts.use_data2 or self.opts.use_data3:
-            if self.opts.use_data2:
-                self.valid_dataset = CBDDataset(
-                    self.opts, is_valid=True,
-                    use_voca=False,
-                    use_coma=False,
-                    use_biwi=False,
-                    use_mf_SEN=True,
-                    use_mf_ROM=True,
-                    use_ict=True,
-                    toggle=self.opts.data_toggle
-                )
-            if self.opts.use_data3:
-                self.valid_dataset = CBDDataset(
-                    self.opts, is_valid=True,
-                    use_voca=True,
-                    use_coma=True,
-                    use_biwi=True,
-                    use_mf_SEN=True,
-                    use_mf_ROM=True,
-                    use_ict=True,
-                    toggle=self.opts.data_toggle,
-                )
-            
-        else:
-            self.valid_dataset = CBDDataset(
-                self.opts, is_valid=True, toggle=self.opts.data_toggle
-            )
+        )        
             
         valid_sampler = CBDdataSampler(
             self.valid_dataset.len_list, 
@@ -1432,12 +1357,18 @@ class Trainer():
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
                 
-                loss_dict['recon-def'] = F.mse_loss(batch_vertices_v*t_mask, pred_vertices*t_mask) ## focus on face
-                loss_dict['recon-def'] += F.mse_loss(batch_template_v*inv_t_mask, pred_vertices*inv_t_mask) # static on elsewhere
+                if self.opts.no_t_mask:
+                    loss_dict['recon-def'] = F.mse_loss(batch_vertices_v, pred_vertices) ## focus on face
+                else:
+                    loss_dict['recon-def'] = F.mse_loss(batch_vertices_v*t_mask, pred_vertices*t_mask) ## focus on face
+                    loss_dict['recon-def'] += F.mse_loss(batch_template_v*inv_t_mask, pred_vertices*inv_t_mask) # static on elsewhere
                 
                 if self.model.use_full_vertex:
-                    loss_dict['recon-neu'] = F.mse_loss(batch_template_v*t_mask, pred_source*t_mask)
-                    loss_dict['recon-neu'] += F.mse_loss(batch_template_v*inv_t_mask, pred_source*inv_t_mask)
+                    if self.opts.no_t_mask:
+                        loss_dict['recon-neu'] = F.mse_loss(batch_template_v, pred_source)
+                    else:
+                        loss_dict['recon-neu'] = F.mse_loss(batch_template_v*t_mask, pred_source*t_mask)
+                        loss_dict['recon-neu'] += F.mse_loss(batch_template_v*inv_t_mask, pred_source*inv_t_mask)
                 
                 if self.model.use_shp_recon:
                     loss_dict['shape'] = F.mse_loss(

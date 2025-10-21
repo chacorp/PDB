@@ -456,13 +456,47 @@ class CBDDataset(data.Dataset):
         self.n_components = n_components
         self.scale = scale
         
+        if self.opts.use_data0:
+            self.n_components=400
+            use_voca=False
+            use_coma=True
+            use_biwi=False
+            use_mf_SEN=False
+            use_mf_ROM=False
+            use_ict=False
+            use_ict_narrow=False
+        elif self.opts.use_data1:
+            use_voca=False
+            use_coma=False
+            use_biwi=False
+            use_mf_SEN=True
+            use_mf_ROM=True
+            use_ict=False
+            use_ict_narrow=False
+        elif self.opts.use_data2:
+            use_voca=False
+            use_coma=False
+            use_biwi=False
+            use_mf_SEN=True
+            use_mf_ROM=True
+            use_ict=True
+            use_ict_narrow=True
+        elif self.opts.use_data3:
+            use_voca=True
+            use_coma=True
+            use_biwi=True
+            use_mf_SEN=True
+            use_mf_ROM=True
+            use_ict=True
+            use_ict_narrow=True
+            
         self.use_voca=use_voca
         self.use_coma=use_coma
         self.use_biwi=use_biwi
         self.use_mf_SEN=use_mf_SEN
         self.use_mf_ROM=use_mf_ROM
-        self.use_ict = use_ict
-        self.use_ict_narrow = use_ict_narrow
+        self.use_ict=use_ict
+        self.use_ict_narrow=use_ict_narrow
         
         self.use_laplacian = self.opts.use_laplacian
         
