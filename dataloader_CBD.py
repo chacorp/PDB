@@ -489,6 +489,14 @@ class CBDDataset(data.Dataset):
             use_mf_ROM=True
             use_ict=True
             use_ict_narrow=True
+        else:
+            use_voca=True
+            use_coma=True
+            use_biwi=True
+            use_mf_SEN=True
+            use_mf_ROM=True
+            use_ict=False
+            use_ict_narrow=False
             
         self.use_voca=use_voca
         self.use_coma=use_coma

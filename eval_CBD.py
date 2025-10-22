@@ -113,6 +113,11 @@ def Options():
     parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
     
+    parser.add_argument("--save_vert",dest='save_vert', action='store_true')
+    parser.set_defaults(save_vert=False)
+    parser.add_argument("--save_gt",dest='save_gt', action='store_true')
+    parser.set_defaults(save_gt=False)
+    
     
     parser.add_argument("--optim_cage",dest='optim_cage', action='store_true')
     parser.set_defaults(optim_cage=False)
@@ -595,16 +600,33 @@ class Trainer():
                 # Metric
                 losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
-        
+            if self.opts.save_gt:
+                save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
+                os.makedirs(save_gt_logdir, exist_ok=True)
+                curr_batch = batch.vertices.shape[0]
+                
+                for b_idx in range(curr_batch):
+                    save_gt_name = f"{save_gt_logdir}/{index*curr_batch + b_idx:06d}.npy"
+                    np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
+                
+            if self.opts.save_vert:
+                save_vert_logdir = f"{self.opts.log_dir}/verts"
+                # for pred_vert in pred_vertices:
+                os.makedirs(save_vert_logdir, exist_ok=True)
+                curr_batch = pred_vertices.shape[0]
+                
+                for b_idx in range(curr_batch):
+                    save_vert_name = f"{save_vert_logdir}/{index*curr_batch + b_idx:06d}.npy"
+                    np.save(save_vert_name, pred_vertices[b_idx].detach().cpu().numpy())
             
             # ------------------------------------------------------------------------------------------------
             # visualization for debugging
             if self.opts.batch_size > 1:
                 interv_val = round(len_data / 10)
                 if index % interv_val == 0:
-                    vertices = batch.vertices.cpu().detach()
-                    faces = batch.faces.cpu().detach()
-                    pred_vertices_ = pred_vertices.cpu().detach()
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+                    pred_vertices_ = pred_vertices.detach().cpu()
                     
                     v_list = [
                         vertices[0],
@@ -637,7 +659,7 @@ class Trainer():
             txt = f"{key}: {value:.6e} "
             print(txt)
             log_text += txt
-        self.logger.write(log_text+"\n")                
+        self.logger.write(log_text+"\n")
         print('done!')
     
     def evaluate3(self):
