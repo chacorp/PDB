@@ -920,9 +920,9 @@ class CBDDataset(data.Dataset):
         # self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
         if self.mode == 'train':
             # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
+            # expression_vecs2 = np.load(f'./data/ICT_live_100/expression_vecs_train.npy')
             expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
             expression_vecs = np.r_[np.eye(53), expression_vecs]
-            # expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
             # self.expression_vecs = np.r_[np.eye(53), expression_vecs]
         else:
             expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
