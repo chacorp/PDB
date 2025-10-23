@@ -177,3 +177,53 @@ class CageNet(nn.Module):
         if return_cage:
             return predicted_def_mesh, predicted_src_mesh, mvc, source_cage_v, deform_cage_v            
         return predicted_def_mesh, mvc
+
+    @torch.no_grad()
+    def retarget(self, 
+                 src_neu_vert, 
+                 src_def_vert, 
+                 tgt_neu_vert,
+                 out_kw=False,
+                 ):
+        """
+        Args:
+            source_mesh (torch.tensor) [B, N, 3]: input source mesh
+            deform_mesh (torch.tensor) [B, N, 3]: input deformed mesh
+        Return:
+            predicted deformed mesh
+        """
+        _, N, _ = src_neu_vert.shape
+        B, N, _ = src_def_vert.shape
+        _, M, _ = tgt_neu_vert.shape
+        
+        ## feed seperately
+        src_neu_code, _ = self.encoder(src_def_vert, return_all=True) 
+        src_def_code, _ = self.encoder(src_neu_vert, return_all=True) 
+        tgt_neu_code, _ = self.encoder(tgt_neu_vert, return_all=True) 
+        
+        cage_v = self.cage_v.view(1, -1, 3) # [1, 512, 3]
+        cage_v = cage_v.repeat(B, 1, 1)  # [B, 3, 512]
+
+        ###### works if the model outputs single code and reshape to cage
+        source_cage_v = self.nc_decoder(src_neu_code).reshape(
+            B, self.C, 3
+        ) + cage_v # [B, C, 3]
+        
+        target_cage_v = self.nc_decoder(tgt_neu_code).reshape(
+            B, self.C, 3
+        ) + cage_v # [B, C, 3]
+        
+        x_nd = torch.cat([src_neu_code, src_def_code],dim=-1) # [B, 1, 512+512]
+        deform_cage_v = self.nd_decoder(x_nd).reshape(
+            B, self.C, 3
+        ) # [B, C, 3]
+        
+        mvc = mean_value_coordinates_3D(tgt_neu_vert, target_cage_v[0][None], self.cage_f[None])
+        
+        pred_source = mvc @ target_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3] #### not needed?
+        pred_deformed = mvc @ (target_cage_v+deform_cage_v) ## [N, C] @ [B, C, 3] -> [B, N, 3]
+        
+        if out_kw:
+            return pred_deformed, pred_source, deform_cage_v, source_cage_v, mvc
+
+        return pred_deformed, pred_source
