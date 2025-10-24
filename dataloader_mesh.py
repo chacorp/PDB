@@ -8,11 +8,13 @@ import pickle
 import trimesh
 from functools import partial
 
-from utils import (
+from utils.remesh_utils import (
     ICT_face_model, 
     procrustes_LDM, 
-    plot_image_array, 
     calc_norm_torch
+)
+from utils.matplotlib_rnd import (
+    plot_image_array, 
 )
 from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, KEYS
 from utils.remesh_utils import map_vertices, decimate_mesh_vertex
