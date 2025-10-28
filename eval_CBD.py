@@ -38,7 +38,7 @@ from dataloader_CBD import (
 # from utils.mesh_utils import Renderer #, calc_cent
 from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
-
+from utils.exp_utils import plateau_hat_points
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 # from utils.exp_utils import Model_mk1, Model_mk3_1
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
@@ -112,6 +112,9 @@ def Options():
 
     parser.add_argument("--tb",           action='store_true')
     parser.set_defaults(is_train=True)
+    
+    parser.add_argument("--use_t_mask",dest='use_t_mask', action='store_true')
+    parser.set_defaults(use_t_mask=False)
     
     parser.add_argument("--save_vert",dest='save_vert', action='store_true')
     parser.set_defaults(save_vert=False)
@@ -344,7 +347,6 @@ class Trainer():
             collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
             num_workers=0,
         )
-        
         ##########################################################################################################
         
         
@@ -397,8 +399,11 @@ class Trainer():
         self.model.eval()
         
         losses_val = {
-            "MSE": 0.0,
+            "MSE": 0.0
         }
+        if self.opts.use_t_mask:
+            losses_val["MSE-in"] = 0.0
+            losses_val["MSE-out"] = 0.0
         
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
@@ -416,11 +421,25 @@ class Trainer():
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
                 mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
                 
-            losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
+            if self.opts.use_t_mask:
+                inner_mask = plateau_hat_points(batch.template)
+                outter_mask = 1 - inner_mask
+                
+                losses_val['MSE-in'] += F.mse_loss(
+                    batch.vertices*inner_mask, pred_vertices*inner_mask
+                ).item() * denom # for NGBC model
+                
+                losses_val['MSE-out'] += F.mse_loss(
+                    batch.template*outter_mask, pred_vertices*outter_mask
+                ).item() * denom # for NGBC model
+                
+            losses_val['MSE'] += F.mse_loss(
+                batch.vertices, pred_vertices
+            ).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
         
             
@@ -499,8 +518,11 @@ class Trainer():
         os.makedirs(self.opts.log_dir, exist_ok=True)
                             
         ckpt_path = self.opts.ckpt.split('/')[-1]
-        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection)
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
         
+        if self.opts.use_t_mask:
+            self.opts.log_dir = self.opts.log_dir + '-masked'
+            
         os.makedirs(self.opts.log_dir, exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
         
@@ -534,8 +556,13 @@ class Trainer():
         self.model.eval()
         
         losses_val = {
-            "MSE": 0.0,
+            "MSE": 0.0
         }
+        
+        if self.opts.use_t_mask:
+            losses_val["MSE-in"] = 0.0
+            losses_val["MSE-out"] = 0.0
+            
         mesh_data = self.dataset.data_name
                 
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
@@ -591,14 +618,34 @@ class Trainer():
                 
                 else:
                     #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
-                    pred_vertices, _, _, _, _, _, _ = self.model(
-                        batch.template, batch.vertices, 
-                        batch.template_normal, batch.vertices_normal,
-                        mesh_data=batch.mesh_data, epoch=0
-                    )
+                    if self.opts.version==1:
+                        pred_vertices, _ = trainer.model.retarget(
+                            batch.template, batch.vertices, batch.template
+                        )
+                    else:
+                        pred_vertices, _, _, _, _, _, _ = self.model(
+                            batch.template, batch.vertices, 
+                            batch.template_normal, batch.vertices_normal,
+                            mesh_data=batch.mesh_data, epoch=0
+                        )
                     
                 # Metric
-                losses_val['MSE'] += F.mse_loss(batch.vertices, pred_vertices).item() * denom # for NGBC model
+                if self.opts.use_t_mask:
+                    inner_mask = plateau_hat_points(batch.template)
+                    outter_mask = 1 - inner_mask
+                    
+                    losses_val['MSE-in'] += F.mse_loss(
+                        batch.vertices*inner_mask, pred_vertices*inner_mask
+                    ).item() * denom # for NGBC model
+                    
+                    losses_val['MSE-out'] += F.mse_loss(
+                        batch.template*outter_mask, pred_vertices*outter_mask
+                    ).item() * denom # for NGBC model
+                    
+                losses_val['MSE'] += F.mse_loss(
+                    batch.vertices, 
+                    pred_vertices
+                ).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
             if self.opts.save_gt:
                 save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
@@ -741,8 +788,13 @@ class Trainer():
         self.model.eval()
         
         losses_val = {
-            "MSE": 0.0,
+            "MSE": 0.0
         }
+        
+        if self.opts.use_t_mask:
+            losses_val["MSE-in"] = 0.0
+            losses_val["MSE-out"] = 0.0
+            
         mesh_data = 'ict'
         from easydict import EasyDict
         from utils.mesh_utils import calc_norm_torch
@@ -802,7 +854,7 @@ class Trainer():
 
                     with torch.no_grad():
                         pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
-                    
+                        
                         inputs = (
                             vert_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
                             None, batch.template[0][None], batch.faces[0], None
@@ -826,19 +878,37 @@ class Trainer():
                 ##############################################################################
                 
                 else:
-                    #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
-                    pred_vertices, _, _, _, _, _, _ = self.model(
-                        batch.template, batch.vertices, 
-                        batch.template_normal, batch.vertices_normal,
-                        mesh_data=batch.mesh_data, epoch=0
-                    )
-                    
+                    with torch.no_grad():
+                        if self.opts.version == 1:
+                            pred_vertices, _ = trainer.model.retarget(
+                                batch.template, batch.vertices, batch.template
+                            )
+                        else:
+                            #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
+                            pred_vertices, _, _, _, _, _, _ = self.model(
+                                batch.template, batch.vertices, 
+                                batch.template_normal, batch.vertices_normal,
+                                mesh_data=batch.mesh_data, epoch=0
+                            )
                 # Metric
-                loss = F.mse_loss(batch.vertices, pred_vertices)
-                loss_=loss.item() # for NGBC model
+                if self.opts.use_t_mask:
+                    inner_mask = plateau_hat_points(batch.template)
+                    outter_mask = 1 - inner_mask
+                    
+                    losses_val['MSE-in'] += F.mse_loss(
+                        batch.vertices*inner_mask, pred_vertices*inner_mask
+                    ).item() * denom # for NGBC model
+                    
+                    losses_val['MSE-out'] += F.mse_loss(
+                        batch.template*outter_mask, pred_vertices*outter_mask
+                    ).item() * denom # for NGBC model
+                    
+                loss_ = F.mse_loss(
+                    batch.vertices.detach(), pred_vertices.detach()
+                ).item() * denom # for NGBC model
                 pbar.set_description(f'loss: {loss_:.5e}')
-                losses_val['MSE'] += loss_ * denom
-                
+                losses_val['MSE'] += loss_
+
                 recon_vDec.append(loss.detach().cpu().numpy())
                 
                 if self.opts.save_vert:
