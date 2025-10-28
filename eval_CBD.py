@@ -691,6 +691,8 @@ class Trainer():
         self.opts.window_size=8
         self.opts.ict_face_only=False
         self.opts.selection=2 ## ICT-all (ICT-capture + ICT-synthetic)
+        # self.opts.selection=1 ## ICT-all (ICT-synthetic)
+        # self.opts.selection=0 ## ICT-all (ICT-capture)
         self.opts.seg_dim=20
         self.dataset = NFSDataset(self.opts, is_train=False, is_valid=False, return_audio_dir=True)
        
@@ -746,6 +748,7 @@ class Trainer():
         from utils.mesh_utils import calc_norm_torch
         
         # import pdb;pdb.set_trace()
+        recon_vDec = []
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, data in pbar:
             batch=EasyDict()
@@ -831,9 +834,22 @@ class Trainer():
                     )
                     
                 # Metric
-                loss_ = F.mse_loss(batch.vertices, pred_vertices).item() # for NGBC model
+                loss = F.mse_loss(batch.vertices, pred_vertices)
+                loss_=loss.item() # for NGBC model
                 pbar.set_description(f'loss: {loss_:.5e}')
                 losses_val['MSE'] += loss_ * denom
+                
+                recon_vDec.append(loss.detach().cpu().numpy())
+                
+                if self.opts.save_vert:
+                    save_vert_logdir = f"{self.opts.log_dir}/verts"
+                    # for pred_vert in pred_vertices:
+                    os.makedirs(save_vert_logdir, exist_ok=True)
+                    curr_batch = pred_vertices.shape[0]
+                    
+                    for b_idx in range(curr_batch):
+                        save_vert_name = f"{save_vert_logdir}/{index*curr_batch + b_idx:06d}.npy"
+                        np.save(save_vert_name, pred_vertices[b_idx].detach().cpu().numpy())
             # ------------------------------------------------------------------------------------------------
         
             
@@ -870,6 +886,17 @@ class Trainer():
                 )
                 # 11649/(11649+6309) + 6309/(11649+6309)
         ##########################################################################################################
+        
+        recon_vDec = np.array(recon_vDec)        
+        recon_vDec_mu = np.mean(recon_vDec)
+        recon_vDec_std = np.std(recon_vDec)
+        
+        tmp_log = f"recon_vDec_mu: {recon_vDec_mu}"
+        print(tmp_log)
+        self.logger.write(tmp_log+'\n')
+        tmp_log = f"recon_vDec_std: {recon_vDec_std}"
+        print(tmp_log)
+        self.logger.write(tmp_log+'\n')
         
         # write log
         log_text = f"[Eval] "
