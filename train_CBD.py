@@ -1292,6 +1292,9 @@ class Trainer():
                 running_losses['pou']=0.0
             if self.opts.use_laplacian:
                 running_losses['lap']=0.0
+            if self.opts.use_normal_loss:
+                running_losses['norm-def']=0.0
+                running_losses['norm-neu']=0.0
             
             self.model.train()
             train_counter = 0
@@ -1411,14 +1414,14 @@ class Trainer():
                     pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
                     pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
                     
-                    loss_dict['recon-def'] += 0.1 * (
+                    loss_dict['norm-def'] += 0.1 * (
                         F.mse_loss(
                             batch_vertices_n*t_mask, pred_vertices_norm*t_mask
                         ) + F.mse_loss(
                             batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask
                         )
                     )
-                    loss_dict['recon-neu'] += 0.1 * F.mse_loss(
+                    loss_dict['norm-neu'] += 0.1 * F.mse_loss(
                         batch_template_n, pred_template_norm
                     )
                 
