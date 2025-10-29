@@ -649,8 +649,7 @@ class Trainer():
                     ).item() * denom # for NGBC model
                     
                 losses_val['MSE'] += F.mse_loss(
-                    batch.vertices, 
-                    pred_vertices
+                    batch.vertices,  pred_vertices
                 ).item() * denom # for NGBC model
             # ------------------------------------------------------------------------------------------------
             if self.opts.save_gt:
@@ -915,7 +914,7 @@ class Trainer():
                 pbar.set_description(f'loss: {loss_:.5e}')
                 losses_val['MSE'] += loss_
 
-                recon_vDec.append(loss.detach().cpu().numpy())
+                recon_vDec.append(loss_.detach().cpu().numpy())
                 
                 if self.opts.save_vert:
                     save_vert_logdir = f"{self.opts.log_dir}/verts"
@@ -1063,7 +1062,10 @@ if __name__ == "__main__":
     # base configs (yaml)
     if opts.version==0:
         opts.config='config/train.yml'
-    opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
+        opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
+    else:
+        config = f'{opts.ckpt}/train_opts.yml'
+        opts_yaml = yaml.load(open(config), Loader=yaml.FullLoader)
         
     # update with argparse configs
     opts_ = vars(opts)
@@ -1080,12 +1082,10 @@ if __name__ == "__main__":
     
     trainer = Trainer(opts)
     if opts.realtest:
-        trainer.evaluate2() ## real test frames
-    else:
         if opts.use_eval_data2:
-            trainer.evaluate3() ## pca test data
+            trainer.evaluate3() ## nfs test dataloader
         else:
-            trainer.evaluate() ## pca test data
+            trainer.evaluate2() ## real test frames
+    else:
+        trainer.evaluate() ## pca test data
 
-
-        
