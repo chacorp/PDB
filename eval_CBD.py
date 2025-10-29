@@ -40,8 +40,6 @@ from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
 from utils.exp_utils import plateau_hat_points
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
-# from utils.exp_utils import Model_mk1, Model_mk3_1
-# from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
 
 from models.baseline import CageNet
 from models.NGBC import (
@@ -63,18 +61,19 @@ def Options():
     parser.add_argument("--log_dir",      type=str,   default="eval_CBD")
 
     parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
-    parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
+    #parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
 
     parser.add_argument("--data_selection",      type=int,   default=-1,
                         help='select dataset (-1: all, 0: voca, 1:biwi, 2: mf_SEN, 3: coma, 4: mf_ROM, 5: mf all)')
     
-    parser.add_argument("--in_type",      type=int,   default=0,      
+    parser.add_argument("--in_type",      type=int,   default=1,      
                         help='input type (0: position, 1: position + normal')
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
+    
     #### Choose a last layer activation for key_weight_model()
-    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none"],
-        help="Choose a last layer activation for NGBC.key_weight_model()"
+    parser.add_argument("--last_activation", default="relu", choices=["relu", "elu", "softmax", "softplus", "none"],
+        help="Choose a last layer activation for NGBC.key_weight_model()", 
     )
     
     parser.add_argument("--no_pou",dest='no_pou', action='store_true')
@@ -133,62 +132,6 @@ def Options():
     return args
 
 # --- Loss Functions ---
-
-def mvc_loss(mvc_weights):
-    """ penalize MVC with negative values """
-    neg_loss = torch.nn.functional.relu(-mvc_weights) ** 2
-    return torch.mean(neg_loss)
-
-def p2f_loss(before_v, after_v, normals_before, normals_after):
-    """ Point-to-Surface Loss
-    Args:
-        before_v: (B, N, 3) vertices source mesh
-        after_v: (B, N, 3) vertices deformed mesh
-        normals_before: (B, N, 3) normals from pca plane in source mesh
-        normals_after: (B, N, 3) normals from pca plane in deformed mesh
-    Returns
-        loss (float)
-    """
-    
-    def distance(verts, norms):
-        dists = torch.abs(torch.sum(verts * norms, dim=-1))
-        return dists
-
-    before_dist = distance(before_v, normals_before)
-    after_dist = distance(after_v, normals_after)
-    return F.mse_loss(before_dist, after_dist)
-
-def pca_normal_axis(verts, neighbors_map):
-    """
-    Args:
-        verts (torch.tensor): (B, N, 3) vertices
-        neighbors_map (list(int):
-    Returns:
-        normal_axis: (B, N, 3)
-    """
-    B, V, _ = verts.shape
-    
-    normal_axis = torch.zeros_like(verts)
-    for i, neighbors_idx in enumerate(neighbors_map):
-        if len(neighbors_idx) < 2: continue
-
-        neighborhood = verts[:, neighbors_idx, :]
-        centroid = torch.mean(neighborhood, dim=1)
-        _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
-        normal_axis[:, i, :] = V_svd[:, -1, :]
-    return normal_axis
-
-def norm_loss(normals_before, normals_after):
-    """ PCA Normal Loss 
-    Args:
-        before_v: (B, N, 3) vertices source mesh
-        after_v: (B, N, 3) vertices deformed mesh
-        normals_before: (B, N, 3) normals from pca plane in source mesh
-        normals_after: (B, N, 3) normals from pca plane in deformed mesh
-    Returns
-        loss (float)
-    """
-    return torch.mean(1.0 - F.cosine_similarity(normals_before, normals_after, dim=-1))
 
 class Trainer():
     def __init__(self, opts):
@@ -721,7 +664,7 @@ class Trainer():
         HB = BS // 2
         device=self.device
         
-        if self.opts.data_selection == -1:
+        if self.opts.data_selection != 5:
             raise NotImplementedError('only works for individual data')
         data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
         selection = data_name_list[self.opts.data_selection]
@@ -914,7 +857,7 @@ class Trainer():
                 pbar.set_description(f'loss: {loss_:.5e}')
                 losses_val['MSE'] += loss_
 
-                recon_vDec.append(loss_.detach().cpu().numpy())
+                recon_vDec.append(loss_)
                 
                 if self.opts.save_vert:
                     save_vert_logdir = f"{self.opts.log_dir}/verts"
