@@ -130,6 +130,9 @@ def Options():
     parser.add_argument("--optim_cage",dest='optim_cage', action='store_true')
     parser.set_defaults(optim_cage=False)
     
+    parser.add_argument("--align_latent",dest='align_latent', action='store_true')
+    parser.set_defaults(align_latent=False)
+    
     args = parser.parse_args()
     return args
 
@@ -291,7 +294,9 @@ class Trainer():
                 is_train=True,
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
-                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+                #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+                hid_dim=128 if self.opts.align_latent else 256,
+                
             )
         elif opts.version==8: 
             self.model = NeuralGeneralizedBarycentricCoordinate8(
@@ -309,7 +314,7 @@ class Trainer():
                 is_train=True,
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
-                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+                hid_dim=128 if self.opts.align_latent else 256,
             )
         elif opts.version==55:
             self.model = NeuralGeneralizedBarycentricCoordinate55(
@@ -327,7 +332,7 @@ class Trainer():
                 is_train=True,
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
-                hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+                hid_dim=128 if self.opts.align_latent else 256,
             )
         else:
             raise NotImplementedError('No matching model version')
@@ -1417,7 +1422,8 @@ class Trainer():
                         batch_template_n, pred_template_norm
                     )
                 
-                if (self.opts.use_data2 or self.opts.use_data3):
+                #if (self.opts.use_data2 or self.opts.use_data3):
+                if self.opts.align_latent:
                     if mesh_data=='ict':
                         loss_dict['exp-z'] = F.mse_loss(
                             batch.exp_coeff.unsqueeze(1), exp_z
