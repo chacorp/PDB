@@ -60,7 +60,7 @@ def Options():
     
     parser.add_argument("--log_dir",      type=str,   default="eval_CBD")
 
-    parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
+    #parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
     #parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
 
     parser.add_argument("--data_selection",      type=int,   default=-1,
