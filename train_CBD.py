@@ -1270,8 +1270,8 @@ class Trainer():
         if self.opts.use_laplacian:
             self.loss_lambda['lap'] = 1.0
         if self.opts.use_normal_loss:
-            self.loss_lambda['norm-def']=0.0
-            self.loss_lambda['norm-neu']=0.0
+            self.loss_lambda['norm-def']=0.1
+            self.loss_lambda['norm-neu']=0.1
         
         check_usage = False
         
@@ -1416,7 +1416,7 @@ class Trainer():
                 if not use_perm and self.opts.use_normal_loss:
                     pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
                     
-                    loss_dict['norm-def'] = 0.1 * (
+                    loss_dict['norm-def'] = (
                         F.mse_loss(
                             batch_vertices_n*t_mask, pred_vertices_norm*t_mask
                         ) + F.mse_loss(
@@ -1426,7 +1426,7 @@ class Trainer():
                     
                     if self.model.use_full_vertex:
                         pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
-                        loss_dict['norm-neu'] = 0.1 * F.mse_loss(
+                        loss_dict['norm-neu'] = F.mse_loss(
                             batch_template_n, pred_template_norm
                         )
                 
