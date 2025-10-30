@@ -452,18 +452,18 @@ class Trainer():
             raise NotImplementedError('only works for individual data')
         data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
         selection = data_name_list[self.opts.data_selection]
-        if 'mf' in selection:
-            src_dfn_info  = pickle.load(open(os.path.join(
-                self.mf_precompute_path, f"{src_mesh_id}_dfn_info.pkl"
-            ), 'rb'))
+        # if 'mf' in selection:
+        #     src_dfn_info  = pickle.load(open(os.path.join(
+        #         self.mf_precompute_path, f"{src_mesh_id}_dfn_info.pkl"
+        #     ), 'rb'))
             
-            # tmp=EasyDict({'vertices':src_v.squeeze(), 'faces':src_f.squeeze()})
-            # src_operators = get_mesh_operators(tmp)
-            src_operators = pickle.load(open(os.path.join(
-                self.mf_precompute_path, f"{src_mesh_id}_operators.pkl"
-            ), mode='rb'))
-            src_img = np.load(os.path.join(self.mf_precompute_path, f"{src_mesh_id}_img.npy"))
-            src_img = torch.from_numpy(src_img)[0]
+        #     # tmp=EasyDict({'vertices':src_v.squeeze(), 'faces':src_f.squeeze()})
+        #     # src_operators = get_mesh_operators(tmp)
+        #     src_operators = pickle.load(open(os.path.join(
+        #         self.mf_precompute_path, f"{src_mesh_id}_operators.pkl"
+        #     ), mode='rb'))
+        #     src_img = np.load(os.path.join(self.mf_precompute_path, f"{src_mesh_id}_img.npy"))
+        #     src_img = torch.from_numpy(src_img)[0]
             
         self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
         # self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
