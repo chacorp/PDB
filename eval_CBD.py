@@ -66,10 +66,10 @@ def Options():
     parser.add_argument("--data_selection",      type=int,   default=-1,
                         help='select dataset (-1: all, 0: voca, 1:biwi, 2: mf_SEN, 3: coma, 4: mf_ROM, 5: mf all)')
     
-    parser.add_argument("--in_type",      type=int,   default=1,
-                        help='input type (0: position, 1: position + normal')
-    parser.add_argument("--out_type",      type=int,   default=1,      
-                        help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
+    # parser.add_argument("--in_type",      type=int,   default=1,
+    #                     help='input type (0: position, 1: position + normal')
+    # parser.add_argument("--out_type",      type=int,   default=1,      
+    #                     help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     
     #### Choose a last layer activation for key_weight_model()
     parser.add_argument("--last_activation", default="relu", choices=["relu", "elu", "softmax", "softplus", "none"],
