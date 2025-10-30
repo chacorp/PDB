@@ -60,13 +60,13 @@ def Options():
     
     parser.add_argument("--log_dir",      type=str,   default="eval_CBD")
 
-    #parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
+    parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
     #parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
 
     parser.add_argument("--data_selection",      type=int,   default=-1,
                         help='select dataset (-1: all, 0: voca, 1:biwi, 2: mf_SEN, 3: coma, 4: mf_ROM, 5: mf all)')
     
-    parser.add_argument("--in_type",      type=int,   default=1,      
+    parser.add_argument("--in_type",      type=int,   default=1,
                         help='input type (0: position, 1: position + normal')
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
@@ -143,10 +143,14 @@ class Trainer():
         last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         if opts.version==0:
-            from models import NFS
-            from utils.nfr_utils import get_dfn_info
-            self.get_dfn_info = get_dfn_info
-            self.model = NFS(self.opts, None, print_param=True).to(self.device)
+            #from models import NFS
+            #from utils.nfr_utils import get_dfn_info
+            #self.get_dfn_info = get_dfn_info
+            
+            #self.model = NFS(self.opts, None, print_param=True).to(self.device)
+            from evaluation import Trainer
+            trainer = Trainer(opts)
+            self.model = trainer.model
             
         elif opts.version==1:
             self.model = CageNet(
@@ -448,8 +452,19 @@ class Trainer():
             raise NotImplementedError('only works for individual data')
         data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
         selection = data_name_list[self.opts.data_selection]
-        
-        
+        if 'mf' in selection:
+            src_dfn_info  = pickle.load(open(os.path.join(
+                self.mf_precompute_path, f"{src_mesh_id}_dfn_info.pkl"
+            ), 'rb'))
+            
+            # tmp=EasyDict({'vertices':src_v.squeeze(), 'faces':src_f.squeeze()})
+            # src_operators = get_mesh_operators(tmp)
+            src_operators = pickle.load(open(os.path.join(
+                self.mf_precompute_path, f"{src_mesh_id}_operators.pkl"
+            ), mode='rb'))
+            src_img = np.load(os.path.join(self.mf_precompute_path, f"{src_mesh_id}_img.npy"))
+            src_img = torch.from_numpy(src_img)[0]
+            
         self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
         # self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
         
@@ -1016,13 +1031,22 @@ if __name__ == "__main__":
     opts = argparse.Namespace(**opts_yaml)
         
     if opts.version==0:
-        opts.img_feat_dim=128
-        opts.design="new2"
+        opts.img_feat_dim=128        
         opts.feature_type="cents&norms"
+        opts.stage1 = True
         opts.scale_exp=1.0
-        opts.dec_type="disp"
         opts.ict_face_only=False
+        
+        opts.NFR=False ## willbe using reimplemented model
     
+        if opts.use_NFR:
+            opts.design="nfr"
+            opts.dec_type="jacob"
+        else:
+            opts.design="new2"
+            opts.dec_type="disp"
+            
+    print('loaded version:', opts.version)
     trainer = Trainer(opts)
     if opts.realtest:
         if opts.use_eval_data2:
