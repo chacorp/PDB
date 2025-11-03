@@ -1316,7 +1316,8 @@ class Trainer():
                         
                     ## random sampling and random permutation
                     N = batch.template.shape[1]
-                    use_perm = torch.rand(1) > 0.3
+                    #use_perm = torch.rand(1) > 0.3
+                    use_perm= False
                     if use_perm:
                         N_range = N-torch.randint(100, N//6, (1,)).item()
                         randperm_idx = torch.randperm(N)[:N_range]
