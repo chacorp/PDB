@@ -768,13 +768,13 @@ class Pipeline():
         ##########################################################################################################
         
         # write log
-        if SELF_RETARGET:
-            log_text = f"[Eval] "
-            for key, value in losses_val.items():
-                txt = f"{key}: {value:.6e} "
-                print(txt)
-                log_text += txt
-            self.logger.write(log_text+"\n")
+        #if SELF_RETARGET:
+        log_text = f"[Eval] "
+        for key, value in losses_val.items():
+            txt = f"{key}: {value:.6e} "
+            print(txt)
+            log_text += txt
+        self.logger.write(log_text+"\n")
         print('done!')
     
     def evaluate3(self):
@@ -1108,7 +1108,7 @@ if __name__ == "__main__":
     
     ## load model
     if opts.version==0:
-        from evaluation import Trainer        
+        from evaluation import Trainer
     else:
         from eval_CBD import Trainer
     trainer = Trainer(opts)

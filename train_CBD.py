@@ -121,6 +121,8 @@ def Options():
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
+    parser.add_argument("--use_data9",dest='use_data9', action='store_true')
+    parser.set_defaults(use_data9=False)
     parser.add_argument("--data_toggle",dest='data_toggle', action='store_true')
     parser.set_defaults(data_toggle=False)
 
