@@ -20,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 import trimesh
 import matplotlib.pyplot as plt
 
-from models import NFS
+from models.NFS import NFS
 
 import utils.nfr_utils as nfr_utils
 from utils.arg_util import YamlArgParser
@@ -30,17 +30,18 @@ from dataloader_mesh import (
 )
 
 from utils.ckpt_utils import *
-from utils import (
-    ICT_face_model, 
-    plot_image_array, 
+from utils.remesh_utils import ICT_face_model, calc_norm_torch
+from utils.matplotlib_rnd import (
+    plot_image_array,
+    vis_rig,
+    render_w_audio,
+    render_wo_audio
+)
+from utils.mesh_utils import (
     calc_cent,
     get_mesh_operators,
     get_jacobian_matrix,
     Renderer,
-    render_w_audio,
-    render_wo_audio,
-    calc_norm_torch,
-    vis_rig,
 )
 
 from utils.deformation_transfer import deformation_gradient
@@ -147,7 +148,7 @@ class NFR_helper():
     def model_loading(self, args, dfn_info):
         global_encoder_in_shape = 6 #if args.feature_type == 'cents&norms' else 12
         in_shape = 6
-        from models import latent_space
+        from models.NFR import latent_space
         model = latent_space(global_encoder_in_shape,
                             in_shape=in_shape,
                             out_shape=9,
@@ -271,20 +272,21 @@ class NFR_helper():
         Return:
             pred_outputs (torch.tensor): [B, V, 3]
         """
-        src_img = self.renderer.render_img(src_mesh).float().to(self.device)
-        src_img_feat = self.get_img_feat(src_img)[None]
-        
-        src_dfn_info = nfr_utils.get_dfn_info(src_mesh, map_location=self.device) # neurtral face
-        tgt_dfn_info = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
+        for _ in tqdm(range(1),desc='computing mesh operator'): # for checking time
+            src_img = self.renderer.render_img(src_mesh).float().to(self.device)
+            src_img_feat = self.get_img_feat(src_img)[None]
 
-        src_vertices = vertices.to(self.device).float() # vertex with expression
-        src_faces = torch.from_numpy(src_mesh.faces).to(self.device)
+            src_dfn_info = nfr_utils.get_dfn_info(src_mesh, map_location=self.device) # neurtral face
+            tgt_dfn_info = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
 
-        tgt_verts = torch.from_numpy(tgt_mesh.vertices).to(self.device).float()
-        tgt_faces = torch.from_numpy(tgt_mesh.faces).to(self.device)
-        tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
-        tgt_operators = self.get_mesh_operators(tgt_mesh)
-        
+            src_vertices = vertices.to(self.device).float() # vertex with expression
+            src_faces = torch.from_numpy(src_mesh.faces).to(self.device)
+
+            tgt_verts = torch.from_numpy(tgt_mesh.vertices).to(self.device).float()
+            tgt_faces = torch.from_numpy(tgt_mesh.faces).to(self.device)
+            tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
+            tgt_operators = self.get_mesh_operators(tgt_mesh)
+
         pred_outputs=[]
         pbar = tqdm(src_vertices)
         for src_v in pbar:

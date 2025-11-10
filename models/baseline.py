@@ -80,7 +80,7 @@ class CageNet(nn.Module):
             act='lrelu', nrm='none', #dropout=True, p=.2
         ).to(device)
         
-    def forward(self, source_mesh, deform_mesh, epoch=0, return_cage=False):
+    def forward(self, source_mesh, deform_mesh, mesh_data=0, epoch=0, return_cage=False):
         """
         Args:
             source_mesh (torch.tensor) [B, N, 3]: input source mesh
@@ -218,7 +218,8 @@ class CageNet(nn.Module):
             B, self.C, 3
         ) # [B, C, 3]
         
-        mvc = mean_value_coordinates_3D(tgt_neu_vert, target_cage_v[0][None], self.cage_f[None])
+        # mvc = mean_value_coordinates_3D(tgt_neu_vert, target_cage_v[0][None], self.cage_f[None])        
+        mvc = mvc_weights_torch(tgt_neu_vert[0], target_cage_v[0], self.cage_f) # [N, C]
         
         pred_source = mvc @ target_cage_v ## [N, C] @ [B, C, 3] -> [B, N, 3] #### not needed?
         pred_deformed = mvc @ (target_cage_v+deform_cage_v) ## [N, C] @ [B, C, 3] -> [B, N, 3]

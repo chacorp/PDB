@@ -39,14 +39,13 @@ from dataloader_CBD import (
 from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
 from utils.exp_utils import plateau_hat_points
-from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 
 from models.baseline import CageNet
 from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinate, 
-    NeuralGeneralizedBarycentricCoordinate5,
-    NeuralGeneralizedBarycentricCoordinate8,
-    NeuralGeneralizedBarycentricCoordinate55
+    NeuralGeneralizedBarycentricCoordinate,
+    NeuralGeneralizedBarycentricCoordinate5, # (not used)
+    NeuralGeneralizedBarycentricCoordinate8, # (not used)
+    NeuralGeneralizedBarycentricCoordinate55 # (not used)
 )
 
 import torch.multiprocessing as mp
@@ -61,15 +60,9 @@ def Options():
     parser.add_argument("--log_dir",      type=str,   default="eval_CBD")
 
     parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
-    #parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
-
+    
     parser.add_argument("--data_selection",      type=int,   default=-1,
                         help='select dataset (-1: all, 0: voca, 1:biwi, 2: mf_SEN, 3: coma, 4: mf_ROM, 5: mf all)')
-    
-    # parser.add_argument("--in_type",      type=int,   default=1,
-    #                     help='input type (0: position, 1: position + normal')
-    # parser.add_argument("--out_type",      type=int,   default=1,      
-    #                     help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     
     #### Choose a last layer activation for key_weight_model()
     parser.add_argument("--last_activation", default="relu", choices=["relu", "elu", "softmax", "softplus", "none"],
@@ -120,6 +113,8 @@ def Options():
     parser.add_argument("--save_gt",dest='save_gt', action='store_true')
     parser.set_defaults(save_gt=False)
     
+    parser.add_argument("--use_NFR",dest='use_NFR', action='store_true')
+    parser.set_defaults(use_NFR=False)
     
     parser.add_argument("--optim_cage",dest='optim_cage', action='store_true')
     parser.set_defaults(optim_cage=False)
@@ -144,9 +139,10 @@ class Trainer():
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         if opts.version==0:
             #from models import NFS
-            #from utils.nfr_utils import get_dfn_info
-            #self.get_dfn_info = get_dfn_info
-            
+            from utils.nfr_utils import get_dfn_info
+            from utils.mesh_utils import get_mesh_operators
+            self.get_dfn_info = get_dfn_info
+            self.get_mesh_operators = get_mesh_operators
             #self.model = NFS(self.opts, None, print_param=True).to(self.device)
             from evaluation import Trainer
             trainer = Trainer(opts)
@@ -228,10 +224,12 @@ class Trainer():
             raise NotImplementedError('No matching model version')
         
         # load weight
-        self.load_weight()
+        if opts.version!=0:
+            self.load_weight()
     
     def load_weight(self):
         if self.opts.ckpt:
+            print(self.opts.ckpt)
             if self.opts.continue_ckpt:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
             else:
@@ -273,18 +271,6 @@ class Trainer():
             use_mf_ROM=selection[4],
         )
         
-        # self.neighbor_maps = {
-        #     i: igl.adjacency_list(mesh_info['face'])
-        #     for i, mesh_info in enumerate([
-        #         self.dataset.voca_mesh,
-        #         self.dataset.biwi_mesh,
-        #         self.dataset.mf_SEN_mesh,
-        #     ])
-        # }
-        # self.neighbor_pad_mask = {}
-        # for i in self.neighbor_maps.keys():
-        #     # (idx_pad, mask)
-        #     self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device)
 
         data_sampler = CBDdataSampler(
             self.dataset.len_list, 
@@ -543,25 +529,36 @@ class Trainer():
                         
                         ## common routine
                         dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                        src_operators = self.get_mesh_operators(src_mesh)
                         img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                         img_feat = self.model.get_img_feat(img)
-                        vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                        vert_feat = self.model.get_local_feature(
+                            batch.template[0][None], batch.faces[0], img_feat, at='verts'
+                        ).float()
+                        tri_feat = self.model.get_local_feature(
+                            batch.template[0][None], batch.faces[0], img_feat, at='faces'
+                        ).float()
                             
                         pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
-                        pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)
+                        pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None
                     else:
                         if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
                             src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                     
                             ## common routine
                             dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
-                            
+                            src_operators = self.get_mesh_operators(src_mesh)
                             img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                             img_feat = self.model.get_img_feat(img)
-                            vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            vert_feat = self.model.get_local_feature(
+                                batch.template[0][None], batch.faces[0], img_feat, at='verts'
+                            ).float()
+                            tri_feat = self.model.get_local_feature(
+                                batch.template[0][None], batch.faces[0], img_feat, at='faces'
+                            ).float()
                             
                             pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
-                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)
+                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None
                             
                     # vert_feat_exp = []
                     # for gt_v in batch.vertices:
@@ -574,19 +571,22 @@ class Trainer():
                         pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
                     
                         inputs = (
-                            vert_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
-                            None, batch.template[0][None], batch.faces[0], None
+                            tri_feat if self.opts.dec_type=='jacob' else vert_feat,
+                            pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                            None, batch.template[0][None], batch.faces[0], src_operators
                         )
-                        pred_vertices, _ = self.model.decode(inputs, batch_process=True)
+                        pred_vertices, _ = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
                 ##############################################################################
                 
                 else:
                     #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
                     if self.opts.version==1:
+                        # NEURAL CAGE
                         pred_vertices, _ = trainer.model.retarget(
                             batch.template, batch.vertices, batch.template
                         )
                     else:
+                        # Ours
                         pred_vertices, _, _, _, _, _, _ = self.model(
                             batch.template, batch.vertices, 
                             batch.template_normal, batch.vertices_normal,
@@ -787,27 +787,39 @@ class Trainer():
                         
                         ## common routine
                         dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                        src_operators = self.get_mesh_operators(src_mesh)
                         img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                         img_feat = self.model.get_img_feat(img)
-                        vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
-                            
+                        vert_feat = self.model.get_local_feature(
+                            batch.template[0][None], batch.faces[0], img_feat, at='verts'
+                        ).float()
+                        tri_feat = self.model.get_local_feature(
+                            batch.template[0][None], batch.faces[0], img_feat, at='faces'
+                        ).float()
+                        
                         with torch.no_grad():
                             pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
-                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+                            pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None # [1, V, Seg]
                     else:
                         if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
                             src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                     
                             ## common routine
                             dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
-                            
+                            src_operators = self.get_mesh_operators(src_mesh)
                             img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                             img_feat = self.model.get_img_feat(img)
-                            vert_feat = self.model.get_local_feature(batch.template[0][None], batch.faces[0], img_feat).float()
+                            vert_feat = self.model.get_local_feature(
+                                batch.template[0][None], batch.faces[0], img_feat, at='verts'
+                            ).float()
+                            tri_feat = self.model.get_local_feature(
+                                batch.template[0][None], batch.faces[0], img_feat, at='faces'
+                            ).float()
                             
                             with torch.no_grad():
                                 pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
-                                pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
+                                
+                                pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None # [1, V, Seg]
 
                     vert_feat_exp = []
                     for gt_v in batch.vertices:
@@ -817,12 +829,12 @@ class Trainer():
 
                     with torch.no_grad():
                         pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
-                        
                         inputs = (
-                            vert_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
-                            None, batch.template[0][None], batch.faces[0], None
+                            tri_feat if self.opts.dec_type=="jacob" else vert_feat, 
+                            pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                            None, batch.template[0][None], batch.faces[0], src_operators
                         )
-                        pred_vertices, _ = self.model.decode(inputs, batch_process=True)
+                        pred_vertices, _ = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
 
                     # pred_vertices = self.model.inference(
                     #     gt_vertices=batch.vertices, 
@@ -1031,6 +1043,7 @@ if __name__ == "__main__":
     opts = argparse.Namespace(**opts_yaml)
         
     if opts.version==0:
+        # extras
         opts.img_feat_dim=128        
         opts.feature_type="cents&norms"
         opts.stage1 = True
