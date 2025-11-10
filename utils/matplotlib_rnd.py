@@ -103,12 +103,6 @@ def softmax(x):
     exp_x = np.exp(x)
     return exp_x / exp_x.sum(-1)[:,None]
     
-# def calc_face_norm(fv):
-#     span = fv[ :, 1:, :] - fv[ :, :1, :]
-#     norm = np.cross(span[:, 0, :], span[:, 1, :])
-#     norm = norm / (np.linalg.norm(norm, axis=-1)[ :, np.newaxis] + 1e-12)
-#     return norm
-
 def calc_face_norm(vertices, faces, mode='faces'):
     """
     Args
@@ -310,6 +304,7 @@ def plot_image_array(Vs,
         model = translate(0, 0, -5) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
         proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
         MVP   = proj @ model # view is identity
+        V_mu = np.median(V, axis=0)
         
         # quad to triangle    
         VF_tri = transform_vertices(V, MVP, F, norm)
