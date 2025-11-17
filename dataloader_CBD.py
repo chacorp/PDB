@@ -407,7 +407,11 @@ class EvalDataset(data.Dataset):
         template_np = self.mf_ROM_mesh[id_name]
         template = torch.tensor(template_np).float()
         
+        # vertices_np = np.load(file_path)
+        # vertices = torch.tensor(vertices_np).float()
         vertices_np = np.load(file_path)
+        R, t, _ = procrustes_LDM(vertices_np, template_np)
+        vertices_np = vertices_np @ R.T + t
         vertices = torch.tensor(vertices_np).float()
         
         # faces_np = self.mf_ROM_std['new_f']
@@ -480,7 +484,7 @@ class CBDDataset(data.Dataset):
             use_mf_SEN=True
             use_mf_ROM=True
             use_ict=True
-            use_ict_narrow=True
+            use_ict_narrow=False
         elif self.opts.use_data3:
             use_voca=True
             use_coma=True
@@ -489,14 +493,23 @@ class CBDDataset(data.Dataset):
             use_mf_ROM=True
             use_ict=True
             use_ict_narrow=True
+        elif self.opts.use_data9:
+            use_voca=False
+            use_coma=False
+            use_biwi=False
+            use_mf_SEN=False
+            use_mf_ROM=False
+            use_ict=True
+            use_ict_narrow=True
         else:
-            use_voca=True
-            use_coma=True
-            use_biwi=True
-            use_mf_SEN=True
-            use_mf_ROM=True
-            use_ict=False
-            use_ict_narrow=False
+            pass
+#             use_voca=True
+#             use_coma=True
+#             use_biwi=True
+#             use_mf_SEN=True
+#             use_mf_ROM=True
+#             use_ict=False
+#             use_ict_narrow=False
             
         self.use_voca=use_voca
         self.use_coma=use_coma
@@ -911,7 +924,7 @@ class CBDDataset(data.Dataset):
             self.WS = self.opts.window_size
             
     def get_ict_params(self):
-        iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
+        iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:111]
         # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
         # if self.mode != 'train':
         #     self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
@@ -944,8 +957,20 @@ class CBDDataset(data.Dataset):
         
         if index >= self.ict_narrow_exp_len:
             index = index % self.ict_narrow_exp_len
-        exp_coeff = self.expression_vecs[index] 
-        exp_coeff = exp_coeff * self.scale
+        # exp_coeff = self.expression_vecs[index] 
+        # exp_coeff = exp_coeff * self.scale
+        
+        if self.mode=='train':
+            if np.random.random(1) > 0.5:
+                exp_coeff = np.random.random(53)
+            else:
+                #exp_coeff = np.random.randint(2, size=(1, 53))
+                exp_coeff = np.where(np.random.random(53) > 0.9, 1, 0)
+        else:
+            exp_coeff = self.expression_vecs[index]
+            
+        # exp_coeff = self.expression_vecs[index] 
+        # exp_coeff = exp_coeff * self.scale
 
         # self.ict_face_model_narrow=ICT_face_model(narrow_only=True)
         # self.region_num
@@ -986,8 +1011,20 @@ class CBDDataset(data.Dataset):
         
         if index >= self.ict_exp_len:
             index = index % self.ict_exp_len
-        exp_coeff = self.expression_vecs[index] 
-        exp_coeff = exp_coeff * self.scale
+        # exp_coeff = self.expression_vecs[index] 
+        # exp_coeff = exp_coeff * self.scale
+
+        if self.mode=='train':
+            if np.random.random(1) > 0.5:
+                exp_coeff = np.random.random(53)
+            else:
+                #exp_coeff = np.random.randint(2, size=(1, 53))
+                exp_coeff = np.where(np.random.random(53) > 0.9, 1, 0)
+        else:
+            exp_coeff = self.expression_vecs[index]
+            
+        # exp_coeff = self.expression_vecs[index] 
+        # exp_coeff = exp_coeff * self.scale
         
         faces = self.ict_face_model.faces
         
