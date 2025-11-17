@@ -46,10 +46,9 @@ from utils.mesh_utils import calc_norm_torch
 
 from models.baseline import CageNet
 from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinate, 
     NeuralGeneralizedBarycentricCoordinate5,
-    NeuralGeneralizedBarycentricCoordinate8,
-    NeuralGeneralizedBarycentricCoordinate55,
+    # NeuralGeneralizedBarycentricCoordinate8,
+    # NeuralGeneralizedBarycentricCoordinate55,
 )
 
 
@@ -139,43 +138,7 @@ def Options():
     return args
 
 # --- Loss Functions ---
-def distance_energy(
-        mesh_vertices,
-        cage_vertices,
-        tau=0.02
-    ):
-    """
-    Args:
-        mesh_vertices: (B, N, 3)
-        cage_vertices: (B, C, 3)
-    Returns:
-        loss
-    """
-    _tau = 1/tau
-    _,C,_=cage_vertices.shape
-    
-    mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
-    cage_vertices_expand = cage_vertices[:,None]
-    
-    mesh_vertices_dir = mesh_vertices_expand - cage_vertices_expand
-    mesh_vertices_dist = torch.linalg.norm(mesh_vertices_dir, dim=-1)
-    
-    # flip
-    mesh_vertices_dist = mesh_vertices_dist / mesh_vertices_dist.max(1).values.unsqueeze(-2)
-    
-    mesh_vertices_dist = 1 - mesh_vertices_dist
-    
-    dist_energy = torch.nn.functional.softmax(mesh_vertices_dist * _tau, dim=1)
-
-    return dist_energy
-
-def distance_regularization_loss(
-        mesh_vertices,
-        cage_vertices,
-        coordinate_weight,
-        tau=0.02,
-        return_e=False
-    ):
+def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
     """
     Args:
         mesh_vertices: (B, N, 3)
@@ -184,14 +147,14 @@ def distance_regularization_loss(
     Returns:
         loss
     """
-    dist_energy = distance_energy(mesh_vertices, cage_vertices, tau=tau)
-    loss = torch.nn.functional.cross_entropy(
-        dist_energy, coordinate_weight.detach()
-    )
+    _,C,_=cage_vertices.shape
     
-    if return_e:
-        return loss, dist_energy
-    return loss
+    mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
+    cage_vertices_expand = cage_vertices[:,None]
+    
+    mesh_vertices_dist = mesh_vertices_expand - cage_vertices_expand
+    
+    return (mesh_vertices_dist * coordinate_weight.unsqueeze(-1) ).mean()
     
 def mvc_loss(mvc_weights):
     """ penalize MVC with negative values """
@@ -1371,8 +1334,8 @@ class Trainer():
                         
                     ## random sampling and random permutation
                     N = batch.template.shape[1]
-                    #use_perm = torch.rand(1) > 0.3
-                    use_perm= False
+                    use_perm = torch.rand(1) > 0.3
+                    # use_perm= False
                     if use_perm:
                         N_range = N-torch.randint(100, N//6, (1,)).item()
                         randperm_idx = torch.randperm(N)[:N_range]

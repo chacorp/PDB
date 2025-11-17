@@ -42,10 +42,10 @@ from utils.exp_utils import plateau_hat_points
 
 from models.baseline import CageNet
 from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinate,
-    NeuralGeneralizedBarycentricCoordinate5, # (not used)
-    NeuralGeneralizedBarycentricCoordinate8, # (not used)
-    NeuralGeneralizedBarycentricCoordinate55 # (not used)
+#     NeuralGeneralizedBarycentricCoordinate,
+    NeuralGeneralizedBarycentricCoordinate5, 
+#     NeuralGeneralizedBarycentricCoordinate8, # (not used)
+#     NeuralGeneralizedBarycentricCoordinate55 # (not used)
 )
 
 import torch.multiprocessing as mp
