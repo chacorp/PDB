@@ -59,11 +59,11 @@ def Options():
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     
-    parser.add_argument("--save_interval",type=int,   default=10,     help='save interval epoch')
+    parser.add_argument("--save_interval",type=int,   default=25,     help='save interval epoch')
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
-    parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
-    parser.add_argument("--sc_step",      type=int,   default=10,     help='scheduler step')
+    parser.add_argument("--lr",           type=float, default=0.0001, help='learning rate')
+    parser.add_argument("--sc_step",      type=int,   default=100,    help='scheduler step')
     
     parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
     parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
@@ -78,7 +78,7 @@ def Options():
     parser.set_defaults(use_decimate=False)
 
     #### Choose a last layer activation for key_weight_model()
-    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none"],
+    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"],
         help="Choose a last layer activation for NGBC.key_weight_model()"
     )
     
@@ -145,7 +145,7 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
 
-        last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
+        last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         
         self.model = NeuralBarycentricCoordinatev2(
@@ -159,6 +159,7 @@ class Trainer():
             use_softmax=last_act_list[2],
             use_softplus=last_act_list[3],
             no_activation=last_act_list[4],
+            use_sqrelu=last_act_list[5],
             use_least_N_on_V=False,
             is_train=True,
             use_pou = ~self.opts.no_pou,

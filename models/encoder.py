@@ -598,7 +598,8 @@ class LinearEncoder(nn.Module):
     def __init__(self, 
                  in_dim=3, out_dim=3, hid_dim=128, num_layers=4, 
                  mode='rot', use_residual=False, out_type='vertices',
-                 use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
+                 use_softmax=False, use_relu=False, use_softplus=False, 
+                 use_elu=False, use_sqrelu=False,
                  use_least_N=False, use_least_N_on_V=False,no_activation=False,
                  use_gate_layer=False,
                  use_pou=False,
@@ -615,6 +616,7 @@ class LinearEncoder(nn.Module):
         
         self.use_softmax=use_softmax
         self.use_relu=use_relu
+        self.use_sqrelu=use_sqrelu
         self.use_elu=use_elu
         self.use_softplus=use_softplus
         self.use_least_N = use_least_N
@@ -703,6 +705,10 @@ class LinearEncoder(nn.Module):
                 out = F.relu(out)
                 
                 #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
+            if self.use_sqrelu:
+                out = F.normalize(out, dim=-2) # normalize for each column (key points)
+                out = F.relu(out)**2
                 
             if self.use_softplus:
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)

@@ -39,6 +39,7 @@ class NeuralBarycentricCoordinatev2(nn.Module):
                  use_relu=True,
                  use_elu=False,
                  use_softplus=False,
+                 use_sqrelu=False,
                  use_least_N=False,
                  use_least_N_on_V=False,
                  no_activation=False,
@@ -134,6 +135,7 @@ class NeuralBarycentricCoordinatev2(nn.Module):
             use_softplus=use_softplus,
             use_least_N=use_least_N,
             use_least_N_on_V=use_least_N_on_V,
+            use_sqrelu=use_sqrelu,
             no_activation=no_activation,
             use_pou=use_pou,
         ).to(device)
