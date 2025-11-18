@@ -270,10 +270,10 @@ class NeuralBarycentricCoordinatev2(nn.Module):
             def_in = torch.cat([def_in, src_hat_mask], dim=-1)
     
         exp_z = self.exp_z_model(def_in) # (B, 1, L)
-        key_d = self.key_d_model(exp_z) # (B, (3+3+3)K)
+        key_all = self.key_d_model(exp_z) # (B, (3+3+3)K)
 
         # position, normal, displacement
-        key_s, key_n, key_d = self.reshape_key_d(key_d, B)
+        key_s, key_n, key_d = self.reshape_key_d(key_all, B)
         
         pred_disp = torch.einsum('bnc,bci->bni', key_weight, key_d)        
         pred_deformed = pred_disp + tgt_neu_vert
