@@ -307,10 +307,10 @@ class Trainer():
             "recon-def": self.opts.lambda_vert,
             "recon-neu": self.opts.lambda_vert,
             "exp-z": self.opts.lambda_vert * 0.5,
-            "exp-v": self.opts.lambda_vert,
-            "shape": self.opts.lambda_vert,
-            "lag": self.opts.lambda_vert,
-            "dist": self.opts.lambda_vert,
+            "exp-v": 1.0,
+            "shape": 1.0,
+            "lag": 1.0,
+            "dist": 1.0,
             # "pou": self.opts.lambda_vert,
             # symm 
         }
@@ -338,12 +338,11 @@ class Trainer():
             running_losses = {
                 "recon-def": 0.0,
                 "recon-neu": 0.0,
-                "exp-z": 0.0,
-                "exp-v": 0.0,
+                "exp-z": 0.0, # (not used)
+                "exp-v": 0.0, # (not used)
                 "shape": 0.0,
                 "lag": 0.0,
-                "dist": 0.0,
-                "total": 0.0
+                "dist": 0.0
             }
             if self.opts.pou_loss:
                 running_losses['pou']=0.0
@@ -354,6 +353,9 @@ class Trainer():
                 running_losses['norm-neu']=0.0
             if self.opts.use_cage_normal_loss:
                 running_losses['norm-cage']=0.0
+                
+            running_losses['total']=0.0
+
             
             self.model.train()
             train_counter = 0
@@ -376,7 +378,7 @@ class Trainer():
                     
                     # use_perm = False
                     if use_perm:
-                        N_range = N-torch.randint(100, N//6, (1,)).item()
+                        N_range = N-torch.randint(100, N//8, (1,)).item()
                         randperm_idx = torch.randperm(N)[:N_range]
                     else:
                         randperm_idx = torch.arange(N)
@@ -652,7 +654,7 @@ class Trainer():
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
                     pred_vertices, recon_vertices, recon_source, exp_z, \
-                    pred_source, _, _, _, _ = self.model(
+                    pred_source, _, _, _, _, _, _ = self.model(
                         batch.template, batch.vertices, 
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
