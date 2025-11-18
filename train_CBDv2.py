@@ -59,11 +59,11 @@ def Options():
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     
-    parser.add_argument("--save_interval",type=int,   default=10,     help='save interval epoch')
+    parser.add_argument("--save_interval",type=int,   default=25,     help='save interval epoch')
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
-    parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
-    parser.add_argument("--sc_step",      type=int,   default=10,     help='scheduler step')
+    parser.add_argument("--lr",           type=float, default=0.0001, help='learning rate')
+    parser.add_argument("--sc_step",      type=int,   default=100,    help='scheduler step')
     
     parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
     parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
@@ -78,7 +78,7 @@ def Options():
     parser.set_defaults(use_decimate=False)
 
     #### Choose a last layer activation for key_weight_model()
-    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none"],
+    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"],
         help="Choose a last layer activation for NGBC.key_weight_model()"
     )
     
@@ -97,6 +97,9 @@ def Options():
     parser.set_defaults(use_laplacian=False)
     parser.add_argument("--use_normal_loss",dest='use_normal_loss', action='store_true')
     parser.set_defaults(use_normal_loss=False)
+    
+    parser.add_argument("--use_cage_normal_loss",dest='use_cage_normal_loss', action='store_true')
+    parser.set_defaults(use_cage_normal_loss=False)
 
     
     parser.add_argument("--no_t_mask",dest='no_t_mask', action='store_true')
@@ -145,7 +148,7 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
 
-        last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
+        last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         
         self.model = NeuralBarycentricCoordinatev2(
@@ -159,6 +162,7 @@ class Trainer():
             use_softmax=last_act_list[2],
             use_softplus=last_act_list[3],
             no_activation=last_act_list[4],
+            use_sqrelu=last_act_list[5],
             use_least_N_on_V=False,
             is_train=True,
             use_pou = ~self.opts.no_pou,
@@ -317,6 +321,9 @@ class Trainer():
         if self.opts.use_normal_loss:
             self.loss_lambda['norm-def']=0.1
             self.loss_lambda['norm-neu']=0.1
+            
+        if self.opts.use_cage_normal_loss:
+            self.loss_lambda['norm-cage']=1
         
         check_usage = False
         
@@ -345,6 +352,8 @@ class Trainer():
             if self.opts.use_normal_loss:
                 running_losses['norm-def']=0.0
                 running_losses['norm-neu']=0.0
+            if self.opts.use_cage_normal_loss:
+                running_losses['norm-cage']=0.0
             
             self.model.train()
             train_counter = 0
@@ -357,14 +366,15 @@ class Trainer():
                 self.optimizer.zero_grad()
                 
                 with torch.no_grad():
-                    ## sampling points with probability
+                    ### sampling points with probability
                     # margin = 0.8
                     # _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
-                        
-                    ## random sampling and random permutation
+                    
+                    ### random sampling and random permutation
                     N = batch.template.shape[1]
                     use_perm = torch.rand(1) > 0.3
-                    # use_perm= False
+                    
+                    # use_perm = False
                     if use_perm:
                         N_range = N-torch.randint(100, N//6, (1,)).item()
                         randperm_idx = torch.randperm(N)[:N_range]
@@ -377,16 +387,17 @@ class Trainer():
                     batch_template_n = batch.template_normal[:, randperm_idx]
                     batch_vertices_v = batch.vertices[:, randperm_idx]
                     batch_vertices_n = batch.vertices_normal[:, randperm_idx]
-
-                    ## masking face region using hat function (min x1 ~ max x2)
+                    
+                    ### masking face region using hat function (min x1 ~ max x2)
                     # t_mask = plateau_hat_points(batch_template_v) + 1.0
                     
                 # model prediction -------------------------------------------------------------------------------
-                ## B: number of batch, Nv : number of vertices, Nc: number of control vertices
-                ## weight prediction: (B, Nv, Nc)
-                ## key_d prediction:  (B, Nc, 3+3) [deformed cage]
+                ### B: number of batch, Nv : number of vertices, Nc: number of control vertices
+                ### weight prediction: (B, Nv, Nc)
+                ### key_d prediction:  (B, Nc, 3+3) [deformed cage]
                 pred_vertices, recon_vertices, recon_source, exp_z, \
-                pred_source, t_mask, pred_key_weight, pred_cage_w, pred_cage_s = self.model(
+                pred_source, t_mask, pred_key_weight, \
+                pred_cage_w, pred_cage_s, pred_cage_n, pred_cage_d = self.model(
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
@@ -476,6 +487,12 @@ class Trainer():
                     # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
                     # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
                 
+                if self.opts.use_cage_normal_loss:
+                    cage_vertices_n = torch.einsum('bnc,bci->bni', pred_key_weight, pred_cage_n)
+                    loss_dict['norm-cage'] = F.mse_loss(
+                            batch_vertices_n, cage_vertices_n
+                        )
+                    
                 if not use_perm and self.opts.use_normal_loss:
                     pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
                     
@@ -640,6 +657,8 @@ class Trainer():
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
                     )
+                    ## Use only displacement
+                    pred_vertices = pred_vertices - pred_source + batch.template
                 # ------------------------------------------------------------------------------------------------
                 
                 
