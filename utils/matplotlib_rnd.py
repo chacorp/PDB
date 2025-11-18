@@ -247,6 +247,9 @@ def plot_image_overlap(Vs, Fs, size=6, xrot=0,yrot=0,zrot=0, dist=-6, norm=False
     plt.show()
     plt.close()
 
+def _homogeneous(V):
+    return np.concatenate([V, np.ones((V.shape[0], 1))], axis=1)
+
 def plot_image_array(Vs, 
                      Fs, 
                      rot_list=None, 
@@ -303,11 +306,16 @@ def plot_image_array(Vs,
         # proj  = perspective(55, 1, 1, 100)
         model = translate(0, 0, -5) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
         proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
-        MVP   = proj @ model # view is identity
+        #MVP   = proj @ model # view is identity
         V_mu = np.median(V, axis=0)
         
+        V_h_mu = _homogeneous(V - V_mu)
+        
         # quad to triangle    
-        VF_tri = transform_vertices(V, MVP, F, norm)
+        V_model = (V_h_mu) @ model.T + V_mu
+        V_proj = V_model @ proj.T
+        V_proj  = V_proj[:, :3] / V_proj[:, 3:4]  # (N,3), -1~1
+        #VF_tri = transform_vertices(V, MVP, F, norm)
 
         T = VF_tri[:, :, :2]
         Z = -VF_tri[:, :, 2].mean(axis=1)
