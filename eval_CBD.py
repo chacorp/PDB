@@ -42,10 +42,10 @@ from utils.exp_utils import plateau_hat_points
 
 from models.baseline import CageNet
 from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinate,
-    NeuralGeneralizedBarycentricCoordinate5, # (not used)
-    NeuralGeneralizedBarycentricCoordinate8, # (not used)
-    NeuralGeneralizedBarycentricCoordinate55 # (not used)
+#     NeuralGeneralizedBarycentricCoordinate,
+    NeuralGeneralizedBarycentricCoordinate5, 
+#     NeuralGeneralizedBarycentricCoordinate8, # (not used)
+#     NeuralGeneralizedBarycentricCoordinate55 # (not used)
 )
 
 import torch.multiprocessing as mp
@@ -91,10 +91,16 @@ def Options():
     parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
     parser.set_defaults(use_scheduler=False)
     
+    parser.add_argument("--use_data0",dest='use_data0', action='store_true')
+    parser.set_defaults(use_data0=False)
+    parser.add_argument("--use_data1",dest='use_data1', action='store_true')
+    parser.set_defaults(use_data1=False)
     parser.add_argument("--use_data2",dest='use_data2', action='store_true')
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
+    parser.add_argument("--use_data9",dest='use_data9', action='store_true')
+    parser.set_defaults(use_data9=False)
 
     parser.add_argument("--use_eval_data2",dest='use_eval_data2', action='store_true')
     parser.set_defaults(use_eval_data2=False)
@@ -108,6 +114,9 @@ def Options():
     parser.add_argument("--use_t_mask",dest='use_t_mask', action='store_true')
     parser.set_defaults(use_t_mask=False)
     
+    parser.add_argument("--laplacian",dest='laplacian', action='store_true')
+    parser.set_defaults(laplacian=False)
+    
     parser.add_argument("--save_vert",dest='save_vert', action='store_true')
     parser.set_defaults(save_vert=False)
     parser.add_argument("--save_gt",dest='save_gt', action='store_true')
@@ -115,6 +124,9 @@ def Options():
     
     parser.add_argument("--use_NFR",dest='use_NFR', action='store_true')
     parser.set_defaults(use_NFR=False)
+    
+    parser.add_argument("--NFR",dest='NFR', action='store_true')
+    parser.set_defaults(NFR=False)
     
     parser.add_argument("--optim_cage",dest='optim_cage', action='store_true')
     parser.set_defaults(optim_cage=False)
@@ -127,6 +139,34 @@ def Options():
     return args
 
 # --- Loss Functions ---
+def gaussian_kernel1d(kernel_size=5, sigma=1.0):
+    x = torch.arange(kernel_size).float() - (kernel_size - 1) / 2
+    kernel = torch.exp(-0.5 * (x / sigma) ** 2)
+    kernel = kernel / kernel.sum()
+    return kernel
+
+def apply_gaussian_filter(tensor, kernel_size=5, sigma=1.0):
+    """Applies a Gaussian filter to the tensor.
+    Args:
+        tensor (torch.tensor): input tensor
+        kernel_size (int): size of the kernel
+        sigma (float): sigma value for gaussian filter
+    Returns:
+        filtered_tensor
+    """
+    kernel_size = int(kernel_size)
+
+    # Generate the 1D Gaussian kernel
+    kernel = gaussian_kernel1d(kernel_size, sigma)
+    kernel = kernel.reshape(1, 1, -1).to(tensor.device) # (out_channels, in_channels, kernel_size)
+    kernel = kernel.repeat(tensor.size(1), 1, 1) # [128, 1, kernel_size]
+    tensor = tensor.transpose(0, 1).unsqueeze(0) # [1, 128, T]
+
+    filtered_tensor = F.conv1d(tensor, kernel, padding=(kernel_size // 2), groups=tensor.size(1))
+
+    # Transpose back to original shape
+    filtered_tensor = filtered_tensor.squeeze(0).transpose(0, 1)
+    return filtered_tensor
 
 class Trainer():
     def __init__(self, opts):
@@ -143,10 +183,18 @@ class Trainer():
             from utils.mesh_utils import get_mesh_operators
             self.get_dfn_info = get_dfn_info
             self.get_mesh_operators = get_mesh_operators
-            #self.model = NFS(self.opts, None, print_param=True).to(self.device)
-            from evaluation import Trainer
-            trainer = Trainer(opts)
-            self.model = trainer.model
+            
+            if opts.NFR:
+                from evaluation import Trainer
+                trainer = Trainer(opts)
+                self.model = trainer.model
+            else:
+                from models.NFS import NFS
+                self.model = NFS(self.opts, None, print_param=True).to(self.device)
+#             if opts.NFR:
+#                 from evaluation import Trainer
+#             else:
+#                 from eval_CBD import Trainer
             
         elif opts.version==1:
             self.model = CageNet(
@@ -473,6 +521,9 @@ class Trainer():
         if self.opts.use_t_mask:
             self.opts.log_dir = self.opts.log_dir + '-masked'
             
+        if self.opts.laplacian:
+            self.opts.log_dir = self.opts.log_dir + '-laplacian'
+            
         os.makedirs(self.opts.log_dir, exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
         
@@ -503,7 +554,10 @@ class Trainer():
         len_data = len(self.dataloader)
         denom = 1 / len_data
         
-        self.model.eval()
+        if self.opts.NFR:
+            self.model.model.eval()
+        else:
+            self.model.eval()
         
         losses_val = {
             "MSE": 0.0
@@ -512,39 +566,38 @@ class Trainer():
         if self.opts.use_t_mask:
             losses_val["MSE-in"] = 0.0
             losses_val["MSE-out"] = 0.0
+        if self.opts.laplacian:
+            losses_val["Lap"] = 0.0
             
         mesh_data = self.dataset.data_name
                 
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
-            
+            if index == 0:
+                inner_mask = plateau_hat_points(batch.template)
+                mmm = batch.template.shape[0] / torch.count_nonzero(inner_mask)
+                print('multiply', mmm)
+                
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
                 
-                ### only for NFS #############################################################
                 if self.opts.version==0:
-                    ## only onces!!!
-                    if index==0:
-                        src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-                        
-                        ## common routine
-                        dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
-                        src_operators = self.get_mesh_operators(src_mesh)
-                        img = self.model.renderer.render_img(src_mesh).float().to(self.device)
-                        img_feat = self.model.get_img_feat(img)
-                        vert_feat = self.model.get_local_feature(
-                            batch.template[0][None], batch.faces[0], img_feat, at='verts'
-                        ).float()
-                        tri_feat = self.model.get_local_feature(
-                            batch.template[0][None], batch.faces[0], img_feat, at='faces'
-                        ).float()
-                            
-                        pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
-                        pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None
-                    else:
-                        if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
-                            src_mesh = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-                    
+                    ### only for NFS #############################################################
+                    if self.opts.NFR==False:
+                        ## only onces!!!
+                        if index==0:
+                            src_mesh = trimesh.Trimesh(
+                                vertices=batch.template[0].cpu().numpy(),
+                                faces=batch.faces[0].cpu().numpy()
+                            )
+                            if self.opts.laplacian:
+                                tmp_L = igl.cotmatrix(src_mesh.vertices, src_mesh.faces)
+                                src_L = torch.sparse_csc_tensor(
+                                    torch.LongTensor(tmp_L.indptr).to(device),
+                                    torch.LongTensor(tmp_L.indices).to(device),
+                                    torch.FloatTensor(tmp_L.data).to(device),
+                                    tmp_L.shape
+                                )
                             ## common routine
                             dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
                             src_operators = self.get_mesh_operators(src_mesh)
@@ -556,29 +609,142 @@ class Trainer():
                             tri_feat = self.model.get_local_feature(
                                 batch.template[0][None], batch.faces[0], img_feat, at='faces'
                             ).float()
-                            
+
                             pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
                             pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None
-                            
-                    # vert_feat_exp = []
-                    # for gt_v in batch.vertices:
-                    #     _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
-                    #     vert_feat_exp.append(_tmp_)
-                    # vert_feat_exp = torch.vstack(vert_feat_exp)
-                    vert_feat_exp =  self.model.get_local_feature(batch.vertices, batch.faces[0], img_feat).float()
+                        else:
+                            if (batch.template[0].cpu().numpy() - src_mesh.vertices).mean() != 0:
+                                src_mesh = trimesh.Trimesh(
+                                    vertices=batch.template[0].cpu().numpy(),
+                                    faces=batch.faces[0].cpu().numpy()
+                                )
+                                if self.opts.laplacian:
+                                    tmp_L = igl.cotmatrix(src_mesh.vertices, src_mesh.faces)
+                                    src_L = torch.sparse_csc_tensor(
+                                    torch.LongTensor(tmp_L.indptr).to(device),
+                                    torch.LongTensor(tmp_L.indices).to(device),
+                                    torch.FloatTensor(tmp_L.data).to(device),
+                                    tmp_L.shape
+                                )
+                                
+                                ## common routine
+                                dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                                src_operators = self.get_mesh_operators(src_mesh)
+                                img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                                img_feat = self.model.get_img_feat(img)
+                                vert_feat = self.model.get_local_feature(
+                                    batch.template[0][None], batch.faces[0], img_feat, at='verts'
+                                ).float()
+                                tri_feat = self.model.get_local_feature(
+                                    batch.template[0][None], batch.faces[0], img_feat, at='faces'
+                                ).float()
 
-                    with torch.no_grad():
-                        pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
+                                pred_id_coeff  = self.model.encode_id(vert_feat, dfn_info)
+                                pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None
+
+                        # vert_feat_exp = []
+                        # for gt_v in batch.vertices:
+                        #     _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
+                        #     vert_feat_exp.append(_tmp_)
+                        # vert_feat_exp = torch.vstack(vert_feat_exp)
+                        vert_feat_exp =  self.model.get_local_feature(batch.vertices, batch.faces[0], img_feat).float()
+
+                        with torch.no_grad():
+                            pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
+                            
+                            #pred_exp = apply_gaussian_filter(
+                            #    pred_exp, kernel_size=5, sigma=1.0
+                            #)
+
+                            inputs = (
+                                tri_feat if self.opts.dec_type=='jacob' else vert_feat,
+                                pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                                None, batch.template[0][None], batch.faces[0], src_operators
+                            )
+                            pred_vertices, _ = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
+                    ##############################################################################
+                    else:
+                        if index==0:
+                            src_verts = batch.template[0]
+                            src_faces = batch.faces[0]
+                            src_m = trimesh.Trimesh(
+                                vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                            )
+                            if self.opts.laplacian:
+                                tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
+                                src_L = torch.sparse_csc_tensor(
+                                    torch.LongTensor(tmp_L.indptr).to(device),
+                                    torch.LongTensor(tmp_L.indices).to(device),
+                                    torch.FloatTensor(tmp_L.data).to(device),
+                                    tmp_L.shape
+                                )
+
+                            src_img = self.model.renderer.render_img(src_m).float().to(device)
+                            src_img_feat = self.model.get_img_feat(src_img)[None]
+                            src_dfn_info = self.get_dfn_info(src_m, map_location=device)
+                            src_operators = self.get_mesh_operators(src_m)
+                        else:
+                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:            
+                                src_verts = batch.template[0]
+                                src_faces = batch.faces[0]
+                                src_m = trimesh.Trimesh(
+                                    vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                                )
+                                if self.opts.laplacian:
+                                    tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
+                                    src_L = torch.sparse_csc_tensor(
+                                    torch.LongTensor(tmp_L.indptr).to(device),
+                                    torch.LongTensor(tmp_L.indices).to(device),
+                                    torch.FloatTensor(tmp_L.data).to(device),
+                                    tmp_L.shape
+                                )
+
+                                src_img = self.model.renderer.render_img(src_m).float().to(device)
+                                src_img_feat = self.model.get_img_feat(src_img)[None]
+                                src_dfn_info = self.get_dfn_info(src_m, map_location=device)
+                                src_operators = self.get_mesh_operators(src_m)
+
+                        with torch.no_grad():
+                            inputs_v = trainer.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
+
+                            ## get expression
+                            self.model.model.update_precomputes(src_dfn_info)
+                            pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
+                            
+                            pred_vertices, _, _ = self.model.calc_new_mesh(
+                                src_verts, src_faces, pred_exp, src_operators, src_dfn_info, src_img
+                            )
                     
-                        inputs = (
-                            tri_feat if self.opts.dec_type=='jacob' else vert_feat,
-                            pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
-                            None, batch.template[0][None], batch.faces[0], src_operators
-                        )
-                        pred_vertices, _ = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
-                ##############################################################################
-                
                 else:
+                    if index==0:
+                        src_verts = batch.template[0]
+                        src_faces = batch.faces[0]
+                        src_m = trimesh.Trimesh(
+                            vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                        )
+                        if self.opts.laplacian:
+                            tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
+                            src_L = torch.sparse_csc_tensor(
+                                torch.LongTensor(tmp_L.indptr).to(device),
+                                torch.LongTensor(tmp_L.indices).to(device),
+                                torch.FloatTensor(tmp_L.data).to(device),
+                                tmp_L.shape
+                            )
+                    else:
+                        if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:            
+                            src_verts = batch.template[0]
+                            src_faces = batch.faces[0]
+                            src_m = trimesh.Trimesh(
+                                vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                            )
+                            if self.opts.laplacian:
+                                tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
+                                src_L = torch.sparse_csc_tensor(
+                                    torch.LongTensor(tmp_L.indptr).to(device),
+                                    torch.LongTensor(tmp_L.indices).to(device),
+                                    torch.FloatTensor(tmp_L.data).to(device),
+                                    tmp_L.shape
+                                )
                     #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
                     if self.opts.version==1:
                         # NEURAL CAGE
@@ -592,7 +758,7 @@ class Trainer():
                             batch.template_normal, batch.vertices_normal,
                             mesh_data=batch.mesh_data, epoch=0
                         )
-                    
+                
                 # Metric
                 if self.opts.use_t_mask:
                     inner_mask = plateau_hat_points(batch.template)
@@ -606,9 +772,22 @@ class Trainer():
                         batch.template*outter_mask, pred_vertices*outter_mask
                     ).item() * denom # for NGBC model
                     
+                    if self.opts.laplacian:
+                        losses_val["Lap"] += F.mse_loss(
+                            src_L @ batch.vertices*inner_mask, src_L @ pred_vertices*inner_mask
+                        ).item() * denom # * mmm
+                        
+                else:                    
+                    if self.opts.laplacian:                    
+                        losses_val["Lap"] += F.mse_loss(
+                            src_L @ batch.vertices, src_L @ pred_vertices
+                        ).item() * denom
+                        
                 losses_val['MSE'] += F.mse_loss(
                     batch.vertices,  pred_vertices
                 ).item() * denom # for NGBC model
+                
+                
             # ------------------------------------------------------------------------------------------------
             if self.opts.save_gt:
                 save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
@@ -1041,26 +1220,31 @@ if __name__ == "__main__":
     opts_ = vars(opts)
     opts_yaml.update(opts_)
     opts = argparse.Namespace(**opts_yaml)
-        
-    if opts.version==0:
-        # extras
-        opts.img_feat_dim=128        
-        opts.feature_type="cents&norms"
-        opts.stage1 = True
-        opts.scale_exp=1.0
-        opts.ict_face_only=False
-        
-        opts.NFR=False ## willbe using reimplemented model
     
-        if opts.use_NFR:
+    if opts.version==0:
+        if opts.NFR==False:
+            # extras
+            opts.img_feat_dim=128        
+            opts.feature_type="cents&norms"
+            opts.stage1 = True
+            opts.scale_exp=1.0
+            opts.ict_face_only=False
+            
+            if opts.use_NFR:
+                opts.design="nfr"
+                opts.dec_type="jacob"
+            else:
+                opts.design="new2"
+                opts.dec_type="disp"
+        else:
             opts.design="nfr"
             opts.dec_type="jacob"
-        else:
-            opts.design="new2"
-            opts.dec_type="disp"
             
     print('loaded version:', opts.version)
+    
+    ## load model
     trainer = Trainer(opts)
+    
     if opts.realtest:
         if opts.use_eval_data2:
             trainer.evaluate3() ## nfs test dataloader
