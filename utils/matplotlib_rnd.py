@@ -296,26 +296,30 @@ def plot_image_array(Vs,
         ax_pos = [idx / num_meshes, 0, 1 / num_meshes, 1]
         ax = fig.add_axes(ax_pos, xlim=[-1, +1], ylim=[-1, +1], aspect=1, frameon=False)
 
-        #xrot, yrot, zrot = rot[0], 90, rot[2]
+        # xrot, yrot, zrot = rot[0], 90, rot[2]
         if rot_list:
             xrot, yrot, zrot = rot_list[idx]
         else:
             xrot, yrot, zrot = 0,0,0
-        ## MVP
+            
+        ### MVP
         # model = translate(0, 0, -3) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
         # proj  = perspective(55, 1, 1, 100)
-        model = translate(0, 0, -5) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
+        model = (yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot))[:3,:3]
+        view = translate(0, 0, -5)
         proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
-        #MVP   = proj @ model # view is identity
+        #MVP   = proj @ view @ model
+        MVP   = proj @ view # view is identity
         V_mu = np.median(V, axis=0)
         
-        V_h_mu = _homogeneous(V - V_mu)
+        # V_h_mu = _homogeneous(V - V_mu)
         
         # quad to triangle    
-        V_model = (V_h_mu) @ model.T + V_mu
-        V_proj = V_model @ proj.T
-        V_proj  = V_proj[:, :3] / V_proj[:, 3:4]  # (N,3), -1~1
-        #VF_tri = transform_vertices(V, MVP, F, norm)
+        V_model = (V - V_mu) @ model.T + V_mu
+        V_proj = _homogeneous(V_model) @ MVP.T
+        V_proj = V_proj[:, :3] / V_proj[:, 3:4]  # (N,3), -1 ~ 1
+        VF_tri = V_proj[F]
+        # VF_tri = transform_vertices(V, MVP, F, norm)
 
         T = VF_tri[:, :, :2]
         Z = -VF_tri[:, :, 2].mean(axis=1)
@@ -359,17 +363,16 @@ def plot_image_array(Vs,
             #VV = (V-V.min()) / (V.max()-V.min())# world coordinate
             V = transform_vertices(V, MVP, F, norm, no_parsing=True)
             
-            
             #VF_tri = transform_vertices(V, MVP, F, norm)
-            print(V.shape)
+#             print(V.shape)
             
             triangle_ = tri.Triangulation(V[:,0], V[:,1], triangles=F)
             #print(triangle_.shape)
             C = (C @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
             C = np.clip(C, 0, 1)
             C = C*0.5+0.25
-            #VV = (V-V.min()) / (V.max()-V.min()) #screen coordinate
-            #cmap = colors_to_cmap(VV)
+            # VV = (V-V.min()) / (V.max()-V.min()) #screen coordinate
+            # cmap = colors_to_cmap(VV)
             cmap = colors_to_cmap(C)
             zs = np.linspace(0.0, 1.0, num=V.shape[0])
             plt.tripcolor(triangle_, zs, cmap=cmap, shading='gouraud')
