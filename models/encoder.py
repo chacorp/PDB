@@ -527,7 +527,7 @@ class MLP(nn.Sequential):
     '''
     A simple MLP with configurable hidden layer sizes.
     '''
-    def __init__(self, layer_sizes, num_gn=32, dropout=False, act='relu', nrm='layer', name="MLP", p=.5):
+    def __init__(self, layer_sizes, num_gn=32, dropout=False, act='relu', nrm='layer', name="MLP", p=.5, use_residual=False):
         super(MLP, self).__init__()
 
         if act == 'sigmoid':
@@ -556,6 +556,7 @@ class MLP(nn.Sequential):
             norm_func=nn.Identity
             
         self.num_layers = len(layer_sizes)
+        self.use_residual=use_residual
         
         layers = []
         norms = []
@@ -577,7 +578,7 @@ class MLP(nn.Sequential):
         
         self.layers = nn.ModuleList(layers)
         self.norms = nn.ModuleList(norms)
-
+        
     def detect_transpose(self, x):
         if self.nrm == 'group' or self.nrm == 'inst' or self.nrm == 'batch':
             x = x.transpose(-1, -2)
@@ -589,8 +590,13 @@ class MLP(nn.Sequential):
             tmp = self.layers[i](out)
             tmp = self.detect_transpose(tmp)
             
-            out = self.act(self.norms[i](tmp))
-            out = self.detect_transpose(out)
+            tmp = self.act(self.norms[i](tmp))
+            out = self.detect_transpose(tmp)
+            
+            # if self.use_residual:
+            #     out = out + tmp
+            # else:
+            #     out = tmp
         out = self.layers[-1](out)
         return out
 
@@ -769,6 +775,130 @@ class LinearEncoder(nn.Module):
         return out
 
 class LinearEncoder2(nn.Module):
+    def __init__(self, 
+                 in_dim=3, out_dim=3, hid_dim=128, num_layers=4, 
+                 mode='rot', use_residual=False, out_type='vertices',
+                 use_softmax=False, use_relu=False, use_softplus=False, 
+                 use_elu=False, use_sqrelu=False,
+                 use_least_N=False, use_least_N_on_V=False,
+                 no_activation=False,
+                 use_gate_layer=False,
+                 use_pou=False,
+                 use_id_feat_in=True,
+                 act='lrelu', nrm='layer',
+                 tau=1e-2, use_K=False, K_dim=8,
+                ):
+        super().__init__()
+        
+        self.mode = mode
+        self.out_dim = out_dim
+        self._tau = 1 / tau
+        
+        self.use_residual = use_residual
+        
+        self.use_softmax=use_softmax
+        self.use_relu=use_relu
+        self.use_sqrelu=use_sqrelu
+        self.use_elu=use_elu
+        self.use_softplus=use_softplus
+        self.use_least_N = use_least_N
+        self.use_least_N_on_V = use_least_N_on_V
+        self.use_gate_layer = use_gate_layer
+        self.no_activation=no_activation
+        self.use_pou = use_pou
+        
+        self.out_type = out_type
+        self.use_K = use_K
+        self.K_dim = K_dim
+                
+        self.layer_in = nn.Linear(in_dim, hid_dim)
+        self.layer_out = nn.Linear(hid_dim, out_dim)
+
+        self.layers = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+
+        ## for feature transform
+        if use_id_feat_in:
+            self.id_feat_in = MLP(
+                [in_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
+                act=act, nrm=nrm
+            )
+        
+        self.STN_a = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+        self.STN_b = nn.ModuleList([
+            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+        
+        if self.use_gate_layer:
+            self.gate_layer = nn.Sequential(
+                MLP([hid_dim, hid_dim, hid_dim, hid_dim, out_dim], act=act, nrm=nrm),
+                nn.Sigmoid(),
+            )
+        
+    def forward(self, x_in, N=128, return_inv=False, return_raw=False):
+        B, V, C = x_in.shape
+        
+        out = self.forward_func(x_in)
+        
+        if self.out_type == 'global':
+            out = out.mean(-2, keepdims=True)
+
+        if not self.no_activation:
+            out = F.normalize(out, dim=-2) # normalize for each column (key points)
+            if self.use_softmax:
+                out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
+                
+            if self.use_relu:            
+                out = F.relu(out)
+                
+            if self.use_sqrelu:
+                out = torch.square(F.relu(out))
+                
+            if self.use_softplus:
+                out = F.softplus(out)
+                
+            if self.use_elu:
+                out = F.elu(out, alpha=0.5)
+                
+            if self.use_pou and not self.use_softmax:
+                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+        else:
+            if self.use_pou:
+                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+        return out
+        
+        
+    def forward_func(self, x_in, id_in=None, return_id_in=False):
+        out = self.layer_in(x_in)
+
+        if id_in is None:
+            id_in = self.id_feat_in(x_in).mean(-2, keepdims=True)
+        
+        for layer, mu, sigma in zip(self.layers, self.STN_b, self.STN_a):
+            l_out = layer(out)
+            l_out = l_out * sigma(id_in) + mu(id_in)
+            
+            if self.use_residual:
+                out = l_out + out
+            else:
+                out = l_out
+                
+        if self.use_gate_layer:
+            out = self.layer_out(out) * self.gate_layer(id_in)
+        else:
+            out = self.layer_out(out)
+
+        if return_id_in:
+            return out, id_in
+        return out
+        
+class LinearEncoder_2(nn.Module):
     def __init__(self,
                  in_dim=3, style_dim=100, out_dim=3, hid_dim=128,
                  num_layers=4, use_style=True, out_type='vertices',
