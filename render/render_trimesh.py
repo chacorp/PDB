@@ -6,7 +6,7 @@ import subprocess
 import trimesh
 import time
 from tqdm import tqdm
-import mediapy as mp
+# import mediapy as mp
 import tempfile
 import pickle
 
@@ -139,10 +139,14 @@ def get_mesh(selection, SELECT_MESH=0):
         id_disps = ict_face.get_id_disp(id_vecs[SELECT_MESH])
         mesh_v = ict_face.neutral_verts.squeeze() + id_disps.squeeze()
         
-        return mesh_v, ict_face_model.faces
+        return mesh_v, ict_face.faces
     else:
         # if selection=='voca' or selection=='coma':
         #     mesh = dataset.voca_mesh
+        
+        if selection=='voca' or selection=='coma':
+            with open('/data/sihun/VOCA-COMA/voca_templates.pkl', 'rb') as f:
+                mesh = pickle.load(f)
         if selection=='biwi':
             biwi_trimesh = trimesh.load(f'{abs_path}/test-mesh/BIWI.ply')
             with open(f'{__abs_path__}/test-mesh/biwi_templates.pkl', 'rb') as f:
@@ -163,7 +167,7 @@ def get_mesh(selection, SELECT_MESH=0):
 def render_sequence(
         output_path = '../notebook/tmp/pyrender/',
         npy_file = "",
-        filename = "pyrender-test",
+        filename = None,
         mesh_type='ict',
         use_seg_color=False,
         fps=30,
@@ -174,9 +178,17 @@ def render_sequence(
     os.makedirs(output_path, exist_ok=True)
     
     if not debug:
-        filename=npy_file.split('/')[-1]
-        savepath_name = os.path.join(output_path, npy_file.split('/')[-2])
-    else:    
+        #NNN=1
+        
+        NNN=2 if '/verts' in npy_file else 1
+        if filename is None:
+            filename=npy_file.split('/')[-NNN]
+            savepath_name = os.path.join(output_path, npy_file.split('/')[-(NNN+1)])
+        else:
+            filename=npy_file.split('/')[-NNN]
+            savepath_name = os.path.join(output_path, npy_file.split('/')[-(NNN+1)])
+    else:
+        filename = "pyrender-test"
         savepath_name = os.path.join(output_path, filename)
     video_fname_pred = os.path.join(savepath_name, f'{filename}.mp4')
     os.makedirs(savepath_name, exist_ok=True)    
@@ -340,12 +352,8 @@ if __name__ == "__main__":
     dpkg -i ./mesa_18.3.3-0.deb || true
     apt install -f
 
-    apt-get install llvm-6.0 freeglut3 freeglut3-dev
-    apt-get install libosmesa6-dev
-    pip install pyrender
-    pip install pyopengl==3.1.4
-    
-    pip install ffmpeg-python
+    apt-get install llvm-6.0 freeglut3 freeglut3-dev libosmesa6-dev
+    pip install pyrender pyopengl==3.1.4 ffmpeg-python
     ~~pip install mediapy~~ # not used
     
     cd render
@@ -358,31 +366,530 @@ if __name__ == "__main__":
     output_path='/source/sihun/NeuralFacialAnimation/video/'
 #     output_path='../notebook/tmp/pyrender-seg/'
     use_seg_color=False
+#     render_sequence(
+#         output_path = output_path,
+#         # template_file = "/data/sihun/multiface_align/obj/m--20190828--1318--002645310--GHS_mesh.obj",
+#         npy_file = "/source/sihun/NeuralFacialAnimation/eval_CBD/2024-08-18-23-32-29-all/mf_ROM_test-to-mf_ROM_test",
+#         filename = "pyrender--MF_test",
+#         use_seg_color=use_seg_color,
+#         mesh_type='mf_ROM',
+#         # debug=True,
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/eval_CBD/2024-07-08-06-27-12-all/mf_ROM_test-to-mf_ROM_test",
+#         filename = "pyrender--MF_test",
+#         use_seg_color=use_seg_color,
+#         mesh_type='mf_ROM',
+#         # debug=True,
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/eval_CBD/2024-06-09-10-57-34-all/mf_ROM_test-to-mf_ROM_test",
+#         filename = "pyrender--MF_test",
+#         use_seg_color=use_seg_color,
+#         mesh_type='mf_ROM',
+#         # debug=True,
+#     )
+
+    ########################################################### design study
+    # saved at video/NeuralFacialAnimation
+    
+    data_name = 'mf_ROM-masked/verts'
+    eval_path = '/source/sihun/NeuralFacialAnimation/eval_CBD/'
+    #mesh_file_paths_w_relu = sorted(glob(eval_path+f'2025-10-23-17-32-49-NGBCv5-eval/{data_name}/*.npy'))
+    
+    
+    # render_sequence(
+    #     output_path = os.path.join(output_path, 'design_study--ours'),
+    #     npy_file = os.path.join(eval_path,'2025-10-23-13-03-54-NGBCv5-eval', data_name),
+    #     use_seg_color=use_seg_color, mesh_type='mf',
+    #     filename=f'{data_name.split("/")[0]}--ours'
+    # )
+
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--w_ReLU'),
+#         npy_file = os.path.join(eval_path,'2025-10-23-17-32-49-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--w_ReLU'
+#     )
+    
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--no_act'),
+#         npy_file = os.path.join(eval_path,'2025-09-30-16-28-51-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--no_act'
+#     )
+    
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--w_softplus'),
+#         npy_file = os.path.join(eval_path,'2025-09-28-14-50-34-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--w_softplus'
+#     )
+    
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--w_ELU'),
+#         npy_file = os.path.join(eval_path,'2025-10-08-02-55-02-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--w_ELU'
+#     )
+    
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--delta'),
+#         npy_file = os.path.join(eval_path,'2025-10-22-16-22-45-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--delta'
+#     )
+    
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--matrix'),
+#         npy_file = os.path.join(eval_path,'2025-10-22-16-26-26-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--matrix'
+#     )
+    
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--softPOU'),
+#         npy_file = os.path.join(eval_path,'2025-10-03-22-40-03-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--softPOU'
+#     )
+    
+#     render_sequence(
+#         output_path = os.path.join(output_path, 'design_study--wo_mask'),
+#         npy_file = os.path.join(eval_path,'2025-09-26-10-16-32-NGBCv5-eval', data_name),
+#         use_seg_color=use_seg_color, mesh_type='mf',
+#         filename=f'{data_name.split("/")[0]}--wo_mask'
+#     )
+    ###########################################################
+    
+    ########################################################### GT
+    # saved at video/NeuralFacialAnimation
     # render_sequence(
     #     output_path = output_path,
-    #     # template_file = "/data/sihun/multiface_align/obj/m--20190828--1318--002645310--GHS_mesh.obj",
-    #     npy_file = "/source/sihun/NeuralFacialAnimation/eval_CBD/2024-08-18-23-32-29-all/mf_ROM_test-to-mf_ROM_test",
-    #     filename = "pyrender--MF_test",
-    #     use_seg_color=use_seg_color,
-    #     mesh_type='mf_ROM',
-    #     # debug=True,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/GT-ict-cap_test-to-ict-cap_test_00",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
     # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/GT-ict-cap_test-to-ict-cap_test_01",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )    
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/GT-mf_ROM_test-to-mf_ROM_test_00",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+    ###########################################################
+    
+    ########################################################### Ours
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_000_test-to-ict-cap-ID_003_test_01-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_000_test-to-ict-cap-ID_009_test_01-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_002_test-to-ict-cap-ID_000_test_00-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_002_test-to-ict-cap-ID_002_test_00-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_002_test-to-ict-cap-ID_005_test_00-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/mf_ROM_test-to-ict-cap_test-ID_000-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/mf_ROM_test-to-mf_ROM_test-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/mf_ROM_test-to-mf_ROM_train-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+
+
+
+    
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_000_test-to-mf_ROM-ID_012_test_01",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    #     filename='nfr'
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    #     filename='nfr-'
+    # )
+    
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_000_test-to-mf_ROM-ID_012_test_01",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    #     filename='nfs'
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    #     filename='nfs'
+    # )
+
+    ########################################################### NC
     render_sequence(
         output_path = output_path,
-        npy_file = "/source/sihun/NeuralFacialAnimation/eval_CBD/2024-07-08-06-27-12-all/mf_ROM_test-to-mf_ROM_test",
-        filename = "pyrender--MF_test",
-        use_seg_color=use_seg_color,
-        mesh_type='mf_ROM',
-        # debug=True,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='ict',
     )
     render_sequence(
         output_path = output_path,
-        npy_file = "/source/sihun/NeuralFacialAnimation/eval_CBD/2024-06-09-10-57-34-all/mf_ROM_test-to-mf_ROM_test",
-        filename = "pyrender--MF_test",
-        use_seg_color=use_seg_color,
-        mesh_type='mf_ROM',
-        # debug=True,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_000_test-to-ict-cap-ID_003_test_01-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='ict',
     )
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_000_test-to-ict-cap-ID_009_test_01-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='ict',
+    )
+    
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_002_test-to-ict-cap-ID_000_test_00-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='ict',
+    )
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_002_test-to-ict-cap-ID_002_test_00-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='ict',
+    )
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_002_test-to-ict-cap-ID_005_test_00-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='ict',
+    )
+    
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/mf_ROM_test-to-ict-cap_test-ID_000-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='ict',
+    )
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/mf_ROM_test-to-mf_ROM_test-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    )
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/mf_ROM_test-to-mf_ROM_train-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    )
+
+
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_000_test-to-mf_ROM-ID_012_test_01-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    )
+    render_sequence(
+        output_path = output_path,
+        npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-20-00-15-40-CBD/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00-masked/verts",
+        use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    )
+    ##########################################################
+    
+
+    
+
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_000_test-to-mf_ROM-ID_012_test_01-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-11-09-21-21-43-NGBCv5-50/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+    ##########################################################
+    
+#     ########################################################### Ours (prev)
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/ict-cap-ID_000_test-to-ict-cap-ID_003_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/ict-cap-ID_000_test-to-ict-cap-ID_009_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/ict-cap-ID_002_test-to-ict-cap-ID_000_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/ict-cap-ID_002_test-to-ict-cap-ID_002_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/ict-cap-ID_002_test-to-ict-cap-ID_005_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/mf_ROM_test-to-ict-cap_test-ID_000-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/mf_ROM_test-to-mf_ROM_test-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='mf_ROM',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2025-10-22-22-30-30-NGBCv5/mf_ROM_test-to-mf_ROM_train-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='mf_ROM',
+#     )
+    ###########################################################
+    
+    ########################################################### NFR (prev)
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/ict-cap-ID_000_test-to-ict-cap-ID_003_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/ict-cap-ID_000_test-to-ict-cap-ID_009_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/ict-cap-ID_002_test-to-ict-cap-ID_000_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/ict-cap-ID_002_test-to-ict-cap-ID_002_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/ict-cap-ID_002_test-to-ict-cap-ID_005_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/mf_ROM_test-to-ict-cap_test-ID_000-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/mf_ROM_test-to-mf_ROM_test-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='mf_ROM',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/exp_019_ICT_MF-jacob_NFR/mf_ROM_test-to-mf_ROM_train-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='mf_ROM',
+#     )
+    ###########################################################
+    
+    ########################################################### NFS (prev)
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/ict-cap-ID_000_test-to-ict-cap-ID_003_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/ict-cap-ID_000_test-to-ict-cap-ID_009_test_01-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/ict-cap-ID_002_test-to-ict-cap-ID_000_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/ict-cap-ID_002_test-to-ict-cap-ID_002_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/ict-cap-ID_002_test-to-ict-cap-ID_005_test_00-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/mf_ROM_test-to-ict-cap_test-ID_000-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/mf_ROM_test-to-mf_ROM_test-masked/verts",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/2024-08-18-23-32-29-all/mf_ROM_test-to-mf_ROM_train-masked/verts",
+#         use_seg_color=use_seg_color, mesh_type='mf_ROM',
+#     )
+    ###########################################################
+    
+
+
+    ########################################################### NFR 
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_000_test-to-ict-cap-ID_003_test_01",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_000_test-to-ict-cap-ID_009_test_01",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_002_test-to-ict-cap-ID_000_test_00",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_002_test-to-ict-cap-ID_002_test_00",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/ict-cap-ID_002_test-to-ict-cap-ID_005_test_00",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/mf_ROM_test-to-ict-cap_test-ID_000",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/mf_ROM_test-to-mf_ROM_test",
+#         use_seg_color=use_seg_color, mesh_type='mf_ROM',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfr/mf_ROM_test-to-mf_ROM_train",
+#         use_seg_color=use_seg_color, mesh_type='mf_ROM',
+#     )
+    ##########################################################
+    
+    ########################################################### NFS
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_000_test-to-ict-cap-ID_003_test_01",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_000_test-to-ict-cap-ID_009_test_01",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_002_test-to-ict-cap-ID_000_test_00",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_002_test-to-ict-cap-ID_002_test_00",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+#     render_sequence(
+#         output_path = output_path,
+#         npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/ict-cap-ID_002_test-to-ict-cap-ID_005_test_00",
+#         use_seg_color=use_seg_color, mesh_type='ict',
+#     )
+    
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/mf_ROM_test-to-ict-cap_test-ID_000",
+    #     use_seg_color=use_seg_color, mesh_type='ict',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/mf_ROM_test-to-mf_ROM_test",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+    # render_sequence(
+    #     output_path = output_path,
+    #     npy_file = "/source/sihun/NeuralFacialAnimation/vis_CBD/nfs/mf_ROM_test-to-mf_ROM_train",
+    #     use_seg_color=use_seg_color, mesh_type='mf_ROM',
+    # )
+    ##########################################################
+
     
 #     render_sequence(
 #         output_path = output_path,

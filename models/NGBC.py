@@ -692,6 +692,7 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
         src_def_norm,
         key_weight,
         tgt_neu_vert=None, # required if the model is delta prediction!
+        return_source=False,
     ):
         """
         Args:
@@ -703,45 +704,55 @@ class NeuralGeneralizedBarycentricCoordinate5(nn.Module):
             
             key_weight (torch.tensor):   [B, M, K] target neutral mesh vertex normals
             tgt_neu_vert (torch.tensor): [B, M, 3] target neutral mesh vertex positions
-                        
+
+            return_source (bool): if True, returns reconstructed source mesh
         Returns:
             (pred_deformed): [B, M, 3] predicted target deformed mesh vertices
         """
         B, N, _ = src_neu_vert.shape
-        src_in = src_neu_vert
+        src_neu_in = src_neu_vert        
+        src_def_in = src_def_vert - src_neu_vert # as a delta (optional)
         
-        def_in = src_def_vert - src_neu_vert # as a delta (optional)
         
         if self.in_type > 0:
-            src_in = torch.cat([src_in, src_neu_norm], dim=-1)
-            def_in = torch.cat([def_in, src_def_norm], dim=-1)
+            src_neu_in = torch.cat([src_neu_in, src_neu_norm], dim=-1)
+            src_def_in = torch.cat([src_def_in, src_def_norm], dim=-1)
             
-        def_in = torch.cat([def_in, src_in], dim=-1)
+        src_def_in = torch.cat([src_def_in, src_neu_in], dim=-1)
 
         if self.in_type == 2:
             src_hat_mask = plateau_hat_points(src_neu_vert)
-            src_in = torch.cat([src_in, src_hat_mask], dim=-1)
-            def_in = torch.cat([def_in, src_hat_mask], dim=-1)
+            src_neu_in = torch.cat([src_neu_in, src_hat_mask], dim=-1)
+            src_def_in = torch.cat([src_def_in, src_hat_mask], dim=-1)
         
         if self.use_shp:
-            z_ID_B = self.shape_model(src_in) # (B, 1, L)
+            z_ID_B = self.shape_model(src_neu_in) # (B, 1, L)
             
-            exp_z = self.exp_z_model(def_in, z_ID_B) # (B, 1, L)
-            key_d = self.key_d_model(exp_z, z_ID_B) # (B, 3K)
+            src_exp_z = self.exp_z_model(src_def_in, z_ID_B) # (B, 1, L)
+            src_key_d = self.key_d_model(src_exp_z, z_ID_B) # (B, 3K)
         else:
-            exp_z = self.exp_z_model(def_in) # (B, 1, L)
-            key_d = self.key_d_model(exp_z) # (B, 3K)
+            src_exp_z = self.exp_z_model(src_def_in) # (B, 1, L)
+            src_key_d = self.key_d_model(src_exp_z) # (B, 3K)
         
-        key_d = self.reshape_key_d(key_d, B) # (B, K, 3)
+        src_key_d = self.reshape_key_d(src_key_d, B) # (B, K, 3)
         
-        cage_v = torch.einsum('bnc,bci->bni', key_weight, key_d)
+        tgt_def_v = torch.einsum('bnc,bci->bni', key_weight, src_key_d)
         
         if self.use_full_vertex:
-            pred_deformed = cage_v
+            # absolute position
+            pred_deformed = tgt_def_v
         else:
-            pred_deformed = cage_v + tgt_neu_vert
-        
-        return pred_deformed, key_d
+            # displacement
+            pred_deformed = tgt_def_v + tgt_neu_vert
+
+        # if return_source:
+        #     exp_zs = self.exp_z_model(src_neu_in) # (B, 1, L)
+        #     key_s = self.key_d_model(exp_zs) # (B, 3K)
+        #     key_s = self.reshape_key_d(key_s, B)
+        #     pred_source_v = torch.einsum('bnc,bci->bni', key_weight, key_s)
+        #     return pred_deformed, src_key_d, pred_source_v
+            
+        return pred_deformed, src_key_d
 
     @torch.no_grad()
     def blendshape(

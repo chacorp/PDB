@@ -306,8 +306,9 @@ def plot_image_array(Vs,
             xrot, yrot, zrot = 0,0,0
         ## MVP
         # model = translate(0, 0, -3) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
-        # proj  = perspective(55, 1, 1, 100)
         model = translate(0, 0, -5) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
+        # proj  = perspective(65, 1, 1, 100)
+        # proj  = perspective(55, 1, 1, 100)
         proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
         MVP   = proj @ model # view is identity
         
@@ -385,10 +386,11 @@ def plot_image_array(Vs,
     
     if save:
         plt.savefig('{}/{}.png'.format(logdir, name), bbox_inches = 'tight')
-        plt.close()
+        plt.close(fig)
     else:
         plt.show()
-        plt.close()
+        plt.close(fig)
+    # plt.close(plt.gcf())
         
 
 from matplotlib.colors import ListedColormap
@@ -579,7 +581,8 @@ def plot_image_array_grd(Vs, Fs,
     
     if show:
         plt.show()
-    plt.close()
+    else:
+        plt.close(fig)
         
 def plot_image_array_VC(V, 
                      F, 

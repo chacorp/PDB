@@ -482,21 +482,30 @@ class CBDDataset(data.Dataset):
             use_ict=True
             use_ict_narrow=True
         elif self.opts.use_data3:
-            use_voca=True
+            use_voca=False
             use_coma=True
-            use_biwi=True
+            use_biwi=False
             use_mf_SEN=True
             use_mf_ROM=True
             use_ict=True
+            use_ict_narrow=False
+        elif self.opts.use_data9:
+            use_voca=False
+            use_coma=False
+            use_biwi=False
+            use_mf_SEN=False
+            use_mf_ROM=False
+            use_ict=True
             use_ict_narrow=True
         else:
-            use_voca=True
-            use_coma=True
-            use_biwi=True
-            use_mf_SEN=True
-            use_mf_ROM=True
-            use_ict=False
-            use_ict_narrow=False
+            pass
+            # use_voca=True
+            # use_coma=True
+            # use_biwi=True
+            # use_mf_SEN=True
+            # use_mf_ROM=True
+            # use_ict=False
+            # use_ict_narrow=False
             
         self.use_voca=use_voca
         self.use_coma=use_coma
@@ -518,7 +527,7 @@ class CBDDataset(data.Dataset):
         self.mode = 'test'
         if is_train:
             self.mode = 'train'
-            self.scale = 2.0
+            self.scale = 1.5
         elif is_valid:
             self.mode = 'val'
         
@@ -911,7 +920,17 @@ class CBDDataset(data.Dataset):
             self.WS = self.opts.window_size
             
     def get_ict_params(self):
-        iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
+        iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
+        # self.expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
+        
+        # if self.mode != 'test':
+        #     id_zero = np.zeros([1, 100])
+        #     id_vecs = np.eye(100, 100)*3.0
+        #     self.iden_vecs = np.r_[self.iden_vecs, id_zero, id_vecs]
+        #     newvecs = np.load('./ict_face_pt/random_expression_vecs.npy')
+        #     self.expression_vecs = np.r_[self.expression_vecs, newvecs]
+        
+        # iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:101]
         # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
         # if self.mode != 'train':
         #     self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
@@ -919,10 +938,12 @@ class CBDDataset(data.Dataset):
         
         # self.iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
         if self.mode == 'train':
+            # id_vecs = np.eye(101, 100)*3.0
+            # iden_vecs = np.r_[iden_vecs, id_vecs]
+            
             # self.expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
-            # expression_vecs2 = np.load(f'./data/ICT_live_100/expression_vecs_train.npy')
             expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
-            expression_vecs = np.r_[np.eye(53), expression_vecs]
+            expression_vecs = np.r_[expression_vecs, np.eye(54, 53)*1.2]
             # self.expression_vecs = np.r_[np.eye(53), expression_vecs]
         else:
             expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
@@ -944,7 +965,24 @@ class CBDDataset(data.Dataset):
         
         if index >= self.ict_narrow_exp_len:
             index = index % self.ict_narrow_exp_len
-        exp_coeff = self.expression_vecs[index] 
+
+        # if self.mode=='train':
+        #     if np.random.random(1) > 0.5:
+        #         exp_coeff = self.expression_vecs[index]
+        #     else:
+        #         exp_coeff = np.random.random(53)
+        # else:
+        #     exp_coeff = self.expression_vecs[index]
+        if self.mode=='train':
+            if np.random.random(1) > 0.5:
+                exp_coeff = np.random.random(53)
+            else:
+                #exp_coeff = np.random.randint(2, size=(1, 53))
+                exp_coeff = np.where(np.random.random(53) > 0.9, 1, 0)
+        else:
+            exp_coeff = self.expression_vecs[index]
+            
+        # exp_coeff = self.expression_vecs[index] 
         exp_coeff = exp_coeff * self.scale
 
         # self.ict_face_model_narrow=ICT_face_model(narrow_only=True)
@@ -977,16 +1015,27 @@ class CBDDataset(data.Dataset):
 
         # region_dice = np.random.randint(3, size=(1))
         
-        # if np.random.random(1) > 0.5:
-        #     exp_coeff = np.random.random((1, 53))
-        # else:
-        #     exp_coeff = np.random.randint(2, size=(1, 53))
-        #     exp_coeff = np.random.random((1, 53))
-        # exp_coeff = np.eye(53)[index][None] if index < 53 else np.random.randint(2, size=(1, 53))
         
         if index >= self.ict_exp_len:
             index = index % self.ict_exp_len
-        exp_coeff = self.expression_vecs[index] 
+
+        # if self.mode=='train':
+        #     if np.random.random(1) > 0.5:
+        #         exp_coeff = self.expression_vecs[index]
+        #     else:
+        #         exp_coeff = np.random.random(53)
+        # else:
+        #     exp_coeff = self.expression_vecs[index]
+        if self.mode=='train':
+            if np.random.random(1) > 0.5:
+                exp_coeff = np.random.random(53)
+            else:
+                #exp_coeff = np.random.randint(2, size=(1, 53))
+                exp_coeff = np.where(np.random.random(53) > 0.9, 1, 0)
+        else:
+            exp_coeff = self.expression_vecs[index]
+        
+        # exp_coeff = self.expression_vecs[index]
         exp_coeff = exp_coeff * self.scale
         
         faces = self.ict_face_model.faces

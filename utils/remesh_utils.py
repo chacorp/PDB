@@ -8,6 +8,7 @@ import torch
 from scipy.spatial import cKDTree
 
 from matplotlib_rnd import *
+from torch_scatter import scatter_add
 
 import trimesh
 import random
