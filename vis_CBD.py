@@ -40,10 +40,10 @@ from utils.remesh_utils import calc_norm_torch
 
 from models.baseline import CageNet
 from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinate, 
+#     NeuralGeneralizedBarycentricCoordinate, 
     NeuralGeneralizedBarycentricCoordinate5,
-    NeuralGeneralizedBarycentricCoordinate8,
-    NeuralGeneralizedBarycentricCoordinate55
+#     NeuralGeneralizedBarycentricCoordinate8,
+#     NeuralGeneralizedBarycentricCoordinate55
 )
 from utils.remesh_utils import ICT_face_model
 import torch.multiprocessing as mp
@@ -277,6 +277,7 @@ class Pipeline():
         
     def save_test_frames(self):
         src_tgt_set_list = [
+            [4, 12, 6, 9, 0],
             [4, 12, 4, 12, 0],
             [4, 12, 4, 0, 0],
             [4, 12, 6, 0, 0],
@@ -509,7 +510,7 @@ class Pipeline():
                             src_m = trimesh.Trimesh(vertices=src_verts, faces=src_faces)
                             # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                             # src_operators = get_mesh_operators(src_m)
-                            # src_img = self.model.renderer.render_img(src_m).float().to(device)
+                            src_img = self.model.renderer.render_img(src_m).float().to(device)
                             src_img_feat = self.model.get_img_feat(src_img.float().to(device))
                             src_vert_feat = self.model.get_local_feature(
                                 batch.template[0][None], batch.faces[0], src_img_feat, at='verts'
@@ -529,7 +530,7 @@ class Pipeline():
                                 src_m = trimesh.Trimesh(vertices=src_verts, faces=src_faces)
                                 # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                                 # src_operators = get_mesh_operators(src_m)
-                                # src_img = self.model.renderer.render_img(src_m).float().to(device)
+                                src_img = self.model.renderer.render_img(src_m).float().to(device)
                                 src_img_feat = self.model.get_img_feat(src_img)
                                 src_vert_feat = self.model.get_local_feature(
                                     batch.template[0][None], batch.faces[0], src_img_feat, at='verts'
@@ -540,7 +541,7 @@ class Pipeline():
 
                                 pred_seg_coeff = self.model.encode_seg(src_vert_feat, src_dfn_info)# [1, V, Seg]
                                 pred_id_coeff  = self.model.encode_id(src_vert_feat, src_dfn_info)
-
+                        
                         with torch.no_grad():
                             vert_feat_exp = []
                             for b_v in batch.vertices:
@@ -592,9 +593,105 @@ class Pipeline():
                     for index, batch in pbar:
                         if index==0:
                             src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                            # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                             src_img = self.model.renderer.render_img(src_m).float().to(device)
                             src_img_feat = self.model.get_img_feat(src_img)
+                        else:
+                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                                pbar.set_description('src chng!?')
+                                src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                                # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                                src_img = self.model.renderer.render_img(src_m).float().to(device)
+                                src_img_feat = self.model.get_img_feat(src_img)
+
+                        with torch.no_grad():
+                            vert_feat_exp = []
+                            for b_v in batch.vertices:
+                                _tmp_ = self.model.get_local_feature(b_v[None], batch.faces[0], src_img_feat).float()
+                                vert_feat_exp.append(_tmp_)
+                            vert_feat_exp = torch.vstack(vert_feat_exp) * 1.3
+                            pred_exp_coeff = self.model.encode_exp(
+                                vert_feat_exp, src_dfn_info, batch_process=True, verbose=False
+                            )# [W, Rig]
+
+                            inputs = (
+                                tgt_tri_feat if self.opts.dec_type=='jacob' else tgt_vert_feat,
+                                pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                                None, tgt_verts[None], tgt_faces, tgt_operators
+                            )
+                            pred_outputs, _ = self.model.decode(inputs, batch_process=True)
+                            
+                            pred_outputs_np = pred_outputs.detach().cpu().numpy()
+
+                            CurrBS=pred_outputs_np.shape[0]
+                            for b_idx in range(CurrBS):
+                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
+                                np.save(save_out_name, pred_outputs_np[b_idx])
+                                
+            else:
+                ## from NFR checkpoint
+                if SELF_RETARGET:
+                    print('self-retargeting! (src == tgt)')
+
+                    pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+                    for index, batch in pbar:
+                        if index==0:
+                            src_verts = batch.template[0]
+                            src_faces = batch.faces[0]
+                            src_m = trimesh.Trimesh(
+                                vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                            )
+
+                            src_img = self.model.renderer.render_img(src_m).float().to(device)
+                            src_img_feat = self.model.get_img_feat(src_img)[None]
+                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                            src_operators = self.model.get_mesh_operators(src_m)
+                        else:
+                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                                pbar.set_description('src chng!?')
+                                src_verts = batch.template[0]
+                                src_faces = batch.faces[0]
+                                src_m = trimesh.Trimesh(
+                                    vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                                )
+
+                                src_img = self.model.renderer.render_img(src_m).float().to(device)
+                                src_img_feat = self.model.get_img_feat(src_img)[None]
+                                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                                src_operators = self.model.get_mesh_operators(src_m)
+
+                        with torch.no_grad():
+                            inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
+
+                            ## get expression
+                            self.model.model.update_precomputes(src_dfn_info)
+                            pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
+                            pred_outputs, _, _ = self.model.calc_new_mesh(
+                                src_verts, src_faces, pred_exp, src_operators, src_dfn_info, src_img
+                            )
+                            pred_outputs_np = pred_outputs.detach().cpu().numpy()
+
+                            CurrBS=pred_outputs_np.shape[0]
+                            for b_idx in range(CurrBS):
+                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
+                                np.save(save_out_name, pred_outputs_np[b_idx])
+                else:
+                    print('cross-retargeting!')
+                    tgt_m = trimesh.Trimesh(vertices=tgt_v, faces=tgt_f)
+                    tgt_dfn_info = nfr_utils.get_dfn_info(tgt_m, map_location=device)
+                    tgt_verts = tgt_v_th[0]
+                    tgt_faces = torch.from_numpy(tgt_m.faces).to(device)
+                    tgt_img = trainer.model.renderer.render_img(tgt_m).float().to(device)
+                    tgt_operators = trainer.model.get_mesh_operators(tgt_m)
+                    
+                    pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+                    for index, batch in pbar:
+                        if index==0:
+                            src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+
+                            src_img = trainer.model.renderer.render_img(src_m).float().to(device)
+                            src_img_feat = trainer.model.get_img_feat(src_img)[None]
+                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                         else:
                             if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
                                 pbar.set_description('src chng!?')
@@ -746,7 +843,6 @@ class Pipeline():
                     for b_idx in range(CurrBS):
                         save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
                         np.save(save_out_name, pred_outputs_np[b_idx])
-
                         if self.opts.save_gt:
                             save_gt_name = GT_log_dir+f'/{index*CurrBS+b_idx:06d}.npy'
                             np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
@@ -811,8 +907,7 @@ class Pipeline():
                         np.save(save_out_name, pred_outputs_np[b_idx])
                         
         else:
-            pass
-                
+            pass   
             
         ##########################################################################################################
         

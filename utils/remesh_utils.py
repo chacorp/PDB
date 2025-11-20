@@ -12,9 +12,9 @@ from torch_scatter import scatter_add
 
 import trimesh
 import random
+from torch_scatter import scatter_add
 
-# torch.arange(4)
-# qwe = torch.randperm(4)
+
 
 class load_obj_mesh():
     def __init__(self, obj_file, to_torch=False, device='cpu'):
