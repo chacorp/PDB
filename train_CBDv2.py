@@ -1431,9 +1431,9 @@ if __name__ == "__main__":
     
     trainer = Trainer(opts)
 
-    if self.opts.version==1:
+    if opts.version==1:
         trainer.train_v5(epochs=opts.max_epoch)
-    elif self.opts.version==2:
+    elif opts.version==2:
         trainer.train_v6(epochs=opts.max_epoch)
     else:
         raise NotImplementedError('no matching version!')
