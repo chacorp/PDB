@@ -39,8 +39,8 @@ def distance_loss2(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, re
     mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
     cage_vertices_expand = cage_vertices[:,None]
     
-    # mesh_vertices_dist = torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1)
-    mesh_vertices_dist = torch.square(torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1))
+    mesh_vertices_dist = torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1)
+    # mesh_vertices_dist = torch.square(torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1))
     
     # candidate_idx = torch.argmax(mesh_vertices_dist, dim=1)
     

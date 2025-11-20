@@ -304,9 +304,9 @@ class Trainer():
                         
         # define loss lamdba 
         self.loss_lambda = {
-            "recon-def": self.opts.lambda_vert,
-            "recon-neu": self.opts.lambda_vert,
-            "exp-z": self.opts.lambda_vert * 0.5,
+            "recon-def": 1.0,
+            "recon-neu": 1.0,
+            "exp-z": 0.5,
             "exp-v": 1.0,
             "shape": 1.0,
             "lag": 1.0,
@@ -863,15 +863,15 @@ class Trainer():
                         
         # define loss lamdba 
         self.loss_lambda = {
-            "recon-def": self.opts.lambda_vert,
-            "recon-neu": self.opts.lambda_vert,
-            "recon-neu2": self.opts.lambda_vert,
+            "recon-def": 10.0,
+            "recon-neu": 1.0,
+            "recon-neu2": 1.0,
             "neu-z": 1.0,
             "exp-z": 0.5,
             "exp-v": 1.0,
             "shape": 1.0,
             "lag": 1.0,
-            "dist": 1.0,
+            "dist": 0.5,
             # "pou": self.opts.lambda_vert,
             # symm 
         }
@@ -1027,12 +1027,12 @@ class Trainer():
                 #############################################################
 
                 ###### distance loss ########################################
-                loss_dict['dist'] = distance_loss(
+                loss_dict['dist'] = distance_loss2(
                     batch_template_v, pred_cage_v_neu, pred_key_weight
                 )
-                loss_dict['dist'] += distance_loss(
-                    batch_vertices_v, pred_cage_v_exp, pred_key_weight
-                )
+                # loss_dict['dist'] += distance_loss2(
+                #     batch_vertices_v, pred_cage_v_exp, pred_key_weight
+                # )
                 #############################################################
                 
                 if self.model.use_full_vertex:
@@ -1430,8 +1430,11 @@ if __name__ == "__main__":
     opts = argparse.Namespace(**opts_yaml)
     
     trainer = Trainer(opts)
-    
-    #trainer.train_v5(epochs=opts.max_epoch)
-    trainer.train_v6(epochs=opts.max_epoch)
-    
+
+    if self.opts.version==1:
+        trainer.train_v5(epochs=opts.max_epoch)
+    elif self.opts.version==2:
+        trainer.train_v6(epochs=opts.max_epoch)
+    else:
+        raise NotImplementedError('no matching version!')
 

@@ -581,6 +581,7 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             hid_dim=self.hid_dim,
             num_layers=self.num_layers, 
             use_id_feat=True,
+            # use_residual=True,
             out_type='global',
             nrm='none',
         ).to(device)
@@ -589,7 +590,8 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             in_dim=self.hid_dim,
             out_dim=M_*self.out_dim if self.out_type == 2 else M*self.out_dim,
             hid_dim=self.hid_dim,
-            num_layers=self.num_layers, 
+            num_layers=self.num_layers,
+            # use_residual=True,
             use_id_feat=False,
             nrm='none',
         ).to(device)
@@ -670,8 +672,10 @@ class NeuralBarycentricCoordinatev3(nn.Module):
         B, N, _ = deform_vert.shape
         
         hat_mask = plateau_hat_points(source_vert)        
-        delta_vert = deform_vert - source_vert
-        zeros_vert_src = torch.zeros_like(source_vert)
+        # delta_vert = deform_vert - source_vert
+        # zeros_vert_src = torch.zeros_like(source_vert)
+        delta_vert = deform_vert
+        zeros_vert_src = source_vert
         # zeros_vert_arb = torch.zeros_like(arbitr_vert)
         
         if self.in_type == 0:
@@ -716,17 +720,26 @@ class NeuralBarycentricCoordinatev3(nn.Module):
         ### cage prediction -----------------------------------------
         # latent
         # import pdb;pdb.set_trace()
-        src_exp_z = self.cage_v_encoder(src_exp_in) # (B, 1, L)
-        src_neu_z = self.cage_v_encoder(src_neu_in) # (B, 1, L)
+        src_enc_in = torch.cat([src_exp_in, src_neu_in], dim=0)
+        src_all_z = self.cage_v_encoder(src_enc_in) # (2B, 1, L)        
+        # src_exp_z = self.cage_v_encoder(src_exp_in) # (B, 1, L)
+        # src_neu_z = self.cage_v_encoder(src_neu_in) # (B, 1, L)
         
         # arb_neu_z = self.cage_v_encoder(arb_neu_in, arb_shp_code) # (B, 1, L)
         arb_neu_z=None
+
+        src_all_cage_out = self.cage_v_decoder(src_all_z, src_shp_code.repeat(2,1,1))
+        src_all_cage_v, src_all_cage_n, _ = self.reshape_key_d(src_all_cage_out, 2*B)
+
+        src_exp_z, src_neu_z = src_all_z[:B], src_all_z[B:]
+        src_exp_cage_v, src_neu_cage_v = src_all_cage_v[:B], src_all_cage_v[B:]
+        src_exp_cage_n, src_neu_cage_n = src_all_cage_n[:B], src_all_cage_n[B:]
         
-        src_exp_cage_out = self.cage_v_decoder(src_exp_z, src_shp_code)
-        src_exp_cage_v, src_exp_cage_n, _ = self.reshape_key_d(src_exp_cage_out, B)
+        # src_exp_cage_out = self.cage_v_decoder(src_exp_z, src_shp_code)
+        # src_exp_cage_v, src_exp_cage_n, _ = self.reshape_key_d(src_exp_cage_out, B)
         
-        src_neu_cage_out = self.cage_v_decoder(src_neu_z, src_shp_code)
-        src_neu_cage_v, src_neu_cage_n, _ = self.reshape_key_d(src_neu_cage_out, B)
+        # src_neu_cage_out = self.cage_v_decoder(src_neu_z, src_shp_code)
+        # src_neu_cage_v, src_neu_cage_n, _ = self.reshape_key_d(src_neu_cage_out, B)
         
         # src_neu_cage_out_ = self.cage_v_decoder(arb_neu_z, src_shp_code)
         # src_neu_cage_v_, src_neu_cage_n_, _ = self.reshape_key_d(src_neu_cage_out_, B)

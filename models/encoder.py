@@ -751,6 +751,8 @@ class LinearEncoder(nn.Module):
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)
                 out = F.relu(out)
                 
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+            
             if self.use_sqrelu:
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)
                 out = F.relu(out)**2
@@ -759,9 +761,13 @@ class LinearEncoder(nn.Module):
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)
                 out = F.softplus(out)
                 
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+    
             if self.use_elu:
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)
                 out = F.elu(out, alpha=0.5)
+                
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
                 
             if self.use_least_N:
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)
@@ -769,6 +775,7 @@ class LinearEncoder(nn.Module):
                 
                 mask = self.least_N_zeros_gate(out, N=N, dim=-1)
                 out = out * mask
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
                 
             if self.use_least_N_on_V:
                 NZ = V // 16
@@ -777,6 +784,7 @@ class LinearEncoder(nn.Module):
                 
                 mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
                 out = out * mask
+                #out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
             
             if self.use_pou and not self.use_softmax:
                 out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
@@ -907,174 +915,6 @@ class LinearEncoder2(nn.Module):
             
         if return_id_in:
             return out, id_in
-        return out
-
-
-class TestCageEncoder(nn.Module):
-    def __init__(self, 
-                 in_dim=3, out_dim=3, hid_dim=128, num_layers=4, 
-                 num_cage_vertices=96,
-                 mode='rot', use_residual=False, out_type='vertices',
-                 use_softmax=False, use_relu=False, use_softplus=False, use_elu=False,
-                 use_least_N=False, use_least_N_on_V=False,no_activation=False,
-                 use_gate_layer=False,
-                 use_pou=False,
-                 act='lrelu', nrm='layer',
-                 tau=1e-2, use_K=False, K_dim=8,
-                ):
-        super().__init__()
-        
-        self.mode = mode
-        self.out_dim = out_dim
-        self._tau = 1 / tau
-        
-        self.use_residual = use_residual
-        
-        self.use_softmax=use_softmax
-        self.use_relu=use_relu
-        self.use_elu=use_elu
-        self.use_softplus=use_softplus
-        self.use_least_N = use_least_N
-        self.use_least_N_on_V = use_least_N_on_V
-        self.use_gate_layer = use_gate_layer
-        self.no_activation=no_activation
-        self.use_pou = use_pou
-
-        self.num_cage_vertices = num_cage_vertices
-        
-        self.out_type = out_type
-        self.use_K = use_K
-        self.K_dim = K_dim
-                
-        self.layer_in = nn.Linear(hid_dim, hid_dim)
-        self.layer_out = nn.Linear(hid_dim, out_dim)
-
-        self.layers = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
-            for _ in range(num_layers)
-        ])
-
-        self.base_cage_feature = torch.rand(
-            (num_cage_vertices, hid_dim)
-        ).requires_grad_(True)
-        
-        ## adaptive layer Norm
-        self.adain_in = MLP(
-            [in_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
-            act=act, nrm=nrm
-        )
-        
-        self.adains_m = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
-            for _ in range(num_layers)
-        ])
-        self.adains_s = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
-            for _ in range(num_layers)
-        ])
-        
-        if self.use_gate_layer:
-            self.gate_layer = nn.Sequential(
-                MLP([hid_dim, hid_dim, hid_dim, hid_dim, out_dim], act=act, nrm=nrm),
-                nn.Sigmoid(),
-            )
-        
-    def least_N_zeros_gate(self, out, N: int=128, dim: int = -1, tau: float = 0.01):
-        """
-        forward: hard top-(K-N) mask || backward: softmax(tau)
-        
-        Args:
-            out: (*, K)
-            N: least number of zero (keep = K - N)
-        
-        Return
-            mask: range in [0,1] (forward = 0/1, backward = soft)
-        """
-        K = out.size(dim)
-        keep = max(K - N, 0)
-        
-        if keep == 0:
-            soft = torch.softmax(out * self._tau, dim=dim)
-            return (torch.zeros_like(soft) - soft).detach() + soft
-    
-        # soft path for gradients
-        soft = torch.softmax(out * self._tau, dim=dim) # (*,K)
-    
-        # hard top-(K-N) mask (forward)
-        topk = torch.topk(out, keep, dim=dim)
-        hard = torch.zeros_like(out).scatter(dim, topk.indices, 1.0)
-    
-        # Straight-Through estimator
-        mask = (hard - soft).detach() + soft
-        return mask
-        
-    def forward(self, x_in, N=128, return_inv=False, return_raw=False):
-        B, V, C = x_in.shape
-        
-        out = self.forward_func(x_in)
-        
-        if self.out_type == 'global':
-            out = out.mean(-2, keepdims=True)
-
-        if not self.no_activation:
-            if self.use_softmax:
-                out = F.normalize(out, dim=-2) # normalize for each column (key points)
-                out = torch.softmax((out * self._tau), dim=-1) # softmax for each mesh vertex
-                
-            if self.use_relu:
-                out = F.normalize(out, dim=-2) # normalize for each column (key points)
-                out = F.relu(out)
-                
-            if self.use_softplus:
-                out = F.normalize(out, dim=-2) # normalize for each column (key points)
-                out = F.softplus(out)
-                
-            if self.use_elu:
-                out = F.normalize(out, dim=-2) # normalize for each column (key points)
-                out = F.elu(out, alpha=0.5)
-                
-            if self.use_least_N:
-                out = F.normalize(out, dim=-2) # normalize for each column (key points)
-                out = F.relu(out)
-                
-                mask = self.least_N_zeros_gate(out, N=N, dim=-1)
-                out = out * mask
-                
-            if self.use_least_N_on_V:
-                NZ = V // 16
-                out = F.normalize(out, dim=-2) # normalize for each column (key points)
-                out = F.relu(out)
-                
-                mask = self.least_N_zeros_gate(out, N=NZ, dim=-2) # on vertex dimension!
-                out = out * mask
-            
-            if self.use_pou and not self.use_softmax:
-                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-        else:
-            if self.use_pou:
-                out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
-        return out
-        
-        
-    def forward_func(self, x_in, return_inv=False):
-        id_in = self.adain_in(x_in).mean(-2, keepdims=True)
-
-        out = self.layer_in(self.base_cage_feature)
-        
-        for layer, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
-            l_out = layer(out)
-            l_out = l_out * sigma(id_in) + mu(id_in)
-            
-            if self.use_residual:
-                out = l_out + out
-            else:
-                out = l_out
-                
-        if self.use_gate_layer:
-            out = self.layer_out(out) * self.gate_layer(id_in)
-        else:
-            out = self.layer_out(out)
-                    
         return out
         
         
