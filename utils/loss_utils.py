@@ -18,8 +18,9 @@ def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, ret
     cage_vertices_expand = cage_vertices[:,None]
     
     mesh_vertices_dist = (mesh_vertices_expand - cage_vertices_expand)**2
-    
-    return (mesh_vertices_dist * coordinate_weight.unsqueeze(-1) ).mean()
+
+    w = torch.softmax((coordinate_weight / _tau), dim=-1)
+    return (mesh_vertices_dist * w.unsqueeze(-1) ).mean()
     
 def mvc_loss(mvc_weights):
     """ penalize MVC with negative values """
