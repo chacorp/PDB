@@ -7,8 +7,8 @@ def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, ret
     """
     Args:
         mesh_vertices: (B, N, 3)
-        cage_vertices: (B, C, 3)
-        coordinate_weight: (B, N, C)
+        cage_vertices: (B, K, 3)
+        coordinate_weight: (B, N, K)
     Returns:
         loss
     """
@@ -17,10 +17,37 @@ def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, ret
     mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
     cage_vertices_expand = cage_vertices[:,None]
     
-    mesh_vertices_dist = (mesh_vertices_expand - cage_vertices_expand)**2
+    mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand)
 
     w = torch.softmax((coordinate_weight / tau), dim=-1)
     return (mesh_vertices_dist * w.unsqueeze(-1) ).mean()
+
+def distance_loss2(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+    """
+    Args:
+        mesh_vertices: (B, N, 3)
+        cage_vertices: (B, K, 3)
+        coordinate_weight: (B, N, K)
+    Returns:
+        loss
+    """
+    B, V, _ = mesh_vertices.shape
+    
+    _tau = 1 / tau
+    _, C, _ = cage_vertices.shape
+    
+    mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
+    cage_vertices_expand = cage_vertices[:,None]
+    
+    # mesh_vertices_dist = torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1)
+    mesh_vertices_dist = torch.square(torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1))
+    
+    # candidate_idx = torch.argmax(mesh_vertices_dist, dim=1)
+    
+    mesh_vertices_max = mesh_vertices_dist.max(-2).values.unsqueeze(1)    
+    mesh_vertices_dist = 1 - (mesh_vertices_dist / mesh_vertices_max)
+    
+    return F.mse_loss(mesh_vertices_dist, coordinate_weight) 
     
 def mvc_loss(mvc_weights):
     """ penalize MVC with negative values """
