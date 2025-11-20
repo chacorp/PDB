@@ -516,6 +516,9 @@ class NeuralBarycentricCoordinatev3(nn.Module):
         elif self.in_type == 2:
             self.in_dim = 6+1
             in_dim_exp = 6+6+1
+        elif self.in_type == 3:
+            self.in_dim = 6
+            in_dim_exp = self.in_dim
         else:
             raise NotImplementedError('in_type not implemented')
             
@@ -679,22 +682,29 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             # position + normal            
             src_shp_in = torch.cat([source_vert, source_norm], dim=-1)
             
-            src_exp_in = torch.cat([delta_vert,      deform_norm, source_vert, source_norm], dim=-1)
-            src_neu_in = torch.cat([zeros_vert_src,  source_norm, source_vert, source_norm], dim=-1)
+            src_exp_in = torch.cat([delta_vert,     deform_norm, source_vert, source_norm], dim=-1)
+            src_neu_in = torch.cat([zeros_vert_src, source_norm, source_vert, source_norm], dim=-1)
             
             # arb_shp_in = torch.cat([arbitr_vert, arbitr_norm], dim=-1)
-            # arb_neu_in = torch.cat([zeros_vert_arb,  arbitr_norm, arbitr_vert, arbitr_norm], dim=-1)
+            # arb_neu_in = torch.cat([zeros_vert_arb, arbitr_norm, arbitr_vert, arbitr_norm], dim=-1)
             
         elif self.in_type == 2:
             # position + normal + mask
             src_shp_in = torch.cat([source_vert, source_norm, hat_mask], dim=-1)
             
-            src_exp_in = torch.cat([delta_vert,      deform_norm, source_vert, source_norm, hat_mask], dim=-1)            
-            src_neu_in = torch.cat([zeros_vert_src,  source_norm, source_vert, source_norm, hat_mask], dim=-1)
+            src_exp_in = torch.cat([delta_vert,     deform_norm, source_vert, source_norm, hat_mask], dim=-1)            
+            src_neu_in = torch.cat([zeros_vert_src, source_norm, source_vert, source_norm, hat_mask], dim=-1)
             
             # arb_shp_in = torch.cat([arbitr_vert, arbitr_norm, hat_mask], dim=-1)
-            # arb_neu_in = torch.cat([zeros_vert_arb,  arbitr_norm, arbitr_vert, arbitr_norm, hat_mask], dim=-1)
+            # arb_neu_in = torch.cat([zeros_vert_arb, arbitr_norm, arbitr_vert, arbitr_norm, hat_mask], dim=-1)
             
+            
+        elif self.in_type == 3:
+            # position + normal            
+            src_shp_in = torch.cat([source_vert, source_norm], dim=-1)
+            
+            src_exp_in = torch.cat([delta_vert,     deform_norm], dim=-1)
+            src_neu_in = torch.cat([zeros_vert_src, source_norm], dim=-1)
         else:
             raise NotImplementedError (f'no matching type!: {self.in_type}')
             
@@ -736,7 +746,7 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             key_weight = self.coordinate_predictor(src_shp_in, N=self.NZ) # (B, N, M)
             cage_w=None
         ### ---------------------------------------------------------
-
+        
         ### compute vertex position ---------------------------------
         src_exp_v = torch.einsum('bnc,bci->bni', key_weight, src_exp_cage_v) # (B, N, 3)
         src_neu_v = torch.einsum('bnc,bci->bni', key_weight, src_neu_cage_v) # (B, N, 3)
@@ -748,7 +758,7 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             pred_deformed = src_exp_v + source_vert
             pred_source = src_neu_v + source_vert
         ### ---------------------------------------------------------
-
+        
         
         # dummy -----------------------------------------------------
         #src_neu_v_ = torch.einsum('bnc,bci->bni', key_weight, src_neu_cage_v_) # (B, N, 3)
