@@ -975,15 +975,16 @@ class NeuralBarycentricCoordinatev4(nn.Module):
         else:
             raise NotImplementedError('out_type not implemented')
             
-        from models.encoder import LinearEncoder,LinearEncoder2
+        from models.encoder import LinearEncoder
         
         M = num_cage_vertices
         L = hid_dim
-        NZ= least_number_of_zeros
+        NZ = least_number_of_zeros
 
         # coordinate predictor
         self.key_weight_model = LinearEncoder(
-            in_dim=self.in_dim, out_dim=M, 
+            in_dim=self.in_dim,
+            out_dim=M, 
             use_softmax=use_softmax,
             use_relu=use_relu, # default setting
             use_elu=use_elu,
@@ -1131,7 +1132,7 @@ class NeuralBarycentricCoordinatev4(nn.Module):
         key_s, key_n, key_d = self.reshape_key_d(key_all, B)
         
         pred_disp = torch.einsum('bnc,bci->bni', key_weight, key_d)        
-        pred_deformed = pred_disp + tgt_neu_vert
+        #pred_deformed = pred_disp + tgt_neu_vert
         
         return pred_deformed, key_d
         
@@ -1169,6 +1170,9 @@ class NeuralBarycentricCoordinatev4(nn.Module):
             source_in = torch.cat([source_in, hat_mask], dim=-1)
             deform_in = torch.cat([deform_in, hat_mask], dim=-1)
 
+        ### target mesh coordinate prediction -----------------------
+        key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+        ### ---------------------------------------------------------
         
         ### cage prediction -----------------------------------------
         exp_z = self.exp_z_model(deform_in) # (B, 1, L)
@@ -1178,28 +1182,26 @@ class NeuralBarycentricCoordinatev4(nn.Module):
         # key_s_key_d = self.reshape_key_d(key_s_key_d, B) # (B, 2M, 3)
         
         # # M = self.num_cage_vertices
-        # M = key_s_key_d.shape[1]//2
+        # M = key_s_key_d.shape[1] // 2
         # key_s, key_d = key_s_key_d[:,:M], key_s_key_d[:,M:]+key_s_key_d[:,:M]
         ### ---------------------------------------------------------
 
         
+        ### cage coordinate prediction ------------------------------
         if self.out_type == 3:
             cage_in = torch.cat([key_s, key_n], dim=-1)
             cage_w = self.key_weight_model(cage_in, N=self.NZ) # for Lagrange property
 
             # source_n_cage_in = torch.cat([source_in, cage_in], dim=1)
             # source_n_cage_weight = self.key_weight_model(source_n_cage_in, N=self.NZ) # (B, N, M)
-            
             # key_weight, cage_w = source_n_cage_weight[:, :N], source_n_cage_weight[:, N:]
         else:
-            cage_w=None
-            
-        ### weight prediction ---------------------------------------
-        key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+            cage_w = None
         ### ---------------------------------------------------------
+            
                 
-        def_v = torch.einsum('bnc,bci->bni',key_weight,key_d) # (B, N, 3)
-        src_v = torch.einsum('bnc,bci->bni',key_weight,key_s) # (B, N, 3)
+        def_v = torch.einsum('bnc,bci->bni', key_weight, key_d) # (B, N, 3)
+        src_v = torch.einsum('bnc,bci->bni', key_weight, key_s) # (B, N, 3)
 
         if self.out_type == 3:
             pred_deformed = def_v

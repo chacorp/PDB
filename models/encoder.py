@@ -734,10 +734,10 @@ class LinearEncoder(nn.Module):
         mask = (hard - soft).detach() + soft
         return mask
         
-    def forward(self, x_in, N=128, return_inv=False, return_raw=False):
+    def forward(self, x_in, id_in=None, return_id_in=False, N=128, return_inv=False, return_raw=False):
         B, V, C = x_in.shape
         
-        out = self.forward_func(x_in)
+        out, id_out = self.forward_func(x_in, id_in, return_id_in)
         
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
@@ -791,13 +791,17 @@ class LinearEncoder(nn.Module):
         else:
             if self.use_pou:
                 out = out / (out.sum(dim=-1, keepdim=True)+1e-12)
+
+        if return_id_in:
+            return out, id_out
         return out
         
         
-    def forward_func(self, x_in, return_inv=False):
+    def forward_func(self, x_in, id_in=None, return_inv=False):
         out = self.layer_in(x_in)
         
-        id_in = self.adain_in(x_in).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
+        if id_in is None:
+            id_in = self.adain_in(x_in).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
         
         for layer, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
             l_out = layer(out)
@@ -812,7 +816,9 @@ class LinearEncoder(nn.Module):
             out = self.layer_out(out) * self.gate_layer(id_in)
         else:
             out = self.layer_out(out)
-                    
+
+        if return_id_in:
+            return out, id_in
         return out
 
 class LinearEncoder2(nn.Module):
