@@ -621,7 +621,7 @@ class LinearFeatureExtractor(nn.Module):
         self.layer_out = nn.Linear(hid_dim, out_dim)
         
         self.layers = nn.ModuleList([
-            MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
+            MLP([hid_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
             for _ in range(num_layers)
         ])
                 
@@ -861,12 +861,18 @@ class LinearEncoder2(nn.Module):
         ])
 
         ## for feature transform
-        if use_id_feat:
+        self.use_id_feat = use_id_feat
+        if self.use_id_feat:
             self.id_feat_in = MLP(
                 [in_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
                 act=act, nrm=nrm
             )
-        
+        else:
+            self.id_feat_in = MLP(
+                [hid_dim, hid_dim, hid_dim, hid_dim], 
+                act=act, nrm=nrm
+            )
+            
         self.STN_a = nn.ModuleList([
             MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
             for _ in range(num_layers)
@@ -921,8 +927,10 @@ class LinearEncoder2(nn.Module):
     def forward_func(self, x_in, id_in=None, return_id_in=False):
         out = self.layer_in(x_in)
 
-        if id_in is None:
+        if self.use_id_feat:
             id_in = self.id_feat_in(x_in).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
+        else:
+            id_in = self.id_feat_in(id_in)
         
         for layer, mu, sigma in zip(self.layers, self.STN_b, self.STN_a):
             l_out = layer(out)
@@ -973,9 +981,15 @@ class LinearDecoder2(nn.Module):
         ])
 
         ## for feature transform
-        if use_id_feat:
+        self.use_id_feat = use_id_feat
+        if self.use_id_feat:
             self.id_feat_in = MLP(
-                [in_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
+                [in_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
+                act=act, nrm=nrm
+            )
+        else:
+            self.id_feat_in = MLP(
+                [hid_dim, hid_dim, hid_dim, hid_dim], 
                 act=act, nrm=nrm
             )
         
@@ -993,8 +1007,10 @@ class LinearDecoder2(nn.Module):
         
         out = self.layer_in(x_in)
 
-        if id_in is None:
+        if self.use_id_feat:
             id_in = self.id_feat_in(x_in).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
+        else:
+            id_in = self.id_feat_in(id_in)
         
         for layer, mu, sigma in zip(self.layers, self.STN_b, self.STN_a):
             l_out = layer(out)

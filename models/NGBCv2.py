@@ -708,7 +708,6 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             # arb_shp_in = torch.cat([arbitr_vert, arbitr_norm, hat_mask], dim=-1)
             # arb_neu_in = torch.cat([zeros_vert_arb, arbitr_norm, arbitr_vert, arbitr_norm, hat_mask], dim=-1)
             
-            
         elif self.in_type == 3:
             # position + normal            
             src_shp_in = torch.cat([source_vert, source_norm], dim=-1)
@@ -754,13 +753,15 @@ class NeuralBarycentricCoordinatev3(nn.Module):
         ### weight prediction ---------------------------------------
         if self.out_type == 3:
             # process mesh and cage together!
-            key_weight = self.coordinate_predictor(src_shp_in, src_shp_code) # (B, N, M)
+            #key_weight = self.coordinate_predictor(src_shp_in, src_shp_code) # (B, N, M)
             
             # for Lagrange property
             cage_in = torch.cat([src_neu_cage_v, src_neu_cage_n], dim=-1)
-            cage_w = self.coordinate_predictor(cage_in, src_shp_code) # (B, N, M)
-            
-            # key_weight, cage_w = all_weight[:,:N], all_weight[:,N:]
+            #cage_w = self.coordinate_predictor(cage_in, src_shp_code) # (B, N, M)
+
+            source_cage_in = torch.cat([src_shp_in, cage_in], dim=1)
+            all_weight = self.coordinate_predictor(source_cage_in, src_shp_code) # (B, N, M)
+            key_weight, cage_w = all_weight[:,:N], all_weight[:,N:]
         else:
             key_weight = self.coordinate_predictor(src_shp_in, N=self.NZ) # (B, N, M)
             cage_w=None
