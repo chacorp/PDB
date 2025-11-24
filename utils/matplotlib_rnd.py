@@ -14,6 +14,11 @@ import matplotlib.colors as matclrs
 from matplotlib.collections import PolyCollection
 from matplotlib.animation import FuncAnimation #, PillowWriter
 # from functools import partial
+
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
+
 from tqdm import tqdm
 
 import subprocess
@@ -28,6 +33,9 @@ def vis_rig(rig, save_fn, normalize=False):
 def normalize(V):
     V = V - V.mean(axis=0)
     return V / np.max(np.linalg.norm(V, axis=1))
+
+def normalize_homogeneous(V):
+    return np.concatenate([V, np.ones((V.shape[0], 1))], axis=1)
     
 def frustum(left, right, bottom, top, znear, zfar):
     M = np.zeros((4, 4), dtype=np.float32)
@@ -56,6 +64,10 @@ def perspective(fovy, aspect, znear, zfar):
     w = h * aspect
     return frustum(-w, w, -h, h, znear, zfar)
 
+def transform(V, M):
+    V_h = np.hstack([V, np.ones((V.shape[0], 1))])
+    return (M @ V_h.T).T[:, :3]
+    
 def translate(x, y, z):
     return np.array([[1, 0, 0, x],
                      [0, 1, 0, y],
@@ -97,7 +109,6 @@ def transform_vertices(frame_v, MVP, F, norm=True, no_parsing=False):
         return V
     VF = V[F]
     return VF
-
 
 def softmax(x):
     exp_x = np.exp(x)
@@ -249,6 +260,247 @@ def plot_image_overlap(Vs, Fs, size=6, xrot=0,yrot=0,zrot=0, dist=-6, norm=False
 
 def _homogeneous(V):
     return np.concatenate([V, np.ones((V.shape[0], 1))], axis=1)
+
+def vis_mesh_key_weight(
+        verts, faces, key_weight, cage_idx,
+        SIZE=4, yrot=0, cmap='magma', vmin=None, vmax=None, show_cbar=True,
+        view_yrots=(0, 90, 180)
+    ):
+    """
+    Args:
+        verts: (N, 3)
+        faces: (F, 3) int
+        key_weight: (N, K)
+        cage_idx: int
+    """
+
+    assert key_weight.shape[0] == verts.shape[0], \
+        f"key_weight shape[0] ({key_weight.shape[0]}) != verts.shape[0] ({verts.shape[0]})"
+    assert 0 <= cage_idx < key_weight.shape[1], \
+        f"cage_idx {cage_idx} out of range [0, {key_weight.shape[1]-1}]"
+
+    print("verts min/max:", verts.min(0), verts.max(0))
+
+    Wv = key_weight[:, cage_idx]
+    Wf = Wv[faces].mean(axis=1)
+
+    if vmin is None: vmin = float(Wf.min())
+    if vmax is None: vmax = float(Wf.max())
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    cmap_fn = plt.get_cmap(cmap)
+
+    V = normalize_homogeneous(verts)
+    
+    view  = translate(0, 0, -3.5)
+    proj  = perspective(55, 1.0, 1.0, 100.0)
+#     proj = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
+    MV   = proj @ view
+    
+    
+    
+    num_views = len(view_yrots)
+    fig = plt.figure(figsize=(SIZE* num_views, SIZE ))
+    
+    for j, add_rot in enumerate(view_yrots):
+        model = yrotate(yrot+add_rot)
+        
+        #model = yrotate(yrot)
+        V_mu = np.median(V, axis=0)
+        V_model = (V-V_mu) @ model.T + V_mu
+        
+        #MVP   = proj @ view @ model
+        V_proj = V_model @ MV.T
+        V_proj  = V_proj[:, :3] / V_proj[:, 3:4]  # (N,3), -1~1
+    
+        VF = V_proj[faces]
+        T = VF[:, :, :2]
+        Z = -VF[:, :, 2].mean(1)
+        order = np.argsort(Z)
+    
+        T_sorted  = T[order]
+        W_sorted  = Wf[order]
+    
+        C = cmap_fn(norm(W_sorted))  # (F,4)
+    
+        #fig = plt.figure(figsize=(SIZE, SIZE))
+        # ax = fig.add_axes([0, 0, 1, 1], xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
+        # coll = PolyCollection(T_sorted, closed=True, linewidth=0.2, facecolor=C, edgecolor=C)
+        # ax.add_collection(coll)
+        # ax.set_xticks([]); ax.set_yticks([])
+        # ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
+        ax = fig.add_axes([j / num_views, 0, 1 / num_views, 1],
+                          xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
+
+        coll = PolyCollection(T_sorted, closed=True, linewidth=0.1,
+                              facecolor=C, edgecolor=C)
+        ax.add_collection(coll)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
+        # ax.set_title(f"y={yrot + add_rot}° ({mode})", fontsize=10)
+    
+        if show_cbar:
+            # colorbar
+            sm = ScalarMappable(norm=norm, cmap=cmap_fn)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax, fraction=0.02, pad=0.02)
+            cbar.set_label(f"key_weight[:, {cage_idx}]")
+    
+        plt.title(f"Cage vertex {cage_idx} weight")
+    plt.show()
+
+def vis_mesh_all_cage_weights(
+    verts, faces, key_weight,
+    cage_indices=None,
+    mode='argmax',              # 'argmax' | 'blend'
+    SIZE=4, yrot=0,
+    base_cmap='tab20',
+    show_legend=False,
+    mesh_scale=1.0,
+    mesh_trans=np.array([0,0.0,0]),
+    light_dir=np.array([0,0,1]),
+    view_yrots=(0, 90, 180)
+):
+    """
+    Visualizing per cage weight for each face (triangle).
+    
+
+    - mode='argmax': color with the single cage that has maximum weight
+    - mode='blend' : average the cage color using cage weight
+
+    Args:
+        verts: (N, 3)
+        faces: (F, 3) int
+        key_weight: (N, K)  # mesh vertex x cage vertex
+        cage_indices: list[int] or None
+        base_cmap: matplotlib colormap name ('tab20', 'tab20b', ...)
+    """
+    verts  = np.asarray(verts) * mesh_scale + mesh_trans
+    faces  = np.asarray(faces, dtype=int)
+    W_full = np.asarray(key_weight)
+    N, K = W_full.shape
+    assert verts.shape[0] == N, f"verts ({verts.shape[0]}) vs key_weight rows ({N}) mismatch"
+
+    if cage_indices is None:
+        cage_indices = list(range(K))
+    else:
+        cage_indices = list(cage_indices)
+        assert all(0 <= i < K for i in cage_indices), "cage_indices out of range"
+
+    M = len(cage_indices)
+
+    ## color palete
+    cmap = plt.get_cmap(base_cmap, max(M, 3))  # least 3
+    
+    # if M <= cmap.N:
+    if False:
+        base_colors = np.asarray([cmap(i) for i in range(M)])  # (M,4)
+    else:
+        cmap_wide = plt.get_cmap('nipy_spectral')
+        # cmap_wide = plt.get_cmap('gist_rainbow')
+        # cmap_wide = plt.get_cmap('rainbow') ##
+        # cmap_wide = plt.get_cmap('jet')
+        # cmap_wide = plt.get_cmap('cubehelix')
+        # cmap_wide = plt.get_cmap('turbo')
+        # cmap_wide = plt.get_cmap('gist_ncar')
+        base_colors = np.asarray([cmap_wide(i/(M-1)) for i in range(M)])
+        # base_colors = np.asarray([cmap_wide(i/(M)) for i in range(M)])
+
+    # (N, M) 선택 케이지 weight
+    W_sel = W_full[:, cage_indices]  # (N, M)
+    Wf_all = W_sel[faces].mean(axis=1)
+
+    #V = normalize_homogeneous(verts)
+    #V = verts #- verts.mean(0, keepdims=True)
+    V = normalize_homogeneous(verts)
+    view = translate(0, 0, -4.5)
+    #proj = perspective(45, 1.0, 1.0, 100.0)
+    proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
+    MV   = proj @ view
+    
+    num_views = len(view_yrots)
+    fig = plt.figure(figsize=(SIZE* num_views, SIZE ))
+    
+    for j, add_rot in enumerate(view_yrots):
+        model = yrotate(yrot+add_rot)
+        
+        #V_clip = V @ MVP.T
+        # V_clip = transform(V, MVP)
+        C = calc_face_norm(verts, faces) @ model[:3,:3].T
+        
+        # V_mu = np.median(V, axis=0)
+        V_mu = np.array([[0, 0, -0.45, 0]])
+        V_model = (V - V_mu) @ model.T + V_mu
+        #V_model = V_model - np.mean(V_model, axis=0) + V_mu
+
+        V_proj = V_model @ MV.T
+        V_ndc  = V_proj[:, :3] / V_proj[:, 3:4]  # (N,3), -1~1
+        # V_ndc  = V_clip[:, :3] / V_clip[:, 3:4]
+    
+        VF = V_ndc[faces]        # (F, 3, 3)
+        T  = VF[:, :, :2]        # (F, 3, 2)
+        Z  = -VF[:, :, 2].mean(1)
+        order = np.argsort(Z)
+    
+        T_sorted = T[order]
+        W_sorted = Wf_all[order]
+        C_sorted = C[order]
+        NI = np.argwhere(C_sorted[:,2] > 0).squeeze()
+
+        T_sorted = T_sorted[NI]
+        W_sorted = W_sorted[NI]
+        C_sorted = C_sorted[NI]
+        
+        C_sorted = (C_sorted @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
+        C_sorted = C_sorted*0.7+0.2
+    
+        if mode == 'argmax':
+            labels = np.argmax(W_sorted, axis=-1)  # (F,)
+            face_colors = base_colors[labels]     # (F,4)
+            face_colors[:,:3] = face_colors[:,:3] *0.7 + C_sorted *.3
+            print(face_colors.shape)
+        elif mode == 'blend':
+            # sum_row = W_sorted.sum(axis=1, keepdims=True) + 1e-12
+            # Wn = W_sorted / sum_row
+            Wn = W_sorted #/ W_sorted.max()
+            # print(Wn.min(), Wn.max())
+            rgb = Wn @ base_colors[:, :3]    # (F,3)
+            # rgb = rgb * 2
+            # print(rgb.min(), rgb.max())
+            rgb = (rgb-rgb.min(0)) / (rgb.max(0) - rgb.min(0))
+            print(Wn.shape, T_sorted.shape, rgb.shape, C_sorted.shape)
+            rgb = rgb *0.7 + C_sorted *.3
+            rgb = np.clip(rgb, 0, 1)
+            alpha = np.ones((rgb.shape[0], 1))
+            face_colors = np.concatenate([rgb, alpha], axis=1)  # (F,4)
+        else:
+            raise ValueError("mode must be 'argmax' or 'blend'")
+    
+        ### PLOT
+        #fig = plt.figure(figsize=(SIZE, SIZE))
+        # ax = fig.add_axes([0, 0, 1, 1], xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
+        ax = fig.add_axes([j / num_views, 0, 1 / num_views, 1],
+                          xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
+
+        coll = PolyCollection(T_sorted, closed=True, linewidth=0.1,
+                              facecolor=face_colors, edgecolor='black')
+        ax.add_collection(coll)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
+        ax.set_title(f"y={yrot + add_rot}° ({mode})", fontsize=10)
+        # plt.title(f"All cage weights ({mode})")
+    
+        if show_legend:
+            handles = []
+            for i, ci in enumerate(cage_indices):
+                handles.append(mpatches.Patch(color=base_colors[i], label=f"cage {ci}"))
+            
+            if len(handles) <= 12:
+                ax.legend(handles=handles, loc='upper right', fontsize=8)
+            else:
+                ax.legend(handles=handles, bbox_to_anchor=(1.02, 1.0), loc='upper left',
+                          borderaxespad=0., fontsize=7, ncol=1)
+
+    plt.show()
 
 def plot_image_array(Vs, 
                      Fs, 
@@ -437,9 +689,7 @@ def plot_image_array_grd(Vs, Fs,
         show=True
     )
     """
-    def transform(V, M):
-        V_h = np.hstack([V, np.ones((V.shape[0], 1))])
-        return (M @ V_h.T).T[:, :3]
+    
 
     num_meshes = len(Vs)
     plt.style.use('dark_background' if bg_black else 'default')

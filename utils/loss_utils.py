@@ -19,8 +19,9 @@ def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, ret
     
     mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand)
 
-    w = torch.softmax((coordinate_weight / tau), dim=-1)
-    return (mesh_vertices_dist * w.unsqueeze(-1) ).mean()
+    #w = torch.softmax((coordinate_weight / tau), dim=-1)
+    w = coordinate_weight
+    return (mesh_vertices_dist * w.unsqueeze(-1)).mean()
 
 def distance_loss2(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
     """

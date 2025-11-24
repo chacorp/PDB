@@ -150,25 +150,45 @@ class Trainer():
 
         last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
-        
-        self.model = NeuralBarycentricCoordinatev3(
-            opts, num_layers=4,
-            num_cage_vertices=self.opts.num_cage_v,
-            use_exp_recon=False, # not used yet
-            use_shp_recon=False, # not used yet
-            use_shp=False,
-            use_relu=last_act_list[0],
-            use_elu=last_act_list[1],
-            use_softmax=last_act_list[2],
-            use_softplus=last_act_list[3],
-            no_activation=last_act_list[4],
-            use_sqrelu=last_act_list[5],
-            use_least_N_on_V=False,
-            is_train=True,
-            use_pou = ~self.opts.no_pou,
-            device=self.device,
-            hid_dim=128 if self.opts.align_latent else 256,
-        )
+
+        if self.opts.version==1:
+            self.model = NeuralBarycentricCoordinatev2(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                use_sqrelu=last_act_list[5],
+                use_least_N_on_V=False,
+                is_train=True,
+                use_pou = ~self.opts.no_pou,
+                device=self.device,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+        elif self.opts.version==2:
+            self.model = NeuralBarycentricCoordinatev3(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                use_sqrelu=last_act_list[5],
+                use_least_N_on_V=False,
+                is_train=True,
+                use_pou = ~self.opts.no_pou,
+                device=self.device,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
             
         # load weight
         self.load_weight()
