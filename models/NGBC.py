@@ -147,7 +147,7 @@ class NeuralGeneralizedBarycentricCoordinate_(nn.Module):
             tmp_R = self._6D_to_rot_(tmp_R).reshape(B, -1, 3, 3)
             key_d = torch.cat([tmp_R, tmp_t[..., None]], dim=-1) # (B, M, 3, 4)
             key_d = key_d.permute(0,1,3,2).reshape(B, -1, 3) # (B, M4, 3)
-            #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
+            # key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
         else:
             key_d = key_d.reshape(B, self.num_cage_vertices, 3)
             # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
