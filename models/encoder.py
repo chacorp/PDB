@@ -797,7 +797,7 @@ class LinearEncoder(nn.Module):
         return out
         
         
-    def forward_func(self, x_in, id_in=None, return_inv=False):
+    def forward_func(self, x_in, id_in=None, return_id_in=False, return_inv=False):
         out = self.layer_in(x_in)
         
         if id_in is None:
@@ -819,7 +819,7 @@ class LinearEncoder(nn.Module):
 
         if return_id_in:
             return out, id_in
-        return out
+        return out, None
 
 class LinearEncoder2(nn.Module):
     def __init__(self, 

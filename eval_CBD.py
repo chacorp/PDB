@@ -47,6 +47,7 @@ from models.NGBC import (
 #     NeuralGeneralizedBarycentricCoordinate8, # (not used)
 #     NeuralGeneralizedBarycentricCoordinate55 # (not used)
 )
+from models.NGBCv2 import NeuralBarycentricCoordinatev2, NeuralBarycentricCoordinatev3
 
 import torch.multiprocessing as mp
 
@@ -65,8 +66,8 @@ def Options():
                         help='select dataset (-1: all, 0: voca, 1:biwi, 2: mf_SEN, 3: coma, 4: mf_ROM, 5: mf all)')
     
     #### Choose a last layer activation for key_weight_model()
-    parser.add_argument("--last_activation", default="relu", choices=["relu", "elu", "softmax", "softplus", "none"],
-        help="Choose a last layer activation for NGBC.key_weight_model()", 
+    parser.add_argument("--last_activation", default="relu", choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"],
+        help="Choose a last layer activation for NGBC.key_weight_model()"
     )
     
     parser.add_argument("--no_pou",dest='no_pou', action='store_true')
@@ -175,7 +176,7 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
 
-        last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
+        last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         if opts.version==0:
             #from models import NFS
@@ -266,6 +267,44 @@ class Trainer():
                 use_pou = ~self.opts.no_pou,
                 device=self.device,
                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+        elif opts.version==21:
+            self.model = NeuralBarycentricCoordinatev2(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                use_sqrelu=last_act_list[5],
+                use_least_N_on_V=False,
+                is_train=True,
+                use_pou = ~self.opts.no_pou,
+                device=self.device,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+        elif self.opts.version==22:
+            self.model = NeuralBarycentricCoordinatev3(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                use_sqrelu=last_act_list[5],
+                use_least_N_on_V=False,
+                is_train=True,
+                use_pou = ~self.opts.no_pou,
+                device=self.device,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
         else:
@@ -573,10 +612,10 @@ class Trainer():
                 
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
-            if index == 0:
-                inner_mask = plateau_hat_points(batch.template)
-                mmm = batch.template.shape[0] / torch.count_nonzero(inner_mask)
-                print('multiply', mmm)
+            # if index == 0:
+            #     inner_mask = plateau_hat_points(batch.template)
+            #     mmm = batch.template.shape[0] / torch.count_nonzero(inner_mask)
+            #     print('multiply', mmm)
                 
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
@@ -745,11 +784,29 @@ class Trainer():
                                     torch.FloatTensor(tmp_L.data).to(device),
                                     tmp_L.shape
                                 )
-                    #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
                     if self.opts.version==1:
                         # NEURAL CAGE
                         pred_vertices, _ = trainer.model.retarget(
                             batch.template, batch.vertices, batch.template
+                        )
+                    elif self.opts.version==21:
+                        # NEURAL CAGE
+                        pred_vertices, recon_vertices, recon_source, exp_z, \
+                        pred_source, _, _, _, _, _, _ = self.model(
+                            batch.template, batch.vertices, 
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=0
+                        )
+                        ## Use only displacement
+                        pred_vertices = pred_vertices - pred_source + batch.template
+                    elif self.opts.version==22:
+                        (
+                            pred_vertices, _, pred_source, _, 
+                            src_exp_z, _, _, _, _, _, _, _, _, _
+                        ) = self.model(
+                            batch.template, batch.vertices, 
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=0
                         )
                     else:
                         # Ours
@@ -1202,6 +1259,10 @@ if __name__ == "__main__":
         python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-06-09-10-57-34-all --data_selection 0 --realtest
         python eval_CBD.py --version 0 --ckpt ./ckpt_stage1/2024-07-08-06-27-12-all --data_selection 0 --realtest
         
+
+        ## NBC++ (version 2)
+        python eval_CBD.py --version 21 --ckpt ./ckpts_CBD3/2025-11-26-14-46-32-NGBCv1 --data_selection 2 --realtest --batch_size 1 --save_vert --use_t_mask
+        python eval_CBD.py --version 21 --ckpt ./ckpts_CBD3/2025-11-21-12-50-24-NGBCv1 --data_selection 2 --realtest --batch_size 1 --save_vert --use_t_mask
     """
     mp.set_start_method('spawn', force=True)
     

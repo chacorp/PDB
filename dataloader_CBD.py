@@ -933,7 +933,7 @@ class CBDDataset(data.Dataset):
             
     def get_ict_params(self):
         if self.mode == 'train':
-            iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')#[:111]
+            iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:111]
             expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
         else:
             iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')

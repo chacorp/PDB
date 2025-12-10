@@ -5,6 +5,30 @@ import pickle
 import numpy as np
 
 # --- Loss Functions ---
+def distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+    """
+    Args:
+        mesh_vertices: (B, N, 3)
+        cage_vertices: (B, K, 3)
+        coordinate_weight: (B, N, K)
+    Returns:
+        loss
+    """
+    _,C,_=cage_vertices.shape
+    # import pdb;pdb.set_trace()
+    # _denom = coordinate_weight.sum(1, keepdim=True) # (B, 1, K)
+    # _denom[_denom<=0]=1
+    num_nonzero = torch.count_nonzero(coordinate_weight, dim=-1)
+    
+    _coordinate_weight = coordinate_weight / num_nonzero.unsqueeze(-1) # (B, N, K)
+    # _coordinate_weight = torch.nan_to_num(_coordinate_weight)
+    
+    # mean_v = torch.zeros_like(cage_vertices)
+    # for i in range(cage_vertices.shape[1]):        
+    K_mesh_vertices = _coordinate_weight.transpose(2,1) @ mesh_vertices
+    
+    return F.mse_loss(K_mesh_vertices, cage_vertices)
+
 def distance_loss(
         mesh_vertices,
         cage_vertices,
@@ -12,6 +36,7 @@ def distance_loss(
         tau=0.02,
         return_e=False
     ):
+
     """
     Args:
         mesh_vertices: (B, N, 3)
