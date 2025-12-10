@@ -330,7 +330,7 @@ class Trainer():
             "exp-v": 1.0,
             "shape": 1.0,
             "lag": 1.0,
-            "dist": 1.0,
+            "dist": 0.5,
             # "pou": self.opts.lambda_vert,
             # symm 
         }
@@ -395,7 +395,7 @@ class Trainer():
                     
                     ### random sampling and random permutation
                     N = batch.template.shape[1]
-                    use_perm = torch.rand(1) > 0.3
+                    use_perm = torch.rand(1) > 0.7
                     
                     # use_perm = False
                     if use_perm:
@@ -464,7 +464,7 @@ class Trainer():
                 #############################################################
 
                 ###### distance loss ########################################
-                loss_dict['dist'] = distance_loss(
+                loss_dict['dist'] = distance_loss3(
                     batch_template_v, pred_cage_s, pred_key_weight
                 )
                 #############################################################
