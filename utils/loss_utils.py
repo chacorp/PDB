@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # --- Loss Functions ---
-def distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+    
+def distance_loss3_(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
     """
     Args:
         mesh_vertices: (B, N, 3)
@@ -26,6 +27,36 @@ def distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, re
     K_mesh_vertices = _coordinate_weight.transpose(2,1) @ mesh_vertices
     
     return F.mse_loss(K_mesh_vertices, cage_vertices)
+    
+def distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+    """
+    Args:
+        mesh_vertices: (B, N, 3)
+        cage_vertices: (B, K, 3)
+        coordinate_weight: (B, N, K)
+    Returns:
+        loss
+    """
+    B, C, _ = cage_vertices.shape
+    
+    sum_coordinate_weight = coordinate_weight.sum(-2, keepdim=True) # (B, 1, K)
+    coordinate_weight_  = coordinate_weight / (sum_coordinate_weight + 1e-12)
+    K_mesh_vertices = coordinate_weight_.transpose(2,1) @ mesh_vertices
+
+    ####################################################
+    # consider only Σw_i > 0, (i=cage vertex index)
+    mask = (sum_coordinate_weight > 0).all(-2)
+    
+    K_mesh_vertices = K_mesh_vertices[mask].reshape(B,-1,3)
+    cage_vertices = cage_vertices[mask].reshape(B,-1,3)
+    ####################################################
+    
+    # if torch.isnan(K_mesh_vertices).any():
+    loss = F.mse_loss(K_mesh_vertices.detach(), cage_vertices)
+    
+    # if torch.isnan(loss):
+    #     import pdb;pdb.set_trace()
+    return loss
 
 def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
     """
