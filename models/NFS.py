@@ -85,19 +85,19 @@ class NFS(nn.Module):
             # self.img_encoder = mesh_ae.img_encoder
             # self.img_fc = mesh_ae.img_fc
             self.img_encoder = TextureEncoder()
-            img_feat=32
+            img_feat=128
             self.img_fc = nn.Linear(128, img_feat)
-            self.id_encoder = BaseDiffusionNetEncoder(
+            self.mesh_id_encoder = BaseDiffusionNetEncoder(
                 in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
                 pre_computes=mesh_dfn_info,
                 out_shape=self.id_dim,
             )
-            self.exp_encoder = BaseDiffusionNetEncoder(
+            self.mesh_exp_encoder = BaseDiffusionNetEncoder(
                 in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
                 pre_computes = mesh_dfn_info,
                 out_shape=self.rig_dim,
             )
-            self.decoder = BaseDecoder(
+            self.mesh_decoder = BaseDecoder(
                 #in_shape=3+3+128+100+53, ### NFR original setting
                 in_dim=in_shape_dict[self.in_key]+self.img_feat_dim+self.rig_dim+self.id_dim, 
                 out_shape=out_shape_dict[self.out_key]
@@ -293,13 +293,13 @@ class NFS(nn.Module):
         
         #---------------------------------------------------------------------------------
         if self.opts.seg_dim == 20:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot.npy'
         elif self.opts.seg_dim == 24:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot_24.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_24.npy'
         elif self.opts.seg_dim == 14:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot_14.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_14.npy'
         elif self.opts.seg_dim == 6:
-            seg_npy = f'{abs_path}/utils/ict/ICT_segment_onehot_06.npy'
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_06.npy'
         else:
             raise NotImplementedError(f"no segment map for seg_dim: {self.opts.seg_dim}")
         
@@ -315,7 +315,9 @@ class NFS(nn.Module):
             from utils.nfr_utils import reconstruct_jacobians
             from utils.deformation_transfer import deformation_gradient
             
-            self.normalizer = Normalizer(f"{abs_path}/{self.opts.std_file}", self.device)
+            self.reconstruct_jacobians = reconstruct_jacobians
+            
+            self.normalizer = Normalizer(f"{__abs_path__}/{self.opts.std_file}", self.device)
             self.myfunc = deformation_gradient.apply
         #---------------------------------------------------------------------------------
 
@@ -507,6 +509,7 @@ class NFS(nn.Module):
         --------
             out_pred (torch.tensor): deformed vertices of the mesh
         """
+        
         lu_solver, idxs, vals, rhs = operators
         pred_vert = myfunc(pred_jacob, lu_solver, idxs, vals, rhs.shape)
         pred_vert = pred_vert.float() # float64 -> float32
@@ -575,7 +578,8 @@ class NFS(nn.Module):
                 local_feat = torch.cat([verts_pos, verts_nrm, verts_img_feat], dim=-1) # [1, V, 3+3+128]
         else:
             verts_pos = vertices # [1, V, 3]
-            tri_centr = self.calc_cent(verts_pos.squeeze(0), faces, mode='torch').unsqueeze(0)
+            tri_centr = verts_pos.squeeze(0)[faces].mean(-2).unsqueeze(0)
+            #tri_centr = self.calc_cent(verts_pos.squeeze(0), faces, mode='torch').unsqueeze(0)
             tri_norms = self.calc_norm_torch(verts_pos, faces)
             if 'new1' in self.opts.design:
                 local_feat = torch.cat([tri_centr, tri_norms], dim=-1) # [1, V, 3+3+128]
@@ -644,8 +648,11 @@ class NFS(nn.Module):
         ----------
             seg_code (torch.tensor): [B, Exp] segment code per batch
         """
-        self.mesh_seg_encoder.update_precomputes(dfn_info)
-        if  'mk2' in self.opts.design:
+        if self.opts.design=='nfr':
+            return None
+        
+        self.mesh_seg_encoder.update_precomputes(dfn_info)        
+        if 'mk2' in self.opts.design:
             seg_code = self.mesh_seg_encoder(vert_feat, id_in=id_in) # [1, ID]
         else:
             seg_code = self.mesh_seg_encoder(vert_feat) # [1, ID]
@@ -899,7 +906,7 @@ class NFS(nn.Module):
             
         if self.opts.dec_type=='jacob':
             pred_jacobians = self.normalizer.inv_normalize(pred_outputs)
-            pred_jacobians = reconstruct_jacobians(pred_jacobians, repr='matrix')
+            pred_jacobians = self.reconstruct_jacobians(pred_jacobians, repr='matrix')
             
             pred_outputs = self.calc_vert(pred_jacobians, self.myfunc, operators)
         else:
@@ -986,18 +993,15 @@ class NFS(nn.Module):
                             
                 pred_outputs.append(tmp_vertices)
             pred_outputs = torch.vstack(pred_outputs)  #-------------------- [W, V, 3]
-            ## empty_cache
-            torch.cuda.empty_cache()
-        
+            
         
         ## converting outputs
         ## NFR design requires Poisson solving to obtain final vertices
         if self.opts.dec_type=='jacob':
             if operators is None:
                 operators = self.get_mesh_operators(tgt_mesh)
-            
             pred_jacobians = self.normalizer.inv_normalize(pred_outputs)
-            pred_jacobians = reconstruct_jacobians(pred_jacobians, repr='matrix')
+            pred_jacobians = self.reconstruct_jacobians(pred_jacobians, repr='matrix')
             
             with torch.no_grad():
                 pred_outputs = self.calc_vert(pred_jacobians, self.myfunc, operators)
@@ -1510,7 +1514,6 @@ class NFS(nn.Module):
                     pred_seg_coeff = self.encode_seg(vert_feat, dfn_info)# [1, V, Seg]
             else:
                 pred_seg_coeff = None
-        torch.cuda.empty_cache()
         ##------------------------------------------------------------------------------
         
         

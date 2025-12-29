@@ -8,11 +8,13 @@ import pickle
 import trimesh
 from functools import partial
 
-from utils import (
+from utils.remesh_utils import (
     ICT_face_model, 
     procrustes_LDM, 
-    plot_image_array, 
     calc_norm_torch
+)
+from utils.matplotlib_rnd import (
+    plot_image_array, 
 )
 from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, KEYS
 from utils.remesh_utils import map_vertices, decimate_mesh_vertex
@@ -1808,7 +1810,7 @@ class NFSDataset(data.Dataset):
             self.iden_vecs = np.r_[self.iden_vecs, id_zero, id_vecs]
         
         self.ict_face_model = ICT_face_model(face_only=False)
-        self.ict_precompute_path = f'./ICT/precompute-fullhead'
+        self.ict_precompute_path = f'./ICT/precompute-real-fullhead'
         self.ict_precompute_path_synth = f'./ICT/precompute-synth-fullhead'
         
         self.ict_face_model_fo = ICT_face_model(face_only=True)
@@ -1979,13 +1981,14 @@ class NFSDataset(data.Dataset):
         v_normal = calc_norm_torch(vertices, faces, at='v').float()
         
         ## correspondence feature
-        # corr_feat = torch.zeros(template.shape[0], 2048)
-        precompute_dir = self.ict_precompute_path
-        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
-        v_num = vertices.shape[0]
-        corr_feat = torch.load(corr_feat_file).float()[:v_num]
-        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, sent
+        corr_feat = torch.zeros(template.shape[0], 2048)
+        # precompute_dir = self.ict_precompute_path
+        # corr_feat_file = os.path.join(precompute_dir, f"{id_}_diff3f.pth")
+        # v_num = vertices.shape[0]
+        # corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        
+        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, sent
         
     def get_ICTsynthetic(self, index):
         e_index   = index % self.expression_vecs.shape[0]
@@ -2001,13 +2004,16 @@ class NFSDataset(data.Dataset):
         exp_coeff = torch.cat([exp_coeff, torch.zeros(self.WS, 75)], dim=-1) # --------------------------- [W, 128]
         
         # get template vertices and face indices (neutral face)
-        if not self.ict_face_only:
+        if not self.ict_face_only and self.mode!='test':
             if random.random() > 0.5:
                 ict_model = self.ict_face_model
                 ict_path_synth = self.ict_precompute_path_synth
             else:
                 ict_model = self.ict_face_model_fo
                 ict_path_synth = self.ict_precompute_path_fo_synth
+        else:
+            ict_model = self.ict_face_model
+            ict_path_synth = self.ict_precompute_path_synth
         
         vertices, template, _ = ict_model.apply_coeffs(
             id_coeff[:100].numpy(), 
@@ -2030,11 +2036,11 @@ class NFSDataset(data.Dataset):
         v_normal = calc_norm_torch(vertices, faces, at='v')
         
         ## correspondence feature
-        # corr_feat = torch.zeros(template.shape[0], 2048)
-        precompute_dir = self.ict_synth_precompute
-        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
-        v_num = vertices.shape[0]
-        corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        corr_feat = torch.zeros(template.shape[0], 2048) ## dummy!
+        # precompute_dir = self.ict_precompute_path_synth
+        #corr_feat_file = os.path.join(precompute_dir, f"{id_idx:03d}_diff3f.pth")
+        #v_num = vertices.shape[0]
+        # corr_feat = torch.load(corr_feat_file).float()[:v_num]
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -2274,7 +2280,7 @@ class NFSDataset(data.Dataset):
         # self.identity_num[audio_path.split('/')[5]]
         
         ## Random Augmentation ---------------------------------------------------------
-        template, vertices = self.augment_trans_scale(template, vertices)
+        # template, vertices = self.augment_trans_scale(template, vertices)
         ## -----------------------------------------------------------------------------
         
         torch.cuda.empty_cache()
