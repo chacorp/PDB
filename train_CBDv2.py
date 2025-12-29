@@ -464,8 +464,22 @@ class Trainer():
                 #############################################################
 
                 ###### distance loss ########################################
-                loss_dict['dist'] = distance_loss3(
+                # loss_dict['dist'] = distance_loss3(
+                #     batch_template_v, pred_cage_s, pred_key_weight
+                # )
+                # if epoch >= 100:
+                #     loss_dict['dist'] += distance_loss3(
+                #     batch_template_v, pred_cage_s, pred_key_weight
+                # )
+                # loss_dict['dist'] = distance_loss(
+                #     batch_template_v, pred_cage_s, pred_key_weight
+                # ) + distance_loss3(
+                #     batch_template_v, pred_cage_s, pred_key_weight
+                # )
+                loss_dict['dist'] = distance_loss(
                     batch_template_v, pred_cage_s, pred_key_weight
+                ) + distance_loss(
+                    batch_vertices_v, pred_cage_d, pred_key_weight
                 )
                 #############################################################
                 
