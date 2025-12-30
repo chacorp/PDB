@@ -34,23 +34,15 @@ from dataloader_CBD import (
     # CBD_collate_wrapper2,
 )
 
-# from utils.mesh_utils import Renderer #, calc_cent
 from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
 from utils.ckpt_utils import *
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 from utils.exp_utils import plateau_hat_points
 from utils.mesh_utils import calc_norm_torch
 
-# from utils.exp_utils import Model_mk1, Model_mk3_1
-# from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
-
 from models.baseline import CageNet
-from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinate5,
-    # NeuralGeneralizedBarycentricCoordinate8,
-    # NeuralGeneralizedBarycentricCoordinate55,
-)
-
+from models.NGBC import NeuralGeneralizedBarycentricCoordinate
+from utils.loss_utils import *
 
 
 # sys.path = list(set(sys.path))
@@ -88,7 +80,7 @@ def Options():
     parser.set_defaults(use_decimate=False)
 
     #### Choose a last layer activation for key_weight_model()
-    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none"],
+    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"],
         help="Choose a last layer activation for NGBC.key_weight_model()"
     )
     
@@ -137,130 +129,6 @@ def Options():
     args = parser.parse_args()
     return args
 
-# --- Loss Functions ---
-def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
-    """
-    Args:
-        mesh_vertices: (B, N, 3)
-        cage_vertices: (B, C, 3)
-        coordinate_weight: (B, N, C)
-    Returns:
-        loss
-    """
-    _,C,_=cage_vertices.shape
-    
-    mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
-    cage_vertices_expand = cage_vertices[:,None]
-    
-    mesh_vertices_dist = mesh_vertices_expand - cage_vertices_expand
-    
-    return (mesh_vertices_dist * coordinate_weight.unsqueeze(-1) ).mean()
-    
-def mvc_loss(mvc_weights):
-    """ penalize MVC with negative values """
-    neg_loss = torch.nn.functional.relu(-mvc_weights) ** 2
-    return torch.mean(neg_loss)
-
-def p2f_loss(before_v, after_v, normals_before, normals_after):
-    """ Point-to-Surface Loss
-    Args:
-        before_v: (B, N, 3) vertices source mesh
-        after_v: (B, N, 3) vertices deformed mesh
-        normals_before: (B, N, 3) normals from pca plane in source mesh
-        normals_after: (B, N, 3) normals from pca plane in deformed mesh
-    Returns
-        loss (float)
-    """
-    
-    def distance(verts, norms):
-        dists = torch.abs(torch.sum(verts * norms, dim=-1))
-        return dists
-
-    before_dist = distance(before_v, normals_before)
-    after_dist = distance(after_v, normals_after)
-    return F.mse_loss(before_dist, after_dist)
-
-def pca_normal_axis(verts, neighbors_map):
-    """
-    Args:
-        verts (torch.tensor): (B, N, 3) vertices
-        neighbors_map (list(int):
-    Returns:
-        normal_axis: (B, N, 3)
-    """
-    B, V, _ = verts.shape
-    
-    normal_axis = torch.zeros_like(verts)
-    for i, neighbors_idx in enumerate(neighbors_map):
-        if len(neighbors_idx) < 2: continue
-
-        neighborhood = verts[:, neighbors_idx, :]
-        centroid = torch.mean(neighborhood, dim=1)
-        _, _, V_svd = torch.linalg.svd(neighborhood - centroid.unsqueeze(1))
-        normal_axis[:, i, :] = V_svd[:, -1, :]
-    return normal_axis
-
-def norm_loss(normals_before, normals_after):
-    """ PCA Normal Loss 
-    Args:
-        before_v: (B, N, 3) vertices source mesh
-        after_v: (B, N, 3) vertices deformed mesh
-        normals_before: (B, N, 3) normals from pca plane in source mesh
-        normals_after: (B, N, 3) normals from pca plane in deformed mesh
-    Returns
-        loss (float)
-    """
-    return torch.mean(1.0 - F.cosine_similarity(normals_before, normals_after, dim=-1))
-
-def non_ict_loss(pred):
-    """Reference from Neural Face Rigging for Animating and Retargeting Facial Meshes in the Wild [Qin et al. 2023], Eq.(3)
-    L_FACS = {   
-         -x, x < 0 
-          0, 0 <= x < 1
-        x-1, x > 1
-    }
-    Args:
-        pred (torch.tensor): predicted expression code
-    
-    Returns:
-        loss
-    """
-    
-    loss = torch.where(pred < 0, -pred, torch.where(pred > 1, pred - 1, torch.zeros_like(pred))).mean()
-    return loss
-
-def laplacian_loss(batch, pred_key_weight, dataset, mesh_data_num, device):
-    """
-    Args:
-        batch: data class
-        pred_key_weight: coordinate prediction (B,V,C)
-        dataset: train dataset
-        device: cpu, cuda
-    Returns:
-        laplacian smoothing loss
-    """
-    
-    if mesh_data_num == 0:
-        L = dataset.voca_cotmatrix[batch.id_name].to(device)
-    elif mesh_data_num == 1:
-        L = dataset.biwi_cotmatrix[batch.id_name].to(device)
-    elif mesh_data_num == 2:
-        L = dataset.mf_SEN_cotmatrix[batch.id_name].to(device)
-    elif mesh_data_num == 3:
-        L = dataset.coma_cotmatrix[batch.id_name].to(device)
-    elif mesh_data_num == 4:
-        L = dataset.mf_ROM_cotmatrix[batch.id_name].to(device)
-    elif mesh_data_num == 5:
-        L = dataset.ict_cotmatrix[batch.id_name].to(device)
-    else:
-        raise ValueError(f'no data for {mesh_data_num}')
-        
-    loss = 0
-    for pred_key_w in pred_key_weight:
-        pred_key_w_lap = L @ pred_key_w
-        loss += pred_key_w_lap.sum(0).pow(2).mean()
-        
-    return loss
 
 class Logger():
     def __init__(self, file_path):
@@ -278,7 +146,7 @@ class Trainer():
         self.set_seed(self.opts)
         self.device = opts.device
 
-        last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
+        last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         
         if opts.version==1:
@@ -286,18 +154,18 @@ class Trainer():
             
             # self.model = NetworkFull(device=self.device, optim_cage=self.opts.optim_cage).to(self.device)
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
-        elif opts.version==2:
-            self.model = NeuralGeneralizedBarycentricCoordinate(
-                opts, 
-                hid_dim=256,
-                num_cage_vertices=self.opts.num_cage_v,
-                num_layers=4,
-                use_relu=last_act_list[0],
-                is_train=True, 
-                device=self.device,
-            )
+        # elif opts.version==2:
+        #     self.model = NeuralGeneralizedBarycentricCoordinate0(
+        #         opts, 
+        #         hid_dim=256,
+        #         num_cage_vertices=self.opts.num_cage_v,
+        #         num_layers=4,
+        #         use_relu=last_act_list[0],
+        #         is_train=True, 
+        #         device=self.device,
+        #     )
         elif opts.version==5:
-            self.model = NeuralGeneralizedBarycentricCoordinate5(
+            self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
@@ -316,42 +184,42 @@ class Trainer():
                 hid_dim=128 if self.opts.align_latent else 256,
                 
             )
-        elif opts.version==8: 
-            self.model = NeuralGeneralizedBarycentricCoordinate8(
-                opts, num_layers=4,
-                num_cage_vertices=self.opts.num_cage_v,
-                use_exp_recon=False, # not used yet
-                use_shp_recon=False, # not used yet
-                use_shp=False,
-                use_relu=last_act_list[0],
-                use_elu=last_act_list[1],
-                use_softmax=last_act_list[2],
-                use_softplus=last_act_list[3],
-                no_activation=last_act_list[4],
-                use_least_N_on_V=False,
-                is_train=True,
-                use_pou = ~self.opts.no_pou,
-                device=self.device,
-                hid_dim=128 if self.opts.align_latent else 256,
-            )
-        elif opts.version==55:
-            self.model = NeuralGeneralizedBarycentricCoordinate55(
-                opts, num_layers=4,
-                num_cage_vertices=self.opts.num_cage_v,
-                use_exp_recon=False, # not used yet
-                use_shp_recon=False, # not used yet
-                use_shp=False,
-                use_relu=last_act_list[0],
-                use_elu=last_act_list[1],
-                use_softmax=last_act_list[2],
-                use_softplus=last_act_list[3],
-                no_activation=last_act_list[4],
-                use_least_N_on_V=False,
-                is_train=True,
-                use_pou = ~self.opts.no_pou,
-                device=self.device,
-                hid_dim=128 if self.opts.align_latent else 256,
-            )
+        # elif opts.version==8: 
+        #     self.model = NeuralGeneralizedBarycentricCoordinate8(
+        #         opts, num_layers=4,
+        #         num_cage_vertices=self.opts.num_cage_v,
+        #         use_exp_recon=False, # not used yet
+        #         use_shp_recon=False, # not used yet
+        #         use_shp=False,
+        #         use_relu=last_act_list[0],
+        #         use_elu=last_act_list[1],
+        #         use_softmax=last_act_list[2],
+        #         use_softplus=last_act_list[3],
+        #         no_activation=last_act_list[4],
+        #         use_least_N_on_V=False,
+        #         is_train=True,
+        #         use_pou = ~self.opts.no_pou,
+        #         device=self.device,
+        #         hid_dim=128 if self.opts.align_latent else 256,
+        #     )
+        # elif opts.version==55:
+        #     self.model = NeuralGeneralizedBarycentricCoordinate55(
+        #         opts, num_layers=4,
+        #         num_cage_vertices=self.opts.num_cage_v,
+        #         use_exp_recon=False, # not used yet
+        #         use_shp_recon=False, # not used yet
+        #         use_shp=False,
+        #         use_relu=last_act_list[0],
+        #         use_elu=last_act_list[1],
+        #         use_softmax=last_act_list[2],
+        #         use_softplus=last_act_list[3],
+        #         no_activation=last_act_list[4],
+        #         use_least_N_on_V=False,
+        #         is_train=True,
+        #         use_pou = ~self.opts.no_pou,
+        #         device=self.device,
+        #         hid_dim=128 if self.opts.align_latent else 256,
+        #     )
         else:
             raise NotImplementedError('No matching model version')
             
@@ -1334,7 +1202,7 @@ class Trainer():
                         
                     ## random sampling and random permutation
                     N = batch.template.shape[1]
-                    use_perm = torch.rand(1) > 0.3
+                    use_perm = torch.rand(1) > 0.7
                     # use_perm= False
                     if use_perm:
                         N_range = N-torch.randint(100, N//6, (1,)).item()
@@ -1360,6 +1228,7 @@ class Trainer():
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
+                # ------------------------------------------------------------------------------------------------
 
                 # import pdb;pdb.set_trace()
                 # vis_mask_plot(batch_template_v[0].detach().cpu(), t_mask[0].detach().cpu(), logdir='./', name='test')
@@ -1369,8 +1238,9 @@ class Trainer():
                     inv_t_mask = 0.0
                 else:
                     inv_t_mask = 1.0 - t_mask
+
                 
-                ## use segmentation for loss weight
+                # use segmentation for loss weight ------- ( not used ) ------------------------------------------
                 ## -> re-weighting based on facial region area
                 if self.opts.use_segment_weight:
                     with torch.no_grad():
@@ -1388,18 +1258,35 @@ class Trainer():
                 HB = batch.vertices.shape[0] // 2
                 
                 if self.opts.no_t_mask:
-                    loss_dict['recon-def'] = F.mse_loss(batch_vertices_v, pred_vertices) ## focus on face
+                    loss_dict['recon-def'] = F.mse_loss(
+                        batch_vertices_v, pred_vertices
+                    )
                 else:
-                    loss_dict['recon-def'] = F.mse_loss(batch_vertices_v*t_mask, pred_vertices*t_mask) ## focus on face
-                    loss_dict['recon-def'] += F.mse_loss(batch_template_v*inv_t_mask, pred_vertices*inv_t_mask) # static on elsewhere
-                
+                    # focus deformation on face
+                    loss_dict['recon-def'] = F.mse_loss(
+                        batch_vertices_v*t_mask, pred_vertices*t_mask
+                    )
+                    # should be static on elsewhere
+                    loss_dict['recon-def'] += F.mse_loss(
+                        batch_template_v*inv_t_mask, pred_vertices*inv_t_mask
+                    )
+
+                # directly hanging mesh vertex position ----------------------------------------------------------
                 if self.model.use_full_vertex:
                     if self.opts.no_t_mask:
-                        loss_dict['recon-neu'] = F.mse_loss(batch_template_v, pred_source)
+                        loss_dict['recon-neu'] = F.mse_loss(
+                            batch_template_v, pred_source
+                        )
                     else:
-                        loss_dict['recon-neu'] = F.mse_loss(batch_template_v*t_mask, pred_source*t_mask)
-                        loss_dict['recon-neu'] += F.mse_loss(batch_template_v*inv_t_mask, pred_source*inv_t_mask)
-                
+                        loss_dict['recon-neu'] = F.mse_loss(
+                            batch_template_v*t_mask, pred_source*t_mask
+                        )
+                        loss_dict['recon-neu'] += F.mse_loss(
+                            batch_template_v*inv_t_mask, pred_source*inv_t_mask
+                        )
+                #-------------------------------------------------------------------------------------------------
+
+                #-------( not used )------------------------------------------------------------------------------
                 if self.model.use_shp_recon:
                     loss_dict['shape'] = F.mse_loss(
                         batch_template_v[:,rearange_idx]*t_mask,
@@ -1410,14 +1297,18 @@ class Trainer():
                         batch_vertices_v[:,rearange_idx]*t_mask,
                         recon_vertices[:,randperm_idx[rearange_idx]]*t_mask
                     ) # for expression AE
-                
+                #-------------------------------------------------------------------------------------------------
+
+                # soft POU ---------------------------------------------------------------------------------------
                 if self.opts.pou_loss:
                     pred_key_weight_sum = pred_key_weight.sum(-1)
                     loss_dict['pou'] = F.mse_loss(
                         torch.ones_like(pred_key_weight_sum).to(self.device),
                         pred_key_weight_sum, 
                     )
-                    
+                #-------------------------------------------------------------------------------------------------
+                
+                # Laplacian smoothing ----------------------------------------------------------------------------
                 if not use_perm and self.opts.use_laplacian:
                     loss_dict['lap'] = laplacian_loss(
                         batch, pred_key_weight, self.train_dataset, mesh_data_num, self.device
@@ -1431,24 +1322,35 @@ class Trainer():
                     
                     # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
                     # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
+                #-------------------------------------------------------------------------------------------------
+
                 
+                # vertex normal loss -----------------------------------------------------------------------------
                 if not use_perm and self.opts.use_normal_loss:
                     pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
                     
-                    loss_dict['norm-def'] = (
-                        F.mse_loss(
-                            batch_vertices_n*t_mask, pred_vertices_norm*t_mask
-                        ) + F.mse_loss(
-                            batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask
+                    if self.opts.no_t_mask:
+                        loss_dict['norm-def'] = F.mse_loss(
+                                batch_vertices_n, pred_vertices_norm
+                            )
+                    else:
+                        loss_dict['norm-def'] = (
+                            F.mse_loss(
+                                batch_vertices_n*t_mask, pred_vertices_norm*t_mask
+                            ) + F.mse_loss(
+                                batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask
+                            )
                         )
-                    )
                     
                     if self.model.use_full_vertex:
                         pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
+                        
                         loss_dict['norm-neu'] = F.mse_loss(
                             batch_template_n, pred_template_norm
                         )
+                #-------------------------------------------------------------------------------------------------
                 
+                # latent alignment loss --------------------------------------------------------------------------
                 #if (self.opts.use_data2 or self.opts.use_data3):
                 if self.opts.align_latent:
                     if mesh_data=='ict':
@@ -1462,10 +1364,10 @@ class Trainer():
                             torch.zeros_like(exp_z_ext).to(self.device),
                             exp_z_ext
                         )
-                        # pass
+                # ------------------------------------------------------------------------------------------------
 
                 
-                # get total loss (lambda weights are multiplied here!)
+                # get total loss (lambda weights are multiplied here!) -------------------------------------------
                 loss = 0
                 for key, value in loss_dict.items():
                     key_ = key.split("_")[0]

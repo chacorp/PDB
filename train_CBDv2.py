@@ -40,7 +40,7 @@ from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorize
 from utils.exp_utils import plateau_hat_points
 from utils.mesh_utils import calc_norm_torch
 
-from models.NGBCv2 import NeuralBarycentricCoordinatev2, NeuralBarycentricCoordinatev3
+from models.NGBCv2 import NeuralBarycentricCoordinatev2, NeuralBarycentricCoordinatev3, NeuralBarycentricCoordinatev4
 from utils.loss_utils import *
 
 # sys.path = list(set(sys.path))
@@ -172,6 +172,25 @@ class Trainer():
             )
         elif self.opts.version==2:
             self.model = NeuralBarycentricCoordinatev3(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                use_sqrelu=last_act_list[5],
+                use_least_N_on_V=False,
+                is_train=True,
+                use_pou = ~self.opts.no_pou,
+                device=self.device,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+        elif self.opts.version==3:
+            self.model = NeuralBarycentricCoordinatev4(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
@@ -382,6 +401,8 @@ class Trainer():
             
             is_stepped = False
             is_stts_added = False
+
+            criterion_distance = DistanceLoss(device=self.opts.device)
             
             pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
             for index, batch in pbar:
@@ -464,6 +485,13 @@ class Trainer():
                 #############################################################
 
                 ###### distance loss ########################################
+                # loss_dict['dist'] = distance_loss2(
+                #     batch_template_v, pred_cage_s, pred_key_weight
+                # )
+                # loss_dict['dist'] = criterion_distance.distance_loss2(
+                #     batch_template_v, pred_cage_s, pred_key_weight, randperm_idx, batch
+                # )
+                
                 # loss_dict['dist'] = distance_loss3(
                 #     batch_template_v, pred_cage_s, pred_key_weight
                 # )
@@ -894,7 +922,8 @@ class Trainer():
         BEST_LOSS = 100_000_000
         BEST_EPOCH = 0
         start_epoch = self.opts.start_epoch
-                        
+
+        criterion_distance = DistanceLoss(device=self.opts.device)
         # define loss lamdba 
         self.loss_lambda = {
             "recon-def": 10.0,
@@ -1061,8 +1090,8 @@ class Trainer():
                 #############################################################
 
                 ###### distance loss ########################################
-                loss_dict['dist'] = distance_loss2(
-                    batch_template_v, pred_cage_v_neu, pred_key_weight
+                loss_dict['dist'] = criterion_distance.distance_loss2(
+                    batch_template_v, pred_cage_v_neu, pred_key_weight, randperm_idx, batch
                 )
                 # loss_dict['dist'] += distance_loss2(
                 #     batch_vertices_v, pred_cage_v_exp, pred_key_weight
@@ -1465,7 +1494,7 @@ if __name__ == "__main__":
     
     trainer = Trainer(opts)
 
-    if opts.version==1:
+    if opts.version==1 or opts.version==3:
         trainer.train_v5(epochs=opts.max_epoch)
     elif opts.version==2:
         trainer.train_v6(epochs=opts.max_epoch)
