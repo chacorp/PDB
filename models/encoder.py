@@ -755,7 +755,7 @@ class LinearEncoder(nn.Module):
             
             if self.use_sqrelu:
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)
-                out = F.relu(out)**2
+                out = torch.square(F.relu(out))
                 
             if self.use_softplus:
                 out = F.normalize(out, dim=-2) # normalize for each column (key points)

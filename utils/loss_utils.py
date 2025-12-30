@@ -265,7 +265,11 @@ def non_ict_loss(pred):
         loss
     """
     
-    loss = torch.where(pred < 0, -pred, torch.where(pred > 1, pred - 1, torch.zeros_like(pred))).mean()
+    loss = torch.where(
+        pred < 0, 
+        -pred, 
+        torch.where(pred > 1, pred - 1, torch.zeros_like(pred))
+    ).mean()
     return loss
 
 def laplacian_loss(batch, pred_key_weight, dataset, mesh_data_num, device):
