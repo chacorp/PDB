@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pickle
+import numpy as np
 
 # --- Loss Functions ---
     
@@ -58,7 +60,14 @@ def distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, re
     #     import pdb;pdb.set_trace()
     return loss
 
-def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+def distance_loss(
+        mesh_vertices,
+        cage_vertices,
+        coordinate_weight,
+        tau=0.02,
+        return_e=False
+    ):
+
     """
     Args:
         mesh_vertices: (B, N, 3)
@@ -104,6 +113,87 @@ def distance_loss2(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, re
     mesh_vertices_dist = 1 - (mesh_vertices_dist / mesh_vertices_max)
     
     return F.mse_loss(mesh_vertices_dist, coordinate_weight) 
+
+class DistanceLoss():
+    def __init__(self, device='cpu'):
+        self.device=device
+        # from utils.keys import ict_data_synth, mf_data_split
+        
+        # self.ict_pkl_dict={}
+        # for id_name in ict_data_synth['train']:
+        #     with open(f'/data/sihun/pca/ICT/geodesics/{id_name}.pkl', 'rb') as f:
+        #         self.ict_pkl_dict[id_name] = pickle.load(f)#.to(device) # (N, N)
+        
+        # self.mf_pkl_dict={}
+        # for id_name in mf_data_split['train']:
+        #     with open(f'/data/sihun/pca/multiface_align/geodesics/{id_name}.pkl', 'rb') as f:
+        #         self.mf_pkl_dict[id_name] = pickle.load(f)#.to(device) # (N, N)
+            
+    def distance_loss2(self,
+            mesh_vertices,
+            cage_vertices,
+            coordinate_weight,
+            randperm_idx,
+            batch,
+            tau=0.02,
+            return_e=False
+        ):
+        """
+        Args:
+            mesh_vertices: (B, N, 3)
+            cage_vertices: (B, K, 3)
+            coordinate_weight: (B, N, K)
+        Returns:
+            loss
+        """
+        B, V, _ = mesh_vertices.shape
+        
+        _tau = 1 / tau
+        _, C, _ = cage_vertices.shape
+        
+        mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
+        cage_vertices_expand = cage_vertices[:,None]
+        
+        mesh_vertices_dist = torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1)
+        # mesh_vertices_dist = torch.square(torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1))
+        
+        mesh_vertices_max = mesh_vertices_dist.max(-2).values.unsqueeze(1)    
+        mesh_vertices_dist = 1 - (mesh_vertices_dist / mesh_vertices_max)
+        
+        # candidate_idx = torch.argmax(mesh_vertices_dist, dim=1)
+        # import pdb;pdb.set_trace()
+        
+        ## TODO: 
+        # load pickle
+        mesh_data_num = batch.mesh_data.cpu().numpy()
+        mesh_data = np.array(['voca', 'biwi', 'multiface_align', 'voca', 'multiface_align', 'ICT'])[mesh_data_num]
+        # with torch.no_grad():
+        #     if mesh_data=='ICT':
+        #         geodesics=self.ict_pkl_dict[batch.id_name]
+        #     else:
+        #         geodesics=self.mf_pkl_dict[batch.id_name]
+        #         geodesics=geodesics[randperm_idx, randperm_idx].to(mesh_vertices_dist.device)
+
+        # import pdb;pdb.set_trace()
+        with torch.no_grad():
+            with open(f'/data/sihun/pca/{mesh_data}/geodesics/{batch.id_name}.pkl', 'rb') as f:
+                geodesics = pickle.load(f)
+                geodesics = geodesics[randperm_idx][:, randperm_idx]
+                geodesics = geodesics.to(mesh_vertices_dist.device) # (N, N)
+            candidate_idx = torch.argmax(mesh_vertices_dist, dim=1)  # (B, M) M << N
+            
+            c_geodesics = geodesics[candidate_idx]
+            c_geodesics = c_geodesics.transpose(2,1)
+            max_gdistance = 1.0
+            gd_mask = (c_geodesics < max_gdistance) * 1.0
+        # gd_mask = gd_mask
+        # GD = ~GD * 1.0
+        # get closest vertex index
+        # get geodesic
+        # multiply
+        mesh_vertices_dist = mesh_vertices_dist * gd_mask
+        
+        return F.mse_loss(mesh_vertices_dist, coordinate_weight) 
     
 def mvc_loss(mvc_weights):
     """ penalize MVC with negative values """
