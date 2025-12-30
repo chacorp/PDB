@@ -1038,4 +1038,128 @@ class LinearDecoder2(nn.Module):
         if return_id_in:
             return o_pos, o_nrm, id_in
         return o_pos, o_nrm, None
+
+
+class ControlVertexEncoder(nn.Module):
+    def __init__(self, 
+                 in_dim=3, out_dim=3, hid_dim=128, K_dim=256, num_layers=4, num_heads=8,
+                 use_residual=False, act='lrelu', nrm='layer',
+                 
+                ):
+        super().__init__()
         
+        self.out_dim = out_dim
+        self.use_residual = use_residual
+        self.num_layers = num_layers
+        
+        self.K_dim = K_dim # num vertex
+
+        ## control vertex
+        self.v_latent = nn.Parameter(torch.randn(self.K_dim, hid_dim))
+        self.v_layer_out = nn.Linear(hid_dim, out_dim)
+        
+        self.v_layers = nn.ModuleList([
+            MLP([hid_dim, hid_dim//2, hid_dim//2, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+        self.v_attn = nn.ModuleList([
+            nn.MultiheadAttention(hid_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(num_layers)
+        ])
+
+        
+        ## coordinates
+        self.p_layer_in = nn.Linear(in_dim, hid_dim)
+        self.p_layer_out = nn.Linear(hid_dim, self.K_dim)
+        
+        self.p_layers = nn.ModuleList([
+            MLP([hid_dim, hid_dim//2, hid_dim//2, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])        
+        self.p_attn = nn.ModuleList([
+            nn.MultiheadAttention(hid_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(num_layers)
+        ])
+    
+    def forward(self, x_in):
+        B, V, C = x_in.shape
+        
+        v_out = self.v_latent[None].repeat(B,1,1)
+        p_out = self.p_layer_in(x_in)
+
+        for i in range(self.num_layers):            
+            v_feat_, v_attn_weight = self.v_attn[i](v_out, p_out, p_out)
+            p_feat_, p_attn_weight = self.p_attn[i](p_out, v_out, v_out)
+            
+            v_out = v_out + v_feat_
+            p_out = p_out + p_feat_
+            
+            v_out = self.v_layers[i](v_out)
+            p_out = self.p_layers[i](p_out)
+            
+        v_out = self.v_layer_out(v_out)
+        p_out = self.p_layer_out(p_out)
+            
+        return p_out, v_out
+
+class ExpressionEncoder(nn.Module):
+    def __init__(self, 
+                 in_dim=3, out_dim=3, hid_dim=128, K_dim=256, num_layers=4, num_heads=8,
+                 use_residual=False, act='lrelu', nrm='layer',
+                 
+                ):
+        super().__init__()
+        
+        self.out_dim = out_dim
+        self.use_residual = use_residual
+        self.num_layers = num_layers
+        
+        self.K_dim = K_dim # num vertex
+
+        ## control vertex
+        self.v_latent = nn.Parameter(torch.randn(self.K_dim, hid_dim))
+        self.v_layer_out = nn.Linear(hid_dim, out_dim)
+        
+        self.v_layers = nn.ModuleList([
+            MLP([hid_dim, hid_dim//2, hid_dim//2, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])
+        self.v_attn = nn.ModuleList([
+            nn.MultiheadAttention(hid_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(num_layers)
+        ])
+
+        
+        ## coordinates
+        self.p_layer_in = nn.Linear(in_dim, hid_dim)
+        self.p_layer_out = nn.Linear(hid_dim, self.K_dim)
+        
+        self.p_layers = nn.ModuleList([
+            MLP([hid_dim, hid_dim//2, hid_dim//2, hid_dim], act=act, nrm=nrm)
+            for _ in range(num_layers)
+        ])        
+        self.p_attn = nn.ModuleList([
+            nn.MultiheadAttention(hid_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(num_layers)
+        ])
+    
+    def forward(self, v_in):
+        B, K, C = v_in.shape
+        
+        v_out = self.v_latent[None].repeat(B,1,1)
+        p_out = self.p_layer_in(x_in)
+
+        for i in range(self.num_layers):            
+            v_feat_, v_attn_weight = self.v_attn[i](v_out, p_out, p_out)
+            p_feat_, p_attn_weight = self.p_attn[i](p_out, v_out, v_out)
+            
+            v_out = v_out + v_feat_
+            p_out = p_out + p_feat_
+            
+            v_out = self.v_layers[i](v_out)
+            p_out = self.p_layers[i](p_out)
+            
+        v_out = self.v_layer_out(v_out)
+        p_out = self.p_layer_out(p_out)
+            
+        return p_out, v_out
