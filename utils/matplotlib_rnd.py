@@ -291,7 +291,7 @@ def vis_mesh_key_weight(
 
     V = normalize_homogeneous(verts)
     
-    view  = translate(0, 0, -3.5)
+    view  = translate(0, 0, -4.5)
     proj  = perspective(55, 1.0, 1.0, 100.0)
 #     proj = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
     MV   = proj @ view
