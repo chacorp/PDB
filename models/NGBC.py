@@ -221,33 +221,6 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         
         return key_d
         
-    @torch.no_grad()
-    def get_coordinate(self, source_vert, source_norm, out_kw=False):
-        """
-        Args:
-            source_vert (torch.tensor): [B, N, 3] source mesh vertice
-            source_norm (torch.tensor): [B, N, 3] source mesh vertex normals
-            mesh_data (int): indicator for data (0: voca, 1: biwi, 2: multiface)
-            epoch (int): train epoch (epoch != iteration)
-        Returns:
-            coordinates [B, N, C]
-        """
-        B, N, _ = source_vert.shape
-        
-        source_in = source_vert
-            
-        if self.in_type > 0:
-            source_in = torch.cat([source_in, source_norm], dim=-1)
-        if self.in_type==2:
-            hat_mask = plateau_hat_points(source_vert)
-            source_in = torch.cat([source_in, hat_mask], dim=-1)
-        
-        key_weight = self.key_weight_model(
-            source_in,
-            N=self.NZ # (not used!)
-        ) # (B, N, M)
-        
-        return key_weight
         
     def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False):
         """
@@ -452,15 +425,15 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             return pred_deformed, pred_source, exp_z_d, key_d, exp_z_s, key_s, key_weight
 
         return pred_deformed, pred_source
-        
+                
     @torch.no_grad()
     def predict_coordinate(self, tgt_neu_vert, tgt_neu_norm):
         """
         Args:
-            tgt_neu_vert (torch.tensor): [B, M, 3] target neutral mesh vertex positions
-            tgt_neu_norm (torch.tensor): [B, M, 3] target neutral mesh vertex normals            
+            tgt_neu_vert (torch.tensor): [B, N, 3] target neutral mesh vertex positions
+            tgt_neu_norm (torch.tensor): [B, N, 3] target neutral mesh vertex normals            
         Returns:
-            key_weight, cooridnate w.r.t the cage vertices
+            key_weight, cooridnate w.r.t the cage vertices  [B, N, M]
             
         """
         B, N, _ = tgt_neu_vert.shape
@@ -473,7 +446,10 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             tgt_hat_mask = plateau_hat_points(tgt_neu_vert)
             tgt_in = torch.cat([tgt_in, tgt_hat_mask], dim=-1)
         
-        key_weight = self.key_weight_model(tgt_in, N=self.NZ) # (B, M, K)
+        key_weight = self.key_weight_model(
+            source_in,
+            N=self.NZ # (not used!)
+        ) # (B, N, M)
             
         return key_weight
 
@@ -558,6 +534,9 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         src_neu_norm=None,
     ):
         """
+        Animate target mesh using blendshape coefficient
+        *available if the model is trained with `align_latent==True`
+        
         Args:
             exp_z (torch.tensor): [B, 1, 128] blendshape coefficient for the expression
             
