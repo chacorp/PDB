@@ -41,12 +41,7 @@ from utils.ckpt_utils import *
 from utils.exp_utils import plateau_hat_points
 
 from models.baseline import CageNet
-from models.NGBC import (
-#     NeuralGeneralizedBarycentricCoordinate,
-    NeuralGeneralizedBarycentricCoordinate5, 
-#     NeuralGeneralizedBarycentricCoordinate8, # (not used)
-#     NeuralGeneralizedBarycentricCoordinate55 # (not used)
-)
+from models.NGBC import NeuralGeneralizedBarycentricCoordinate
 from models.NGBCv2 import NeuralBarycentricCoordinatev2, NeuralBarycentricCoordinatev3
 
 import torch.multiprocessing as mp
@@ -202,18 +197,18 @@ class Trainer():
                 device=self.device,
                 optim_cage=self.opts.optim_cage
             )
-        elif opts.version==2:
-            self.model = NeuralGeneralizedBarycentricCoordinate(
-                self.opts, 
-                hid_dim=256,
-                num_cage_vertices=self.opts.num_cage_v,
-                num_layers=4,
-                use_relu=True,
-                is_train=True, 
-                device=self.device,
-            )
+        # elif opts.version==2:
+        #     self.model = NeuralGeneralizedBarycentricCoordinate0(
+        #         self.opts, 
+        #         hid_dim=256,
+        #         num_cage_vertices=self.opts.num_cage_v,
+        #         num_layers=4,
+        #         use_relu=True,
+        #         is_train=True, 
+        #         device=self.device,
+        #     )
         elif opts.version==5:
-            self.model = NeuralGeneralizedBarycentricCoordinate5(
+            self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
@@ -231,44 +226,44 @@ class Trainer():
                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
-        elif opts.version==8:
-            self.model = NeuralGeneralizedBarycentricCoordinate8(
-                opts, num_layers=4,
-                num_cage_vertices=self.opts.num_cage_v,
-                use_exp_recon=False, # not used yet
-                use_shp_recon=False, # not used yet
-                use_shp=False,
-                use_relu=last_act_list[0],
-                use_elu=last_act_list[1],
-                use_softmax=last_act_list[2],
-                use_softplus=last_act_list[3],
-                no_activation=last_act_list[4],
-                use_least_N_on_V=False,
-                is_train=True,
-                use_pou = ~self.opts.no_pou,
-                device=self.device,
-                #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
-                hid_dim=128 if self.opts.align_latent else 256,
-            )
-        elif opts.version==55:
-            self.model = NeuralGeneralizedBarycentricCoordinate55(
-                opts, num_layers=4,
-                num_cage_vertices=self.opts.num_cage_v,
-                use_exp_recon=False, # not used yet
-                use_shp_recon=False, # not used yet
-                use_shp=False,
-                use_relu=last_act_list[0],
-                use_elu=last_act_list[1],
-                use_softmax=last_act_list[2],
-                use_softplus=last_act_list[3],
-                no_activation=last_act_list[4],
-                use_least_N_on_V=False,
-                is_train=True,
-                use_pou = ~self.opts.no_pou,
-                device=self.device,
-                #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
-                hid_dim=128 if self.opts.align_latent else 256,
-            )
+        # elif opts.version==8:
+        #     self.model = NeuralGeneralizedBarycentricCoordinate8(
+        #         opts, num_layers=4,
+        #         num_cage_vertices=self.opts.num_cage_v,
+        #         use_exp_recon=False, # not used yet
+        #         use_shp_recon=False, # not used yet
+        #         use_shp=False,
+        #         use_relu=last_act_list[0],
+        #         use_elu=last_act_list[1],
+        #         use_softmax=last_act_list[2],
+        #         use_softplus=last_act_list[3],
+        #         no_activation=last_act_list[4],
+        #         use_least_N_on_V=False,
+        #         is_train=True,
+        #         use_pou = ~self.opts.no_pou,
+        #         device=self.device,
+        #         #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+        #         hid_dim=128 if self.opts.align_latent else 256,
+        #     )
+        # elif opts.version==55:
+        #     self.model = NeuralGeneralizedBarycentricCoordinate55(
+        #         opts, num_layers=4,
+        #         num_cage_vertices=self.opts.num_cage_v,
+        #         use_exp_recon=False, # not used yet
+        #         use_shp_recon=False, # not used yet
+        #         use_shp=False,
+        #         use_relu=last_act_list[0],
+        #         use_elu=last_act_list[1],
+        #         use_softmax=last_act_list[2],
+        #         use_softplus=last_act_list[3],
+        #         no_activation=last_act_list[4],
+        #         use_least_N_on_V=False,
+        #         is_train=True,
+        #         use_pou = ~self.opts.no_pou,
+        #         device=self.device,
+        #         #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+        #         hid_dim=128 if self.opts.align_latent else 256,
+        #     )
         elif opts.version==21:
             self.model = NeuralBarycentricCoordinatev2(
                 opts, num_layers=4,
