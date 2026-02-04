@@ -13,6 +13,10 @@ video/
 vis_CBD/
 eval_CBD/
 
+*.pkl
+*/*.pkl
+*/*/*.pkl
+
 *.mp4
 .hypothesis
 # .npy
