@@ -36,7 +36,7 @@ ckpt: ''
 is_train: True
 tb: True
 
-data_rand_scale: False
+data_rand_scale: True
 data_rand_trans: True
 
 debug: False
