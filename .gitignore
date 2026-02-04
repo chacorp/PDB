@@ -9,6 +9,10 @@ ckpt*
 test_results
 data_capture
 
+video/
+vis_CBD/
+eval_CBD/
+
 *.mp4
 .hypothesis
 # .npy
