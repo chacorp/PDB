@@ -3436,10 +3436,16 @@ class Trainer():
                         batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                         batch.mesh_data, epoch=epoch                   
                     )
-                    pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
-                        batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
-                        batch.mesh_data, epoch=epoch
-                    )
+                    if self.opts.use_hyb_delta_lbs_input:
+                        pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
+                            batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
+                            batch.mesh_data, epoch=epoch, lbs_output = pred_vertices,
+                        )
+                    else: # default
+                        pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
+                            batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
+                            batch.mesh_data, epoch=epoch, 
+                        )
                     pred_vertices = pred_vertices + pred_vertices_CBD # expressed face
                     pred_source = pred_source + pred_source_CBD # neutral face
                 
