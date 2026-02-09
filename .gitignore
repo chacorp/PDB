@@ -59,5 +59,6 @@ ict_face_pt/
 
 *.npy
 ckpt*
+eval*
 tmp
 *.obj

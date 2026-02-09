@@ -1,0 +1,1 @@
+python vis_LBS.py  --vis_partition_per_joint --vis_joint_pos --realtest --data_selection 3 --continue_ckpt --start_epoch 500 --ckpt "./ckpts_CBD/2026-01-26-10-46-17-NGBC++v5" --version 3 --batch_size 1 --use_t_mask

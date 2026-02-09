@@ -1214,9 +1214,9 @@ class CBDDataset(data.Dataset):
         trans, scale = 0.0, 1.0
         if self.opts.data_rand_trans:
             t_range = 0.1
-            trans = (torch.rand((1, 3))*t_range - t_range*0.5)
+            trans = (torch.rand((1, 3))*t_range - t_range*0.5) # -0.05 ~ 0.05
         if self.opts.data_rand_scale:
-            scale = torch.rand((1)).repeat(3) * 0.4 + 0.8
+            scale = torch.rand((1)).repeat(3) * 0.4 + 0.8 # 0.8 ~ 1.2
         template = template * scale + trans
         vertices = vertices * scale + trans
         ## -----------------------------------------------------------------------------
@@ -1257,7 +1257,14 @@ class CBDDataset(data.Dataset):
             raise ValueError('got wrong number')
             
         mesh_data = torch.tensor(mesh_data)
-        return (*datas, mesh_data)
+        
+        if False:
+            return (*datas, mesh_data)
+        else:
+            (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name) = datas
+            template, deformed = self.random_trans_scale(template, deformed)
+            
+            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data)
     
     def get_slice_idx(self, F_idx, WS):
         """

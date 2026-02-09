@@ -261,10 +261,173 @@ def plot_image_overlap(Vs, Fs, size=6, xrot=0,yrot=0,zrot=0, dist=-6, norm=False
 def _homogeneous(V):
     return np.concatenate([V, np.ones((V.shape[0], 1))], axis=1)
 
+
+def vis_mesh_with_joint_points(
+    verts, faces, C,                      # pred mesh + joint centers
+    SIZE=4, yrot=0,
+    view_yrots=(0, 25, -25),
+    mesh_color=(0.75, 0.75, 0.75, 1.0),
+    light_dir=np.array([0,0,1]),
+    points_size=12,
+    base_cmap='tab20',
+    show_legend=True,
+    legend_ncol=10,
+    save_path=None,
+    show_joint_index=True,   # ← 추가
+    index_fontsize=3,         # ← 추가
+):
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    from matplotlib.collections import PolyCollection
+
+    # torch -> numpy
+    if hasattr(verts, "detach"): verts = verts.detach().cpu().numpy()
+    if hasattr(faces, "detach"): faces = faces.detach().cpu().numpy()
+    if hasattr(C, "detach"):     C = C.detach().cpu().numpy()
+
+    # --- same camera setting as vis_mesh_key_weight ---
+    V = normalize_homogeneous(verts)      # (N,4)
+    C_h = np.c_[C, np.ones((C.shape[0], 1))]  # (J,4)
+
+    view = translate(0, 0, -4.5)
+    proj = perspective(55, 1.0, 1.0, 100.0)
+    MV   = proj @ view
+
+    num_views = len(view_yrots)
+    legend_h = 0.18 if show_legend else 0.0   # legend 공간
+    fig = plt.figure(figsize=(SIZE * num_views, SIZE * (1.0 + legend_h)))
+    # fig = plt.figure(figsize=(SIZE * num_views, SIZE))
+
+    # joint colors
+    J = C.shape[0]
+    cmap = cm.get_cmap(base_cmap, max(J, 3))
+    jcolors = np.asarray([cmap(i) for i in range(J)])
+
+    handles, labels = [], []
+    if show_legend:
+        for i in range(J):
+            h = plt.Line2D([0],[0], marker='o', color='w',
+                           markerfacecolor=jcolors[i], markeredgecolor='white',
+                           markersize=6, linewidth=0)
+            handles.append(h); labels.append(str(i))
+
+    for j, add_rot in enumerate(view_yrots):
+        model = yrotate(yrot + add_rot)
+
+        # V_mu = np.median(V, axis=0)         # (4,)
+        V_mu = np.median(V[:, :3], axis=0)
+        V_mu = np.r_[V_mu, 0.0]   # homogeneous 맞추기
+        V_model = (V - V_mu) @ model.T + V_mu
+        V_proj  = V_model @ MV.T
+        V_ndc   = V_proj[:, :3] / V_proj[:, 3:4]
+
+        # ===== [ADD] front surface depth (for culling) =====
+        VF_all = V_ndc[faces]                 # (F,3,3)
+        Zf_all = VF_all[:,:,2].mean(axis=1)   # (F,)
+        Nf_all = calc_face_norm(verts, faces) @ model[:3,:3].T
+        front_mask = (Nf_all[:,2] > 0)
+        Zf_front = Zf_all[front_mask]
+        z_front = np.percentile(Zf_front, 5)  # front surface depth
+        z_near = Zf_front.min()
+        z_far  = Zf_front.max()
+        # ================================================
+        
+        # mesh triangles in screen
+        VF = V_ndc[faces]
+
+        T  = VF[:, :, :2]
+        Z  = -VF[:, :, 2].mean(1)
+        order = np.argsort(Z)
+
+        T_sorted = T[order]
+        # shading (face normals in world -> rotate)
+        Nf = calc_face_norm(verts, faces) @ model[:3,:3].T
+        Nf = Nf[order]
+        NI = np.argwhere(Nf[:,2] > 0).squeeze()
+        T_sorted = T_sorted[NI]
+        Nf = Nf[NI]
+
+        shade = (Nf @ light_dir)[:, None].repeat(3, axis=1)
+        shade = np.clip(shade, 0, 1) * 0.7 + 0.2
+        face_rgba = np.concatenate([shade, np.ones((shade.shape[0],1))], axis=1)
+
+        ax = fig.add_axes([j / num_views, 0, 1 / num_views, 1],
+                          xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
+
+        coll = PolyCollection(T_sorted, closed=True, linewidth=0.1,
+                              facecolor=face_rgba, edgecolor='black')
+        ax.add_collection(coll)
+
+        # --- points overlay (same pivot/transform) ---
+        C_model = (C_h - V_mu) @ model.T + V_mu
+        C_proj  = C_model @ MV.T
+        C_ndc   = C_proj[:, :3] / C_proj[:, 3:4]
+
+        # ===== [ADD] joint culling + depth fade =====
+        Zp = C_ndc[:,2]
+        keep1 = Zp < z_front
+        keep2 = Zp > z_front
+        keep = keep1 if keep1.sum() >= keep2.sum() else keep2
+
+        z01 = np.clip((Zp - z_near) / (z_far - z_near + 1e-12), 0, 1)
+        alpha = 0.2 + 0.8 * (1.0 - z01)      # front=opaque
+        # ===========================================
+        colors_rgba = jcolors.copy()
+        colors_rgba[:,3] = alpha
+
+        ax.scatter(
+            C_ndc[keep,0], C_ndc[keep,1],
+            s=points_size,
+            c=colors_rgba[keep],
+            edgecolors='none',   # ← 핵심
+            linewidths=0.0,      # ← 핵심
+            zorder=10
+        )
+        if show_joint_index:
+            for jid in np.where(keep)[0]:
+                ax.text(
+                    C_ndc[jid, 0],
+                    C_ndc[jid, 1],
+                    str(jid),
+                    color='black',
+                    fontsize=index_fontsize,
+                    ha='center',
+                    va='center',
+                    zorder=11,
+                    backgroundcolor='none'   # ← 핵심
+                )
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
+        ax.set_title(f"y={yrot + add_rot}°", fontsize=10)
+
+    if show_legend:
+        # fig.legend(handles, labels, loc='lower center',
+        #            ncol=legend_ncol, frameon=False, fontsize=8)
+        fig.legend(
+            handles, labels,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.01),   # figure 아래로 밀기
+            ncol=legend_ncol,
+            frameon=False,
+            fontsize=8
+        )
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=250, bbox_inches="tight", pad_inches=0.1)
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
+
+
 def vis_mesh_key_weight(
         verts, faces, key_weight, cage_idx,
         SIZE=4, yrot=0, cmap='magma', vmin=None, vmax=None, show_cbar=True,
-        view_yrots=(0, 90, 180)
+        view_yrots=(0, 90, 180),
+        save_path=None, close=True
     ):
     """
     Args:
@@ -279,10 +442,11 @@ def vis_mesh_key_weight(
     assert 0 <= cage_idx < key_weight.shape[1], \
         f"cage_idx {cage_idx} out of range [0, {key_weight.shape[1]-1}]"
 
-    print("verts min/max:", verts.min(0), verts.max(0))
-
-    Wv = key_weight[:, cage_idx]
-    Wf = Wv[faces].mean(axis=1)
+    # print("verts min/max:", verts.min(0), verts.max(0))
+    
+    
+    Wv = key_weight[:, cage_idx]    # [N, J]
+    Wf = Wv[faces].mean(axis=1)     # [F, J]
 
     if vmin is None: vmin = float(Wf.min())
     if vmax is None: vmax = float(Wf.max())
@@ -295,8 +459,6 @@ def vis_mesh_key_weight(
     proj  = perspective(55, 1.0, 1.0, 100.0)
 #     proj = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
     MV   = proj @ view
-    
-    
     
     num_views = len(view_yrots)
     fig = plt.figure(figsize=(SIZE* num_views, SIZE ))
@@ -346,7 +508,13 @@ def vis_mesh_key_weight(
             cbar.set_label(f"key_weight[:, {cage_idx}]")
     
         plt.title(f"Cage vertex {cage_idx} weight")
-    plt.show()
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+        if close:
+            plt.close(fig)
+    else:
+        plt.show()
 
 def vis_mesh_all_cage_weights(
     verts, faces, key_weight,
@@ -501,6 +669,177 @@ def vis_mesh_all_cage_weights(
                           borderaxespad=0., fontsize=7, ncol=1)
 
     plt.show()
+
+def plot_image_array_points(Vs, 
+                     Fs, 
+                     rot_list=None, 
+                     size=6, 
+                     norm=False, 
+                     mode='mesh', 
+                     linewidth=1, 
+                     linestyle='solid', 
+                     light_dir=np.array([0,0,1]),
+                     bg_black = True,
+                     logdir='.', 
+                     name='000', 
+                     save=False,
+                     points_list=None, # list of (J,3) joint centers, aligned with Vs
+                     points_color='r',
+                     points_size=4,
+                     points_marker='o',
+                    ):
+    """
+    Args:
+        Vs (list): list of vertices [V, V, V, ...]
+        Fs (list): list of face indices [F, F, F, ...]
+        rot_list (list): list of euler angle [ [x,y,z], [x,y,z], ...]
+        size (int): size of figure
+        norm (bool): if True, normalize vertices
+        mode (str): mode for rendering [mesh(wireframe), shade, normal]
+        linewidth (float): line width for wireframe (kwargs for matplotlib)
+        linestyle (str): line style for wireframe (kwargs for matplotlib)
+        light_dir (np.array): light direction
+        bg_black (bool): if True, use dark_background for plt.style
+        logdir (str): directory for saved image
+        name (str): name for saved image
+        save (bool): if True, save the plot as image
+    """
+    if mode=='gouraud':
+        print("currently WIP!: need to curl by z")
+        
+    num_meshes = len(Vs)
+    if bg_black:
+        plt.style.use('dark_background')
+    else:
+        plt.style.use('default')
+    
+    fig = plt.figure(figsize=(size * num_meshes, size))  # Adjust figure size based on the number of meshes
+    
+    for idx, (V, F) in enumerate(zip(Vs, Fs)):
+        # Calculate the position of the subplot for the current mesh
+        ax_pos = [idx / num_meshes, 0, 1 / num_meshes, 1]
+        ax = fig.add_axes(ax_pos, xlim=[-1, +1], ylim=[-1, +1], aspect=1, frameon=False)
+
+        # xrot, yrot, zrot = rot[0], 90, rot[2]
+        if rot_list:
+            xrot, yrot, zrot = rot_list[idx]
+        else:
+            xrot, yrot, zrot = 0,0,0
+            
+        ### MVP
+        # model = translate(0, 0, -3) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
+        # proj  = perspective(55, 1, 1, 100)
+        model = (yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot))[:3,:3]
+        view = translate(0, 0, -5)
+        proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
+        #MVP   = proj @ view @ model
+        MVP   = proj @ view # view is identity
+        V_mu = np.median(V, axis=0)
+        
+        # V_h_mu = _homogeneous(V - V_mu)
+        
+        # quad to triangle    
+        V_model = (V - V_mu) @ model.T + V_mu
+        V_proj = _homogeneous(V_model) @ MVP.T
+        V_proj = V_proj[:, :3] / V_proj[:, 3:4]  # (N,3), -1 ~ 1
+        VF_tri = V_proj[F]
+        # VF_tri = transform_vertices(V, MVP, F, norm)
+
+        T = VF_tri[:, :, :2]
+        Z = -VF_tri[:, :, 2].mean(axis=1)
+        zmin, zmax = Z.min(), Z.max()
+        Z = (Z - zmin) / (zmax - zmin)
+
+        if mode=='normal':
+            C = calc_face_norm(V, F) @ model[:3,:3].T
+            
+            I = np.argsort(Z)
+            T, C = T[I, :], C[I, :]
+
+            NI = np.argwhere(C[:,2] > 0).squeeze()
+            T, C = T[NI, :], C[NI, :]
+            C = np.clip(C, 0, 1) if False else C * 0.5 + 0.5
+            collection = PolyCollection(T, closed=False, linewidth=linewidth, facecolor=C, edgecolor=C)
+        elif mode=='shade':
+            C = calc_face_norm(V, F) @ model[:3,:3].T
+            
+            I = np.argsort(Z)
+            T, C = T[I, :], C[I, :]
+
+            NI = np.argwhere(C[:,2] > 0).squeeze()
+            T, C = T[NI, :], C[NI, :]
+            
+            C = (C @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
+            C = np.clip(C, 0, 1)
+            C = C*0.7+0.2
+            collection = PolyCollection(T, closed=False, linewidth=linewidth,facecolor=C, edgecolor=C)
+        elif mode=='gouraud':
+#             I = np.argsort(Z)
+#             V, F, vidx = get_new_mesh(V, F, I, invert=True)
+            
+            ### curling by normal
+            C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
+            NI = np.argwhere(C[:,2] > 0.0).squeeze()
+            V, F, vidx = get_new_mesh(V, F, NI, invert=True)
+            #F = np.flip(F, 1)#F[:,::-1]
+            C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
+            
+            #VV = (V-V.min()) / (V.max()-V.min())# world coordinate
+            V = transform_vertices(V, MVP, F, norm, no_parsing=True)
+            
+            #VF_tri = transform_vertices(V, MVP, F, norm)
+#             print(V.shape)
+            
+            triangle_ = tri.Triangulation(V[:,0], V[:,1], triangles=F)
+            #print(triangle_.shape)
+            C = (C @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
+            C = np.clip(C, 0, 1)
+            C = C*0.5+0.25
+            # VV = (V-V.min()) / (V.max()-V.min()) #screen coordinate
+            # cmap = colors_to_cmap(VV)
+            cmap = colors_to_cmap(C)
+            zs = np.linspace(0.0, 1.0, num=V.shape[0])
+            plt.tripcolor(triangle_, zs, cmap=cmap, shading='gouraud')
+            
+        else:
+            C = plt.get_cmap("gray")(Z)
+            I = np.argsort(Z)
+            T, C = T[I, :], C[I, :]
+            
+            collection = PolyCollection(T, closed=False, linewidth=0.23, facecolor=C, edgecolor='black')
+            
+        if mode!='gouraud':
+            ax.add_collection(collection)
+
+        if points_list is not None:
+            P = points_list[idx] # (J, 3)
+            if P is not None:
+                if hasattr(P, "detach"):
+                    P = P.detach().cpu().numpy()
+                # 같은 pivot(V_mu) 기준으로 같은 회전 (model) 적용
+                P_model = (P - V_mu) @ model.T + V_mu 
+                P_proj = _homogeneous(P_model) @ MVP.T
+                P_proj = P_proj[:, :3] / P_proj[:, 3:4] # (J,3), -1~1
+
+                ax.scatter(
+                    P_proj[:, 0], P_proj[:, 1],
+                    c=points_color,
+                    s=points_size,
+                    marker=points_marker,
+                    zorder=10,         # mesh 위로
+                )
+        
+        plt.xticks([])
+        plt.yticks([])
+    
+    if save:
+        plt.savefig('{}/{}.png'.format(logdir, name), bbox_inches = 'tight')
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
+    # plt.close(plt.gcf())
+        
 
 def plot_image_array(Vs, 
                      Fs, 
