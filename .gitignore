@@ -8,6 +8,7 @@ test-mesh
 ckpt*
 test_results
 data_capture
+ict_face_pt
 
 *.mp4
 .hypothesis
