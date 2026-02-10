@@ -1653,6 +1653,17 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
             
         if lbs_output is not None: # residualized input
             
+            if self.in_type > 0:
+                source_in = torch.cat([source_in, source_norm], dim=-1)
+                # deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+                
+            # deform_in = torch.cat([deform_in, source_in], dim=-1)
+            
+            if self.in_type==2:
+                source_in = torch.cat([source_in, hat_mask], dim=-1)
+                deform_in = torch.cat([deform_in, hat_mask], dim=-1)
+            
+            # import pdb;pdb.set_trace()
             deform_in = deform_vert - lbs_output # as a delta over lbs output
             deform_in = torch.cat([deform_in, deform_norm], dim=-1)
             deform_in = torch.cat([deform_in, source_in], dim=-1)
@@ -1662,16 +1673,6 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
             # key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
             # --> (B, N, 4M) if self.opts.out_type == 2
             # delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
-            
-            # if self.in_type > 0:
-            #     source_in = torch.cat([source_in, source_norm], dim=-1)
-            #     deform_in = torch.cat([deform_in, deform_norm], dim=-1)
-                
-            # deform_in = torch.cat([deform_in, source_in], dim=-1)
-            
-            # if self.in_type==2:
-            #     source_in = torch.cat([source_in, hat_mask], dim=-1)
-            #     deform_in = torch.cat([deform_in, hat_mask], dim=-1)
             
             if self.use_shp:
                 z_ID_B = self.shape_model(source_in) # (B, 1, L)
