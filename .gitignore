@@ -53,6 +53,8 @@ results/
 ICT/*/
 *tmp*/
 _exp*/
+eval_CBD/
+
 
 _demo/
 _notebook/
@@ -60,6 +62,6 @@ ict_face_pt/
 
 *.npy
 ckpt*
-eval*
+# eval*
 tmp
 *.obj
