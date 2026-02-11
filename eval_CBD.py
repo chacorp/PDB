@@ -120,6 +120,8 @@ def Options():
     parser.add_argument("--hybrid_lbs_epoch", type=int, default=-1) # stage2 폴더명에서 from_lbs_ckpt_XXX 못읽을 때 수동 override 용
     parser.add_argument("--use_hyb_delta_lbs_input",dest='use_hyb_delta_lbs_input', action='store_true')
     parser.set_defaults(use_hyb_delta_lbs_input=False)
+    parser.add_argument("--use_hyb_concat_lbs",dest='use_hyb_concat_lbs', action='store_true')
+    parser.set_defaults(use_hyb_concat_lbs=False)
     
     ## ---- eval lbs --------
 

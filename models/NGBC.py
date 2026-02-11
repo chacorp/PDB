@@ -1547,6 +1547,10 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
         ).to(device)
 
         # expression encoder
+        if self.opts.use_hyb_concat_lbs:
+            _in_dim_exp = in_dim_exp + 3 # lbs output mesh conct 하기
+            print("[CBD] in_dim_exp for expression encoder increased from {} to {} \n".format(in_dim_exp, _in_dim_exp))
+            in_dim_exp = _in_dim_exp
         self.exp_z_model = LinearEncoder(
             in_dim=in_dim_exp,
             out_dim=L,
@@ -1628,7 +1632,7 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
         
         return key_weight
         
-    def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False, lbs_output = None):
+    def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False, lbs_output = None, lbs_source = None):
         """
         Args:
             source_vert (torch.tensor): [B, N, 3] source mesh vertices
@@ -1651,38 +1655,71 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
         
         hat_mask = plateau_hat_points(source_vert)
             
-        if lbs_output is not None: # residualized input
+        if lbs_output is not None: # lbs output is considered
             
-            if self.in_type > 0:
-                source_in = torch.cat([source_in, source_norm], dim=-1)
-                # deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+            ## check which input format to use
+            if self.opts.use_hyb_concat_lbs:
+                if self.in_type > 0:
+                    source_in = torch.cat([source_in, source_norm], dim=-1)
+                    # deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+                    
+                # deform_in = torch.cat([deform_in, source_in], dim=-1)
                 
-            # deform_in = torch.cat([deform_in, source_in], dim=-1)
+                if self.in_type==2:
+                    source_in = torch.cat([source_in, hat_mask], dim=-1)
+                    deform_in = torch.cat([deform_in, hat_mask], dim=-1)
+                
+                # import pdb;pdb.set_trace()
+                deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+                deform_in = torch.cat([deform_in, source_in], dim=-1)
+                # exp_z_cbd = self.cbd_exp_z_model(deform_in) # (B, 1, L)
+                # key_d = self.key_d_model(exp_z_cbd)
+                # key_d = self.reshape_key_d(key_d, B)
+                # key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+                # --> (B, N, 4M) if self.opts.out_type == 2
+                # delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
+                deform_in_lbs_concat = torch.cat([deform_in, lbs_output], dim=-1)
+                
+            elif self.opts.use_hyb_delta_lbs_input: ## unnecessary
+                if self.in_type > 0:
+                    source_in = torch.cat([source_in, source_norm], dim=-1)
+                    # deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+                    
+                # deform_in = torch.cat([deform_in, source_in], dim=-1)
+                
+                if self.in_type==2:
+                    source_in = torch.cat([source_in, hat_mask], dim=-1)
+                    deform_in = torch.cat([deform_in, hat_mask], dim=-1)
+                
+                # import pdb;pdb.set_trace()
+                deform_in = deform_vert - lbs_output # as a delta over lbs output
+                deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+                deform_in_lbs_residual = torch.cat([deform_in, source_in], dim=-1)
+                deform_in = deform_in_lbs_residual
+                # exp_z_cbd = self.cbd_exp_z_model(deform_in) # (B, 1, L)
+                # key_d = self.key_d_model(exp_z_cbd)
+                # key_d = self.reshape_key_d(key_d, B)
+                # key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+                # --> (B, N, 4M) if self.opts.out_type == 2
+                # delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
             
-            if self.in_type==2:
-                source_in = torch.cat([source_in, hat_mask], dim=-1)
-                deform_in = torch.cat([deform_in, hat_mask], dim=-1)
-            
-            # import pdb;pdb.set_trace()
-            deform_in = deform_vert - lbs_output # as a delta over lbs output
-            deform_in = torch.cat([deform_in, deform_norm], dim=-1)
-            deform_in = torch.cat([deform_in, source_in], dim=-1)
-            # exp_z_cbd = self.cbd_exp_z_model(deform_in) # (B, 1, L)
-            # key_d = self.key_d_model(exp_z_cbd)
-            # key_d = self.reshape_key_d(key_d, B)
-            # key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
-            # --> (B, N, 4M) if self.opts.out_type == 2
-            # delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
-            
+            ## check whether we use_shp latent 
             if self.use_shp:
                 z_ID_B = self.shape_model(source_in) # (B, 1, L)
-                
-                exp_z = self.exp_z_model(deform_in, z_ID_B) # (B, 1, L)
-                key_d = self.key_d_model(exp_z, z_ID_B)
+                if self.opts.use_hyb_concat_lbs:
+                    exp_z = self.exp_z_model(deform_in_lbs_concat, z_ID_B) # (B, 1, L)
+                    key_d = self.key_d_model(exp_z, z_ID_B)
+                else:
+                    exp_z = self.exp_z_model(deform_in, z_ID_B) # (B, 1, L)
+                    key_d = self.key_d_model(exp_z, z_ID_B)
             else:
-                exp_z = self.exp_z_model(deform_in) # (B, 1, L)
-                key_d = self.key_d_model(exp_z)
-            
+                if self.opts.use_hyb_concat_lbs:
+                    exp_z = self.exp_z_model(deform_in_lbs_concat) # (B, 1, L)
+                    key_d = self.key_d_model(exp_z)
+                else:
+                    exp_z = self.exp_z_model(deform_in) # (B, 1, L)
+                    key_d = self.key_d_model(exp_z)
+                
             key_d = self.reshape_key_d(key_d, B)
                 
             key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
@@ -1709,21 +1746,69 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
             else:
                 recon_deformed = 0
             
-            ## optional
+            ## for neutral reconstruction loss
             if self.use_full_vertex:
+                
                 source_in_s = source_vert
                 deform_in_s = source_vert-source_vert # as a delta
                 # deform_in_s = source_vert # as a vertex
-                
-                if self.in_type > 0:
-                    source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
-                    deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
+
+                if self.opts.use_hyb_concat_lbs:
+                    if self.in_type > 0:
+                        source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
+                        # deform_in_s = torch.cat([deform_in, deform_norm], dim=-1)
+                        
+                    # deform_in = torch.cat([deform_in, source_in], dim=-1)
                     
-                deform_in_s = torch.cat([deform_in_s, source_in_s], dim=-1)
-                
-                if self.in_type == 2:
-                    source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
-                    deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
+                    if self.in_type==2:
+                        source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
+                        deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
+                    
+                    # import pdb;pdb.set_trace()
+                    deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
+                    deform_in_s = torch.cat([deform_in_s, source_in_s], dim=-1)
+                    # exp_z_cbd = self.cbd_exp_z_model(deform_in) # (B, 1, L)
+                    # key_d = self.key_d_model(exp_z_cbd)
+                    # key_d = self.reshape_key_d(key_d, B)
+                    # key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+                    # --> (B, N, 4M) if self.opts.out_type == 2
+                    # delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
+                    deform_in_lbs_concat_s = torch.cat([deform_in_s, lbs_source], dim=-1)
+                    deform_in_s = deform_in_lbs_concat_s
+                    
+                elif self.opts.use_hyb_delta_lbs_input: ## unnecessary (will not be used)
+                    if self.in_type > 0:
+                        source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
+                        # deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+                        
+                    # deform_in = torch.cat([deform_in, source_in], dim=-1)
+                    
+                    if self.in_type==2:
+                        source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
+                        deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
+                    
+                    # import pdb;pdb.set_trace()
+                    deform_in_s = source_vert - lbs_output # as a delta over lbs output
+                    deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
+                    deform_in_lbs_residual_s = torch.cat([deform_in_s, source_in_s], dim=-1)
+                    # exp_z_cbd = self.cbd_exp_z_model(deform_in) # (B, 1, L)
+                    # key_d = self.key_d_model(exp_z_cbd)
+                    # key_d = self.reshape_key_d(key_d, B)
+                    # key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+                    # --> (B, N, 4M) if self.opts.out_type == 2
+                    # delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
+                    deform_in_s = deform_in_lbs_residual_s
+                    
+                else:
+                    if self.in_type > 0:
+                        source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
+                        deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
+                        
+                    deform_in_s = torch.cat([deform_in_s, source_in_s], dim=-1)
+                    
+                    if self.in_type == 2:
+                        source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
+                        deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
                 
                 if self.use_shp:
                     exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)    

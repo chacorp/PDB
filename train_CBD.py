@@ -143,6 +143,8 @@ def Options():
     parser.set_defaults(use_lbs_bal=False)
     parser.add_argument("--use_hyb_delta_lbs_input",dest='use_hyb_delta_lbs_input', action='store_true')
     parser.set_defaults(use_hyb_delta_lbs_input=False)
+    parser.add_argument("--use_hyb_concat_lbs",dest='use_hyb_concat_lbs', action='store_true')
+    parser.set_defaults(use_hyb_concat_lbs=False)
     
     parser.add_argument("--debug_stage",dest='debug_stage', action='store_true')
     parser.set_defaults(debug_stage=False)
@@ -3141,6 +3143,8 @@ class Trainer():
             text+= f"       [   use_exp_joint_predict   ]: {opts.use_exp_joint_predict}\n"
             text+= f"   [     no_use_translation    ]: {opts.no_use_translation}\n"
             text+= f"   [   use_weighted_joint_pos  ]: {opts.use_weighted_joint_pos}\n"
+            text+= f"   [   use_hyb_concat_lbs  ]: {opts.use_hyb_concat_lbs}\n"
+            text+= f"   [   use_hyb_delta_lbs_input  ]: {opts.use_hyb_delta_lbs_input}\n"
             text+= "========== Regularizers ==========\n"
             text+= f"[         use_lbs_ent       ]: {opts.use_lbs_ent}\n"
             text+= f"[      use_lbs_laplacian    ]: {opts.use_lbs_laplacian}\n"
@@ -3436,11 +3440,20 @@ class Trainer():
                         batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                         batch.mesh_data, epoch=epoch                   
                     )
+                    
                     if self.opts.use_hyb_delta_lbs_input:
                         pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
                             batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                             batch.mesh_data, epoch=epoch, lbs_output = pred_vertices,
                         )
+                    
+                    elif self.opts.use_hyb_concat_lbs:
+                        ## add pred_vertices to batch_template_v
+                        pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
+                            batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
+                            batch.mesh_data, epoch=epoch, lbs_output = pred_vertices, lbs_source = pred_source
+                        )
+                    
                     else: # default
                         pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
                             batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
