@@ -4,13 +4,13 @@
 ## tips ##
 ##########
 ## 1. attaching session to current terminal (bash shell)
-# tmux attach -t nbc_train
+# tmux attach -t lbs_train
 ## 2. listing sessions
 # tmux ls
 ## 3. killing session
-# tmux kill-session -t nbc_train
+# tmux kill-session -t lbs_train
 ## 4. showing status w/o attaching
-# tmux capture-pane -pt nbc_train | tail -n 20
+# tmux capture-pane -pt lbs_train | tail -n 20
 
 ## !/usr/bin/env bash
 set -e
@@ -68,6 +68,10 @@ tmux new-session -d -s $SESSION_NAME
 
     ## continue
     CMD="python train_CBD.py \
+        --continue_ckpt \
+        --start_epoch 150 \
+        --ckpt './ckpts_CBD/2026-02-11-08-37-13-NGBC++v6' \
+        --log_dir "./ckpts_CBD/2026-02-11-08-37-13-NGBC++v6" \
         --max_epoch 500 \
         --tb \
         --lr 1e-4 \
