@@ -8,7 +8,6 @@
 ##########
 ## normal
 ## 64 joints - 9dof + 512 CBD
-## 64 joints - 9dof + 512 CBD
         ## w/ 500
 python eval_CBD.py \
 --no_vis_interv \

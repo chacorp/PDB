@@ -2378,14 +2378,14 @@ class Trainer():
                             )
                 
                 # LBS-only forward
-                pred_vertices, _, _, _, _, _, _, _, _, _ = self.model(
-                    batch.template,
-                    batch.vertices,
-                    batch.template_normal,
-                    batch.vertices_normal,
-                    mesh_data=batch.mesh_data, epoch=0, 
-                    out_kw=True, stage=2 # 1: LBS stage 2: LBS + CBD
-                )
+                # pred_vertices, _, _, _, _, _, _, _, _, _ = self.model(
+                #     batch.template,
+                #     batch.vertices,
+                #     batch.template_normal,
+                #     batch.vertices_normal,
+                #     mesh_data=batch.mesh_data, epoch=0, 
+                #     out_kw=True, stage=2 # 1: LBS stage 2: LBS + CBD
+                # )
                 
                 pred_vertices, recon_vertices, recon_source, exp_z, pred_source, t_mask, key_d, pred_key_weight, W_lbs, T_lbs = self.model(
                         batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
@@ -2396,6 +2396,12 @@ class Trainer():
                         batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=0, lbs_output = pred_vertices,
                     )
+                elif self.opts.use_hyb_concat_lbs:
+                    ## add pred_vertices to batch_template_v
+                    pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
+                        batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
+                        batch.mesh_data, epoch=0, lbs_output = pred_vertices, lbs_source = pred_source
+                    )    
                 else: # default
                     pred_vertices_CBD, recon_vertices_CBD, recon_source_CBD, exp_z_CBD, pred_source_CBD, t_mask_CBD, pred_key_weight_CBD = self.model_CBD(
                         batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
@@ -2403,7 +2409,6 @@ class Trainer():
                     )
                 pred_vertices = pred_vertices + pred_vertices_CBD # expressed face
                 pred_source = pred_source + pred_source_CBD # neutral face
-                
                 
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
