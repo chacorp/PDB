@@ -18,7 +18,7 @@ python -m pip install "numpy<2"
 python -m pip install --no-cache-dir opencv-python-headless
 
 # 3) CuPy 지뢰 제거 + 단일 설치 (너가 방금 해결한 루트)
-## if char-s03
+## if char-s03 (cuda 12.x)
 python -m pip uninstall -y cupy cupy-cuda11x cupy-cuda12x
 python -m pip install --no-cache-dir --index-url https://pypi.org/simple "cupy-cuda12x"
 ## else

@@ -4,11 +4,11 @@
 ## tips ##
 ##########
 ## 1. attaching session to current terminal (bash shell)
-# tmux attach -t nbc_train
+# tmux attach -t hybrid_train_v7
 ## 2. listing sessions
 # tmux ls
 ## 3. killing session
-# tmux kill-session -t nbc_train
+# tmux kill-session -t hybrid_train_v7
 ## 4. showing status w/o attaching
 # tmux capture-pane -pt nbc_train | tail -n 20
 
@@ -18,7 +18,7 @@
 set -e
 
 ## change if needed
-SESSION_NAME="nbc_train"
+SESSION_NAME="hybrid_train_v7"
 
 # 이미 세션이 있으면 붙기
 if tmux has-session -t $SESSION_NAME 2>/dev/null; then
@@ -114,8 +114,8 @@ tmux new-session -d -s $SESSION_NAME
 #     --data_toggle
 
 ###############
-## 64 joints + 512 cage vertices
-CMD=python train_CBD.py \
+## 64 joints + 512 cage vertices at char-s03-nbcpp-02
+CMD="python train_CBD.py \
     --max_epoch 800 \
     --tb \
     --lr 1e-4 \
@@ -135,7 +135,7 @@ CMD=python train_CBD.py \
     --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5' \
     --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5" \
     --num_cage_v 512 \
-    --data_toggle
+    --data_toggle"
 
 #     ## continue
 #     python train_CBD.py \
@@ -209,8 +209,6 @@ CMD=python train_CBD.py \
 #     --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-09-15-24-51-NGBC++v7-stage2-from_lbs_ckpt_300" \
 #     --num_cage_v 512 \
 #     --data_toggle
-
-
 
 tmux send-keys -t $SESSION_NAME "$CMD" C-m
 
