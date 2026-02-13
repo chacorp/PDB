@@ -280,7 +280,7 @@ class Trainer():
                 hid_dim=128 if self.opts.align_latent else 256,
             )
             
-        elif opts.version==7 and opts.version==8: # copied from train_CBD.py
+        elif opts.version==7 or opts.version==8: # copied from train_CBD.py
             self.model = NeuralGeneralizedBarycentricCoordinateLBS(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
