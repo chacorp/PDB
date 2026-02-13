@@ -445,25 +445,49 @@ class Trainer():
         else:
             raise NotImplementedError('No matching model version')
         
-        ckpt_has_cbd = False        
-        if self.opts.ckpt is not None:
-            if self.opts.continue_ckpt:
-                ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
-            else:
-                ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
-                
-            ckpt_dict = torch.load(ckpt, map_location="cpu")
-            ckpt_has_cbd = any(k.startswith("cbd_") or k.startswith("key_d_model") for k in ckpt_dict.keys())
+        if opts.version == 7: # LBS pretrained + CBD training
+            def _parse_lbs_epoch_from_stage2_dir(stage2_dir: str) -> int:
+                name = os.path.basename(stage2_dir)
+                parts = name.split('_')
+                try:
+                    return int(parts[-1])
+                except:
+                    raise ValueError(f"cannot parse lbs epoch from stage2 dir name: {name}")
+            
+            if  "lbs_ckpt" in self.opts.ckpt: # if continue from stage 2 ckpt dir
+                parent_dir = os.path.dirname(self.opts.ckpt)
+                lbs_epoch = _parse_lbs_epoch_from_stage2_dir(self.opts.ckpt)
+                self._load_weight(self.model, name="lbs",ckpt_dir=parent_dir, epoch=lbs_epoch)
+                self._load_weight(self.model_CBD, name="cbd",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
 
-        if self.opts.use_lbs and self.opts.start_stage == 2 and ckpt_has_cbd:
-            # stage2 ckpt에는 CBD branch 키가 포함되어 있으므로
-            # load_state_dict 전에 반드시 branch를 만들어야 함
-            self.model.load_CBD_brach(self.opts.use_lbs)
-            self.cbd_loaded = True  
+            else: # if start from scratch 
+                self._load_weight(self.model, name="lbs",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+                # self._load_weight(self.model, name="cbd",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+
         
+        elif opts.version == 8: # LBS + CBD joint training
+            self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+            self._load_weight(self.model_CBD, name="cbd", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
         
+        elif opts.version == 5:
+            ckpt_has_cbd = False        
+            if self.opts.ckpt is not None:
+                if self.opts.continue_ckpt:
+                    ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
+                else:
+                    ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
+                    
+                ckpt_dict = torch.load(ckpt, map_location="cpu")
+                ckpt_has_cbd = any(k.startswith("cbd_") or k.startswith("key_d_model") for k in ckpt_dict.keys())
+
+            if self.opts.use_lbs and self.opts.start_stage == 2 and ckpt_has_cbd:
+                # stage2 ckpt에는 CBD branch 키가 포함되어 있으므로
+                # load_state_dict 전에 반드시 branch를 만들어야 함
+                self.model.load_CBD_brach(self.opts.use_lbs)
+                self.cbd_loaded = True  
+            
         self.load_weight()
-        # load weight
+            # load weight
     
     def load_weight(self):
         if self.opts.ckpt:
@@ -477,6 +501,19 @@ class Trainer():
             print(f"Loaded! {ckpt}")
         else:
             print('no ckpt found, training from scratch!')
+    
+    def _load_weight(self, model, name="lbs", ckpt_dir=None, epoch=None):
+        if ckpt_dir:
+            print(f"Loading... {ckpt_dir}")
+            if self.opts.continue_ckpt:
+                ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
+            else:
+                ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
+            ckpt_dict = torch.load(ckpt)            
+            model.load_state_dict(ckpt_dict)
+            print(f"Loaded! {ckpt}")
+        else:
+            print(f'no {name} ckpt found, training from scratch!')
 
     def train_v1(self, epochs):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
@@ -3137,8 +3174,12 @@ class Trainer():
                     break
                 # ------------------------------------------------------------------------------------------------
         
-        
+    
     def train_vLBSHybrid2(self, epochs):
+        """
+        CBD training of on LBS pretrained
+        """
+        
         
         def get_lbs_config(opts):
             text = "===========[LBS config]===========\n"
@@ -3246,8 +3287,8 @@ class Trainer():
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
         
-        stage2_mode = (self.opts.start_stage == 2) or (self.opts.start_epoch >= self.opts.lbs_pretrained_epochs)
-        resume_mode = (self.opts.ckpt is not None) and self.opts.continue_ckpt and (not stage2_mode)
+        # stage2_mode = (self.opts.start_stage == 2) or (self.opts.start_epoch >= self.opts.lbs_pretrained_epochs)
+        resume_mode = (self.opts.ckpt is not None) or (self.opts.log_dir is not None)
         if resume_mode:
             os.makedirs(self.opts.log_dir, exist_ok=True)
             # if self.opts.ckpt and self.opts.log_dir:
@@ -3262,12 +3303,9 @@ class Trainer():
         else:
             # os.makedirs(self.opts.log_dir, exist_ok=True)
             tag = f"-NGBC++v{self.opts.version}" # 1: baseline / 2: ours
-            if self.opts.optim_cage:
-                tag += "-optim_cage"
-            if stage2_mode:
-                tag += "-stage2"
-                if self.opts.ckpt:
-                    tag += f"-from_lbs_ckpt_{self.opts.start_epoch}"
+            tag += "-stage2"
+            if self.opts.ckpt:
+                tag += f"-from_lbs_ckpt_{self.opts.start_epoch}"
             self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
             os.makedirs(self.opts.log_dir, exist_ok=True)
 
@@ -3882,9 +3920,7 @@ class Trainer():
     def train_vLBSHybrid3(self, epochs):
 
         """
-        
         joint training of LBS + CBD
-        
         """
         
         def get_lbs_config(opts):
