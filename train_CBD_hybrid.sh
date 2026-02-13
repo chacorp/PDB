@@ -4,11 +4,11 @@
 ## tips ##
 ##########
 ## 1. attaching session to current terminal (bash shell)
-# tmux attach -t hybrid_train_v7_lbs_concat
+# tmux attach -t hybrid_train_v8_joint_train
 ## 2. listing sessions
 # tmux ls
 ## 3. killing session
-# tmux kill-session -t hybrid_train_v7_lbs_concat
+# tmux kill-session -t hybrid_train_v8_joint_train
 ## 4. showing status w/o attaching
 # tmux capture-pane -pt nbc_train | tail -n 20
 
@@ -19,7 +19,8 @@ set -e
 
 ## change if needed
 # SESSION_NAME="hybrid_train_v7"
-SESSION_NAME="hybrid_train_v7_lbs_concat"
+# SESSION_NAME="hybrid_train_v7_lbs_concat"
+SESSION_NAME="hybrid_train_v8_joint_train"
 
 # 이미 세션이 있으면 붙기
 if tmux has-session -t $SESSION_NAME 2>/dev/null; then
@@ -40,31 +41,53 @@ tmux new-session -d -s $SESSION_NAME
 ############
 ## this all is must "version 7" >> train_vLBSHybrid2()
 
+
 ###############
-## concat input
-## 64 joints + 512 cage vertices at eve-s05-nbcpp-02
+## joint train
+## 64 joints only at char-s02-nbcpp-01 ->> should be version 8 
 CMD="python train_CBD.py \
-    --use_hyb_concat_lbs \
-    --max_epoch 800 \
+    --use_hyb_joint_train \
+    --max_epoch 500 \
     --tb \
     --lr 1e-4 \
     --sc_step 100000 \
     --in_type 1 \
     --out_type 1 \
     --batch_size 16 \
-    --version 7 \
+    --version 8 \
     --use_data1 \
     --last_activation 'relu' \
     --use_lbs_joint_center \
     --num_lbs_joints 64 \
     --use_perm \
-    --save_interval 25 \
-    --continue_ckpt \
-    --start_epoch 300 \
-    --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5' \
-    --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5" \
-    --num_cage_v 512 \
-    --data_toggle"
+    --save_interval 50 \
+    --num_cage_v 512"
+
+###############
+## concat input
+## 64 joints + 512 cage vertices at eve-s05-nbcpp-02
+# CMD="python train_CBD.py \
+#     --use_hyb_concat_lbs \
+#     --max_epoch 800 \
+#     --tb \
+#     --lr 1e-4 \
+#     --sc_step 100000 \
+#     --in_type 1 \
+#     --out_type 1 \
+#     --batch_size 16 \
+#     --version 7 \
+#     --use_data1 \
+#     --last_activation 'relu' \
+#     --use_lbs_joint_center \
+#     --num_lbs_joints 64 \
+#     --use_perm \
+#     --save_interval 25 \
+#     --continue_ckpt \
+#     --start_epoch 300 \
+#     --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5' \
+#     --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5" \
+#     --num_cage_v 512 \
+#     --data_toggle"
     ## continue
 # CMD="python train_CBD.py \
 #     --use_hyb_concat_lbs \

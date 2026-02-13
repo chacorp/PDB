@@ -406,7 +406,7 @@ class Trainer():
                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
-        elif opts.version==7:
+        elif opts.version==7 or opts.version==8:
             # self.model = NeuralGeneralizedBarycentricCoordinate5(
             self.model = NeuralGeneralizedBarycentricCoordinateLBS(
                 opts, num_layers=4,
@@ -4712,7 +4712,7 @@ if __name__ == "__main__":
         trainer.train_v1(epochs=opts.max_epoch)
     elif opts.version==2:
         trainer.train_v2(epochs=opts.max_epoch)
-    elif opts.version==5 or opts.version==8 or opts.version==55:
+    elif opts.version==5 or opts.version==55:
         trainer.train_v5(epochs=opts.max_epoch)
     elif opts.version==6: # train LBS separately
         trainer.train_vLBS(epochs=opts.max_epoch)
