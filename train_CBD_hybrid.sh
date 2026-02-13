@@ -106,9 +106,9 @@ tmux new-session -d -s $SESSION_NAME
         --use_perm \
         --save_interval 25 \
         --continue_ckpt \
-        --start_epoch 650 \
-        --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-11-08-27-57-NGBC++v7-stage2-from_lbs_ckpt_300' \
-        --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-11-08-27-57-NGBC++v7-stage2-from_lbs_ckpt_300" \
+        --start_epoch 350 \
+        --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-13-07-05-00-NGBC++v7-stage2-from_lbs_ckpt_300' \
+        --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-13-07-05-00-NGBC++v7-stage2-from_lbs_ckpt_300" \
         --num_cage_v 512 \
         --data_toggle"
 

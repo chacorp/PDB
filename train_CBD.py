@@ -486,8 +486,10 @@ class Trainer():
                 self.model.load_CBD_brach(self.opts.use_lbs)
                 self.cbd_loaded = True  
             
-        self.load_weight()
-            # load weight
+            self.load_weight()
+                # load weight
+        else:
+            self.load_weight()
     
     def load_weight(self):
         if self.opts.ckpt:
@@ -506,9 +508,15 @@ class Trainer():
         if ckpt_dir:
             print(f"Loading... {ckpt_dir}")
             if self.opts.continue_ckpt:
-                ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
+                if opts.version == 7:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{epoch:03d}.pth"))[0]
+                elif opts.version == 8:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
             else:
-                ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
+                if opts.version == 7:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_best.pth"))[0]
+                elif opts.version == 8:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
             ckpt_dict = torch.load(ckpt)            
             model.load_state_dict(ckpt_dict)
             print(f"Loaded! {ckpt}")
