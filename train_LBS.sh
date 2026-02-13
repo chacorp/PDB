@@ -69,13 +69,13 @@ tmux new-session -d -s $SESSION_NAME
     ## continue
     CMD="python train_CBD.py \
         --continue_ckpt \
-        --start_epoch 150 \
+        --start_epoch 250 \
         --ckpt './ckpts_CBD/2026-02-11-08-37-13-NGBC++v6' \
         --log_dir "./ckpts_CBD/2026-02-11-08-37-13-NGBC++v6" \
         --max_epoch 500 \
         --tb \
         --lr 1e-4 \
-        --sc_step 100 \
+        --sc_step 100000 \
         --in_type 1 \
         --out_type 1 \
         --batch_size 16 \

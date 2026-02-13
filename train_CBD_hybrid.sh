@@ -41,7 +41,7 @@ tmux new-session -d -s $SESSION_NAME
 
 ###############
 ## concat input
-## 64 joints + 512 cage vertices + residualized input
+## 64 joints + 512 cage vertices
 # python train_CBD.py \
 #     --use_hyb_concat_lbs \
 #     --max_epoch 800 \
@@ -65,28 +65,28 @@ tmux new-session -d -s $SESSION_NAME
 #     --num_cage_v 512 \
 #     --data_toggle
     ## continue
-CMD="python train_CBD.py \
-    --use_hyb_concat_lbs \
-    --max_epoch 800 \
-    --tb \
-    --lr 1e-4 \
-    --sc_step 100000 \
-    --in_type 1 \
-    --out_type 1 \
-    --batch_size 16 \
-    --version 7 \
-    --use_data1 \
-    --last_activation 'relu' \
-    --use_lbs_joint_center \
-    --num_lbs_joints 64 \
-    --use_perm \
-    --save_interval 25 \
-    --continue_ckpt \
-    --start_epoch 650 \
-    --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-11-08-27-57-NGBC++v7-stage2-from_lbs_ckpt_300' \
-    --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-11-08-27-57-NGBC++v7-stage2-from_lbs_ckpt_300" \
-    --num_cage_v 512 \
-    --data_toggle"
+# CMD="python train_CBD.py \
+#     --use_hyb_concat_lbs \
+#     --max_epoch 800 \
+#     --tb \
+#     --lr 1e-4 \
+#     --sc_step 100000 \
+#     --in_type 1 \
+#     --out_type 1 \
+#     --batch_size 16 \
+#     --version 7 \
+#     --use_data1 \
+#     --last_activation 'relu' \
+#     --use_lbs_joint_center \
+#     --num_lbs_joints 64 \
+#     --use_perm \
+#     --save_interval 25 \
+#     --continue_ckpt \
+#     --start_epoch 650 \
+#     --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-11-08-27-57-NGBC++v7-stage2-from_lbs_ckpt_300' \
+#     --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-11-08-27-57-NGBC++v7-stage2-from_lbs_ckpt_300" \
+#     --num_cage_v 512 \
+#     --data_toggle"
 
 
 ###############
@@ -115,27 +115,27 @@ CMD="python train_CBD.py \
 
 ###############
 ## 64 joints + 512 cage vertices
-# python train_CBD.py \
-#     --max_epoch 800 \
-#     --tb \
-#     --lr 1e-4 \
-#     --sc_step 100000 \
-#     --in_type 1 \
-#     --out_type 1 \
-#     --batch_size 16 \
-#     --version 7 \
-#     --use_data1 \
-#     --last_activation 'relu' \
-#     --use_lbs_joint_center \
-#     --num_lbs_joints 64 \
-#     --use_perm \
-#     --save_interval 25 \
-#     --continue_ckpt \
-#     --start_epoch 300 \
-#     --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5' \
-#     --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5" \
-#     --num_cage_v 512 \
-#     --data_toggle
+CMD=python train_CBD.py \
+    --max_epoch 800 \
+    --tb \
+    --lr 1e-4 \
+    --sc_step 100000 \
+    --in_type 1 \
+    --out_type 1 \
+    --batch_size 16 \
+    --version 7 \
+    --use_data1 \
+    --last_activation 'relu' \
+    --use_lbs_joint_center \
+    --num_lbs_joints 64 \
+    --use_perm \
+    --save_interval 25 \
+    --continue_ckpt \
+    --start_epoch 300 \
+    --ckpt './ckpts_CBD/2026-02-03-11-10-40-NGBC++v5' \
+    --log_dir "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5" \
+    --num_cage_v 512 \
+    --data_toggle
 
 #     ## continue
 #     python train_CBD.py \

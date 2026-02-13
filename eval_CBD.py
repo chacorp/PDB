@@ -1998,6 +1998,8 @@ class Trainer():
         lbs_prefix = ("lbs_exp_z_model", "lbs_weight_model", "lbs_pose_model")
         cbd_prefix = ("cbd_exp_z_model", "key_weight_model", "key_d_model")
         
+        import pdb;pdb.set_trace()
+        
         _load_state_partial(lbs_ckpt, lbs_prefix)
         print(f"[lbs partial load] {os.path.basename(lbs_ckpt)}")
         _load_state_partial(cbd_ckpt, cbd_prefix)    
@@ -2050,7 +2052,6 @@ class Trainer():
                                 tmp_L.shape
                             )
                 
-                # LBS-only forward
                 pred_vertices, _, _, _, _, _, _, _, _, _ = self.model(
                     batch.template,
                     batch.vertices,

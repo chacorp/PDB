@@ -3707,7 +3707,9 @@ class Trainer():
 
             # save model
             if epoch % self.opts.save_interval == 0:
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+                # torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth') # save LBS
+                torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth') # save CBD
+                
             
             ######################################################################################################
             # validation -----------------------------------------------------------------------------------------
