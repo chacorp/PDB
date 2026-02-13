@@ -242,7 +242,7 @@ class Trainer():
                 device=self.device,
                 optim_cage=self.opts.optim_cage
             )
-        elif opts.version==3: # copied from train_CBD.py
+        elif opts.version==3: # old before everthing separate
             self.model = NeuralGeneralizedBarycentricCoordinate(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
@@ -261,7 +261,26 @@ class Trainer():
                 hid_dim=128 if self.opts.align_latent else 256,
             )
         
-        elif opts.version==4: # copied from train_CBD.py
+        elif opts.version==6:
+            self.model = NeuralGeneralizedBarycentricCoordinateLBS(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                is_train=True,
+                use_pou = ~self.opts.no_pou,
+                device=self.device,
+                #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+            
+        elif opts.version==7 and opts.version==8: # copied from train_CBD.py
             self.model = NeuralGeneralizedBarycentricCoordinateLBS(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
@@ -297,50 +316,47 @@ class Trainer():
                 hid_dim=128 if self.opts.align_latent else 256,
             )
         
-        # elif opts.version==21:
-        #     self.model = NeuralBarycentricCoordinatev2(
-        #         opts, num_layers=4,
-        #         num_cage_vertices=self.opts.num_cage_v,
-        #         use_exp_recon=False, # not used yet
-        #         use_shp_recon=False, # not used yet
-        #         use_shp=False,
-        #         use_relu=last_act_list[0],
-        #         use_elu=last_act_list[1],
-        #         use_softmax=last_act_list[2],
-        #         use_softplus=last_act_list[3],
-        #         no_activation=last_act_list[4],
-        #         use_sqrelu=last_act_list[5],
-        #         use_least_N_on_V=False,
-        #         is_train=True,
-        #         use_pou = ~self.opts.no_pou,
-        #         device=self.device,
-        #         hid_dim=128 if self.opts.align_latent else 256,
-        #     )
-        # elif self.opts.version==22:
-        #     self.model = NeuralBarycentricCoordinatev3(
-        #         opts, num_layers=4,
-        #         num_cage_vertices=self.opts.num_cage_v,
-        #         use_exp_recon=False, # not used yet
-        #         use_shp_recon=False, # not used yet
-        #         use_shp=False,
-        #         use_relu=last_act_list[0],
-        #         use_elu=last_act_list[1],
-        #         use_softmax=last_act_list[2],
-        #         use_softplus=last_act_list[3],
-        #         no_activation=last_act_list[4],
-        #         use_sqrelu=last_act_list[5],
-        #         use_least_N_on_V=False,
-        #         is_train=True,
-        #         use_pou = ~self.opts.no_pou,
-        #         device=self.device,
-        #         hid_dim=128 if self.opts.align_latent else 256,
-        #     )
         else:
             raise NotImplementedError('No matching model version')
         
-        # load weight
-        if opts.version!=0:
+        
+        if opts.version == 7: # LBS pretrained + CBD training
+            
+            parent_dir = os.path.dirname(self.opts.ckpt)
+            self.lbs_epoch = self._parse_lbs_epoch_from_stage2_dir(self.opts.ckpt)
+            self._load_weight(self.model, name="lbs",ckpt_dir=parent_dir, epoch=self.lbs_epoch)
+            self._load_weight(self.model_CBD, name="cbd",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+        
+        elif opts.version == 8: # LBS + CBD joint training
+            self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+            self._load_weight(self.model_CBD, name="cbd", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+        
+        elif opts.version == 3: # corresponds to version 5 in train_CBD.py
+            ckpt_has_cbd = False        
+            if self.opts.ckpt is not None:
+                if self.opts.continue_ckpt:
+                    ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
+                else:
+                    ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
+                    
+                ckpt_dict = torch.load(ckpt, map_location="cpu")
+                ckpt_has_cbd = any(k.startswith("cbd_") or k.startswith("key_d_model") for k in ckpt_dict.keys())
+
+            if self.opts.use_lbs and self.opts.start_stage == 2 and ckpt_has_cbd:
+                # stage2 ckpt에는 CBD branch 키가 포함되어 있으므로
+                # load_state_dict 전에 반드시 branch를 만들어야 함
+                self.model.load_CBD_brach(self.opts.use_lbs)
+                self.cbd_loaded = True  
+            
             self.load_weight()
+                # load weight
+        else:
+            self.load_weight()
+        
+        # # load weight
+        # if opts.version!=0:
+        #     self.load_weight()
+        
     
     def load_weight(self):
         if self.opts.ckpt:
@@ -355,6 +371,34 @@ class Trainer():
             self.model.load_state_dict(ckpt_dict,strict=False)
         else:
             print('no ckpt found, training from scratch!')
+    
+    def _load_weight(self, model, name="lbs", ckpt_dir=None, epoch=None):
+        if ckpt_dir:
+            print(f"Loading... {ckpt_dir}")
+            if self.opts.continue_ckpt:
+                if opts.version == 7:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{epoch:03d}.pth"))[0]
+                elif opts.version == 8:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
+            else:
+                if opts.version == 7:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_best.pth"))[0]
+                elif opts.version == 8:
+                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
+            ckpt_dict = torch.load(ckpt)            
+            model.load_state_dict(ckpt_dict)
+            print(f"Loaded! {ckpt}")
+        else:
+            print(f'no {name} ckpt found, training from scratch!')
+    
+    def _parse_lbs_epoch_from_stage2_dir(self, stage2_dir: str) -> int:
+                name = os.path.basename(stage2_dir)
+                parts = name.split('_')
+                try:
+                    return int(parts[-1])
+                except:
+                    raise ValueError(f"cannot parse lbs epoch from stage2 dir name: {name}")
+    
 
     def evaluate(self):
         
@@ -578,7 +622,6 @@ class Trainer():
             fps=30
             )
             print("animation done!")
-
 
 
     def evaluate2(self):
@@ -1061,7 +1104,6 @@ class Trainer():
             print("animation done!")
         ##########################################################################################################
         
-
     
     def evaluate3(self):
         ##########################################################################################################
@@ -1343,8 +1385,7 @@ class Trainer():
         self.logger.write(log_text+"\n")                
         print('done!')
    
-   
-   
+
     def evaluateLBS(self):
         
         ##########################################################################################################
@@ -1596,8 +1637,7 @@ class Trainer():
             )
             print("animation done!")
   
-  
-  
+
     def evaluateLBS2(self):
         """
             self-retargeting task on real
@@ -1862,8 +1902,274 @@ class Trainer():
             fps=30
             )
             print("animation done!")
+
      
-    
+    def evaluateLBS3(self):
+        """
+            self-retargeting task on real with version 6 
+        """
+        ##########################################################################################################
+        # define dataset -----------------------------------------------------------------------------------------
+        assert opts.version == 6, "evaluateLBS3 is for version 6 only"
+        print("Running LBS-only evaluation on EvalDataset (real test set)")
+        BS = self.opts.batch_size
+        HB = BS // 2
+        device=self.device
+        
+        if self.opts.data_selection == -1:
+            raise NotImplementedError('only works for individual data')
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
+        selection = data_name_list[self.opts.data_selection]
+            
+        self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
+        # self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
+        
+        self.dataloader = torch.utils.data.DataLoader(
+            self.dataset,
+            batch_size=self.opts.batch_size,
+            collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
+            #num_workers=8,
+        )
+        ##########################################################################################################
+        
+        
+        ###### Logging ###########################################################################################
+        # make logdir --------------------------------------------------------------------------------------------
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+                            
+        ckpt_path = self.opts.ckpt.split('/')[-1]
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
+        
+        if self.opts.use_t_mask:
+            self.opts.log_dir = self.opts.log_dir + '-masked' + f'_e{self.opts.start_epoch:02d}'
+            
+        if self.opts.laplacian:
+            self.opts.log_dir = self.opts.log_dir + '-laplacian' + f'_e{self.opts.start_epoch:02d}'
+            
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        
+        if self.opts.no_vis_interv == False:
+            os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+        else:
+            os.makedirs(f"{self.opts.log_dir}/img-full", exist_ok=True)
+            
+        # save options as json -----------------------------------------------------------------------------------
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+            
+        # save train option as yml
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+        
+        # self logger
+        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
+        print(f'Saving log at: {self.opts.log_dir}')
+        
+        print(self.dataset.get_data_config())
+        self.logger.write(self.dataset.get_data_config())
+        #---------------------------------------------------------------------------------------------------------
+        ##########################################################################################################
+        
+        
+        
+        # eval loop ##############################################################################################        
+        global_step = 0
+        BEST_LOSS = 100_000_000
+        
+        check_usage = False
+        
+        len_data = len(self.dataloader)
+        denom = 1 / len_data
+        
+        if self.opts.NFR:
+            self.model.model.eval()
+        else:
+            self.model.eval()
+        
+        losses_val = {
+            "MSE": 0.0
+        }
+        
+        if self.opts.use_t_mask:
+            losses_val["MSE-in"] = 0.0
+            losses_val["MSE-out"] = 0.0
+        if self.opts.laplacian:
+            losses_val["Lap"] = 0.0
+            
+        mesh_data = self.dataset.data_name
+        
+        pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
+        for index, batch in pbar:                
+            # model forward ----------------------------------------------------------------------------------
+            with torch.no_grad():
+                if index==0:
+                    src_verts = batch.template[0]
+                    src_faces = batch.faces[0]
+                    src_m = trimesh.Trimesh(
+                        vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                    )
+                    if self.opts.laplacian:
+                        tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
+                        src_L = torch.sparse_csc_tensor(
+                            torch.LongTensor(tmp_L.indptr).to(device),
+                            torch.LongTensor(tmp_L.indices).to(device),
+                            torch.FloatTensor(tmp_L.data).to(device),
+                            tmp_L.shape
+                        )
+                else:
+                    if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:            
+                        src_verts = batch.template[0]
+                        src_faces = batch.faces[0]
+                        src_m = trimesh.Trimesh(
+                            vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                        )
+                        if self.opts.laplacian:
+                            tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
+                            src_L = torch.sparse_csc_tensor(
+                                torch.LongTensor(tmp_L.indptr).to(device),
+                                torch.LongTensor(tmp_L.indices).to(device),
+                                torch.FloatTensor(tmp_L.data).to(device),
+                                tmp_L.shape
+                            )
+                
+                # LBS-only forward
+                pred_vertices, _, _, _, _, _, _, _, _, _ = self.model(
+                    batch.template,
+                    batch.vertices,
+                    batch.template_normal,
+                    batch.vertices_normal,
+                    mesh_data=batch.mesh_data, epoch=0, 
+                    out_kw=True,
+                )
+                
+            # Metric -----------------------------------------------------------------------------------------
+            with torch.no_grad():
+                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
+                
+                HB = batch.vertices.shape[0] // 2
+            
+            if self.opts.no_eval_metric == False:
+                if self.opts.use_t_mask:
+                    inner_mask = plateau_hat_points(batch.template)
+                    outter_mask = 1 - inner_mask
+                    
+                    losses_val['MSE-in'] += F.mse_loss(
+                        batch.vertices*inner_mask, pred_vertices*inner_mask
+                    ).item() * denom # for NGBC model
+                    
+                    losses_val['MSE-out'] += F.mse_loss(
+                        batch.template*outter_mask, pred_vertices*outter_mask
+                    ).item() * denom # for NGBC model
+                    
+                losses_val['MSE'] += F.mse_loss(
+                    batch.vertices, pred_vertices
+                ).item() * denom # for NGBC model
+            # ------------------------------------------------------------------------------------------------
+
+            if self.opts.save_gt:
+                save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
+                os.makedirs(save_gt_logdir, exist_ok=True)
+                curr_batch = batch.vertices.shape[0]
+                
+                for b_idx in range(curr_batch):
+                    save_gt_name = f"{save_gt_logdir}/{index*curr_batch + b_idx:06d}.npy"
+                    np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
+                
+            if self.opts.save_vert:
+                save_vert_logdir = f"{self.opts.log_dir}/verts"
+                # for pred_vert in pred_vertices:
+                os.makedirs(save_vert_logdir, exist_ok=True)
+                curr_batch = pred_vertices.shape[0]
+                
+                for b_idx in range(curr_batch):
+                    save_vert_name = f"{save_vert_logdir}/{index*curr_batch + b_idx:06d}.npy"
+                    np.save(save_vert_name, pred_vertices[b_idx].detach().cpu().numpy())
+            
+            # ------------------------------------------------------------------------------------------------
+            if self.opts.no_vis_interv == False:
+                interv_val = round(len_data / 5)
+                if index % interv_val == 0:
+                    # for visualization
+                    vertices = batch.vertices.cpu()
+                    # faces = batch.faces.cpu()
+                    faces = batch.faces[0].cpu()
+                                    
+                    frame = HB
+                    v_list = [
+                        vertices[0].cpu().detach(),
+                        # vertices[1].cpu().detach(),
+                        # vertices[HB].cpu().detach(),
+                        # vertices[BS-1].cpu().detach(),
+                        pred_vertices[0].cpu().detach(),
+                        # pred_vertices[1].cpu().detach(),
+                        # pred_vertices[HB].cpu().detach(),
+                        # pred_vertices[BS-1].cpu().detach(),
+                    ]
+                    len_v = len(v_list)
+                    f_list=[faces] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img"
+                    save_img_name = f"{index:04d}"
+                    
+                    plot_image_array(
+                        v_list, f_list, 
+                        rot_list=[[0,0,0]]*len_v,
+                        size=1, bg_black=False, mode='shade', 
+                        logdir=save_logdir, 
+                        name=save_img_name, save=True
+                    )
+            else:
+                # for visualization
+                vertices = batch.vertices.cpu()
+                # faces = batch.faces.cpu()
+                faces = batch.faces[0].cpu()
+                                
+                frame = HB
+                v_list = [
+                    vertices[0].cpu().detach(),
+                    # vertices[1].cpu().detach(),
+                    # vertices[HB].cpu().detach(),
+                    # vertices[BS-1].cpu().detach(),
+                    pred_vertices[0].cpu().detach(),
+                    # pred_vertices[1].cpu().detach(),
+                    # pred_vertices[HB].cpu().detach(),
+                    # pred_vertices[BS-1].cpu().detach(),
+                ]
+                len_v = len(v_list)
+                f_list=[faces] * len_v
+                save_logdir = f"{self.opts.log_dir}/img-full"
+                save_img_name = f"{index:04d}"
+                
+                plot_image_array(
+                    v_list, f_list, 
+                    rot_list=[[0,0,0]]*len_v,
+                    size=1, bg_black=False, mode='shade', 
+                    logdir=save_logdir, 
+                    name=save_img_name, save=True
+                )
+        ##########################################################################################################
+        
+        log_text = f"[Eval] "
+        for key, value in losses_val.items():
+            txt = f"{key}: {value:.6e} "
+            print(txt)
+            log_text += txt
+        self.logger.write(log_text+"\n")                
+        print('done!')
+        
+        if self.opts.eval_use_lbs:
+            if self.opts.no_use_translation:
+                anim_name = f"animation_lbs_{self.opts.num_lbs_joints}_e{self.opts.start_epoch}"
+            else:
+                anim_name = f"animation_lbs_{self.opts.num_lbs_joints}_9dof_e{self.opts.start_epoch}"
+            
+        if self.opts.no_vis_interv:
+            images_to_video_cv(
+            f"{self.opts.log_dir}/img-full",
+            f"{self.opts.log_dir}/{anim_name}.mp4",
+            fps=30
+            )
+            print("animation done!")
+     
     
     def evaluateHybrid(self):
         """
@@ -2187,7 +2493,6 @@ class Trainer():
             print("animation done!")
     
     
-    
     def evaluateHybridSeparate(self):
         """
         self-retargeting task on real
@@ -2195,23 +2500,23 @@ class Trainer():
         LBS:  parent_dir/model_{lbs_epoch}.pth
         CBD:  cbd_ckpt_path
         """
-        # raise NotImplementedError("not implemented yet")
+        assert opts.version == 7 or opts.version == 8, "evaluateLBS3 is for version 7 or 8 only"
         ##########################################################################################################
         # helper function ----------------------------------------------------------------------------------------
-        def _parse_lbs_epoch_from_stage2_dir(stage2_dir: str) -> int:
-            name = os.path.basename(stage2_dir)
-            parts = name.split('_')
-            try:
-                return int(parts[-1])
-            except:
-                raise ValueError(f"cannot parse lbs epoch from stage2 dir name: {name}")
+        # def _parse_lbs_epoch_from_stage2_dir(stage2_dir: str) -> int:
+        #     name = os.path.basename(stage2_dir)
+        #     parts = name.split('_')
+        #     try:
+        #         return int(parts[-1])
+        #     except:
+        #         raise ValueError(f"cannot parse lbs epoch from stage2 dir name: {name}")
         
-        def _load_state_partial(ckpt_path: str, prefixes: tuple):
-            sd = torch.load(ckpt_path, map_location="cpu")
-            if isinstance(sd, dict) and "state_dict" in sd:
-                sd = sd["state_dict"]
-            part = {k: v for k, v in sd.items() if k.startswith(prefixes)}
-            missing, unexpected = self.model.load_state_dict(part, strict=False)
+        # def _load_state_partial(ckpt_path: str, prefixes: tuple):
+        #     sd = torch.load(ckpt_path, map_location="cpu")
+        #     if isinstance(sd, dict) and "state_dict" in sd:
+        #         sd = sd["state_dict"]
+        #     part = {k: v for k, v in sd.items() if k.startswith(prefixes)}
+        #     missing, unexpected = self.model.load_state_dict(part, strict=False)
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         print("Running LBS+CBD hybrid evaluation on EvalDataset (real test set)")
@@ -2223,11 +2528,6 @@ class Trainer():
         assert stage2_dir is not None, "--ckpt must be stage2 logdir path"
         
         # parent_dir = os.path.dirname(stage2_dir)
-        
-        lbs_epoch = self.opts.hybrid_lbs_epoch
-        if lbs_epoch < 0:
-            lbs_epoch = _parse_lbs_epoch_from_stage2_dir(stage2_dir)
-        assert lbs_epoch >= 0, f"cannot parse lbs_epoch from stage2 dir name: {stage2_dir} (use --hybrid_lbs_epoch)"
         
         # lbs_ckpt = os.path.join(parent_dir, f"model_{lbs_epoch:03d}.pth")
         stage2_epoch = self.opts.start_epoch
@@ -2266,11 +2566,12 @@ class Trainer():
         ckpt_path = self.opts.ckpt.split('/')[-1]
         self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
         
+        dir_name = f'hybrid_lbse{self.lbs_epoch:02d}_cbde{self.opts.start_epoch:02d}'
         if self.opts.use_t_mask:
-            self.opts.log_dir = self.opts.log_dir + '-masked' + f'_hybrid_lbse{lbs_epoch:02d}_cbde{self.opts.start_epoch:02d}'
+            self.opts.log_dir = self.opts.log_dir + f'-masked_{dir_name}'
             
         if self.opts.laplacian:
-            self.opts.log_dir = self.opts.log_dir + '-laplacian' + f'_hybrid_cbde{self.opts.start_epoch:02d}_lbse{lbs_epoch:02d}'
+            self.opts.log_dir = self.opts.log_dir + f'-laplacian_{dir_name}'
             
         os.makedirs(self.opts.log_dir, exist_ok=True)
         
@@ -2315,21 +2616,8 @@ class Trainer():
         # -----------------------------
         # 4) load weights (LBS first, then CBD only)
         # -----------------------------
-        # # (중요) stage2 forward 쓰려면 CBD branch가 init 되어있어야 함
-        # if hasattr(self.model, "load_CBD_brach"):
-        #     self.model.load_CBD_brach(True)
-
-        # LBS 관련 prefix들 (필요하면 joint center 모델 prefix도 여기 포함)
-        # lbs_prefix = ("lbs_exp_z_model", "lbs_weight_model", "lbs_pose_model", "lbs_joint_center_model", "shape_model")
-        # lbs_prefix = ("lbs_exp_z_model", "lbs_weight_model", "lbs_pose_model")
-        # cbd_prefix = ("exp_z_model", "key_weight_model", "key_d_model")
-        full_prefix = ("lbs_exp_z_model", "lbs_weight_model", "lbs_pose_model", "exp_z_model", "key_weight_model", "key_d_model")
-        # _load_state_partial(lbs_ckpt, lbs_prefix)
-        # print(f"[lbs partial load] {os.path.basename(lbs_ckpt)}")
-        # _load_state_partial(cbd_ckpt, cbd_prefix)    
-        # print(f"[cbd partial load] {os.path.basename(cbd_ckpt)}")
-        _load_state_partial(stage2_ckpt, full_prefix)    
-        print(f"[stage2 full model load] {os.path.basename(stage2_ckpt)}")
+        # done at init time   
+        
 
         losses_val = {
             "MSE": 0.0
@@ -2660,7 +2948,10 @@ if __name__ == "__main__":
             trainer.evaluate3() ## nfs test dataloader
         else:
             if opts.eval_use_lbs:
-                trainer.evaluateLBS2()
+                if opts.version == 6:
+                    trainer.evaluateLBS3()
+                else:
+                    trainer.evaluateLBS2()
             elif opts.eval_use_hybrid:
                 trainer.evaluateHybrid()
             elif opts.eval_use_hybrid_separate:
