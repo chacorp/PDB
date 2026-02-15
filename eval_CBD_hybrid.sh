@@ -7,33 +7,33 @@
 
 ##########################################
 ## 64 joints - 9dof + 512 CBD default at char-s03
-python eval_CBD.py \
---version 7 \
---eval_use_hybrid_separate \
---no_vis_interv \
---data_selection 4 \
---continue_ckpt \
---start_epoch 500 \
---ckpt "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-13-06-52-18-NGBC++v7-stage2-from_lbs_ckpt_300" \
---realtest \
---batch_size 1 \
---save_vert \
---use_t_mask
+# python eval_CBD.py \
+# --version 7 \
+# --eval_use_hybrid_separate \
+# --no_vis_interv \
+# --data_selection 4 \
+# --continue_ckpt \
+# --start_epoch 500 \
+# --ckpt "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-13-06-52-18-NGBC++v7-stage2-from_lbs_ckpt_300" \
+# --realtest \
+# --batch_size 1 \
+# --save_vert \
+# --use_t_mask
 
-##########################################
-## 64 joints - 9dof + 512 CBD concat input at eve-s01
-python eval_CBD.py \
---version 7 \
---eval_use_hybrid_separate \
---no_vis_interv \
---data_selection 4 \
---continue_ckpt \
---start_epoch 500 \
---ckpt "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-13-07-05-00-NGBC++v7-stage2-from_lbs_ckpt_300" \
---realtest \
---batch_size 1 \
---save_vert \
---use_t_mask
+# ##########################################
+# ## 64 joints - 9dof + 512 CBD concat input at eve-s01
+# python eval_CBD.py \
+# --version 7 \
+# --eval_use_hybrid_separate \
+# --no_vis_interv \
+# --data_selection 4 \
+# --continue_ckpt \
+# --start_epoch 500 \
+# --ckpt "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-13-07-05-00-NGBC++v7-stage2-from_lbs_ckpt_300" \
+# --realtest \
+# --batch_size 1 \
+# --save_vert \
+# --use_t_mask
 
 ##########################################
 ## 64 joints - 9dof + 512 CBD joint train at char-s02
@@ -43,7 +43,57 @@ python eval_CBD.py \
 --no_vis_interv \
 --data_selection 4 \
 --continue_ckpt \
+--start_epoch 200 \
+--ckpt "./ckpts_CBD/2026-02-13-07-54-53-NGBC++v8" \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+python eval_CBD.py \
+--version 8 \
+--eval_use_hybrid_separate \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 300 \
+--ckpt "./ckpts_CBD/2026-02-13-07-54-53-NGBC++v8" \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+python eval_CBD.py \
+--version 8 \
+--eval_use_hybrid_separate \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 400 \
+--ckpt "./ckpts_CBD/2026-02-13-07-54-53-NGBC++v8" \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+python eval_CBD.py \
+--version 8 \
+--eval_use_hybrid_separate \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
 --start_epoch 500 \
+--ckpt "./ckpts_CBD/2026-02-13-07-54-53-NGBC++v8" \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+python eval_CBD.py \
+--version 8 \
+--eval_use_hybrid_separate \
+--no_vis_interv \
+--data_selection 4 \
 --ckpt "./ckpts_CBD/2026-02-13-07-54-53-NGBC++v8" \
 --realtest \
 --batch_size 1 \
