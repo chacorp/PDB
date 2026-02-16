@@ -147,6 +147,8 @@ def Options():
     parser.set_defaults(use_hyb_concat_lbs=False)
     parser.add_argument("--use_hyb_joint_train",dest='use_hyb_joint_train', action='store_true')
     parser.set_defaults(use_hyb_joint_train=False)
+    parser.add_argument("--use_finetune_lbs",dest='use_finetune_lbs', action='store_true')
+    parser.set_defaults(use_finetune_lbs=False)
     
     parser.add_argument("--debug_stage",dest='debug_stage', action='store_true')
     parser.set_defaults(debug_stage=False)
@@ -464,11 +466,10 @@ class Trainer():
                 self._load_weight(self.model, name="lbs",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
                 # self._load_weight(self.model, name="cbd",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
 
-        
         elif opts.version == 8: # LBS + CBD joint training
             self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
             self._load_weight(self.model_CBD, name="cbd", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
-        
+            
         elif opts.version == 5:
             ckpt_has_cbd = False        
             if self.opts.ckpt is not None:
@@ -2680,8 +2681,12 @@ class Trainer():
             text+= f"[    use_lbs_joint_center   ]: {opts.use_lbs_joint_center}\n"
             text+= f"   [      use_joint_predict    ]: {opts.use_joint_predict}\n"
             text+= f"       [   use_exp_joint_predict   ]: {opts.use_exp_joint_predict}\n"
-            text+= f"   [     no_use_translation    ]: {opts.no_use_translation}\n"
-            text+= f"   [   use_weighted_joint_pos  ]: {opts.use_weighted_joint_pos}\n"
+            text+= f"   [   no_use_translation       ]: {opts.no_use_translation}\n"
+            text+= f"   [   use_weighted_joint_pos   ]: {opts.use_weighted_joint_pos}\n"
+            text+= f"   [   use_hyb_joint_train      ]: {opts.use_hyb_joint_train}\n"
+            text+= f"   [   use_hyb_concat_lbs       ]: {opts.use_hyb_concat_lbs}\n"
+            text+= f"   [   use_hyb_delta_lbs_input  ]: {opts.use_hyb_delta_lbs_input}\n" 
+            text+= f"   [   use_finetune_lbs         ]: {opts.use_finetune_lbs}\n"
             text+= "========== Regularizers ==========\n"
             text+= f"[         use_lbs_ent       ]: {opts.use_lbs_ent}\n"
             text+= f"[      use_lbs_laplacian    ]: {opts.use_lbs_laplacian}\n"
@@ -3185,20 +3190,20 @@ class Trainer():
     
     def train_vLBSHybrid2(self, epochs):
         """
-        CBD training of on LBS pretrained
+        CBD training on LBS pretrained
         """
-        
         
         def get_lbs_config(opts):
             text = "===========[LBS config]===========\n"
             text+= f"[    use_lbs_joint_center   ]: {opts.use_lbs_joint_center}\n"
             text+= f"   [      use_joint_predict    ]: {opts.use_joint_predict}\n"
             text+= f"       [   use_exp_joint_predict   ]: {opts.use_exp_joint_predict}\n"
-            text+= f"   [     no_use_translation    ]: {opts.no_use_translation}\n"
-            text+= f"   [   use_weighted_joint_pos  ]: {opts.use_weighted_joint_pos}\n"
-            text+= f"   [   use_hyb_joint_train  ]: {opts.use_hyb_joint_train}\n"
-            text+= f"   [   use_hyb_concat_lbs  ]: {opts.use_hyb_concat_lbs}\n"
-            text+= f"   [   use_hyb_delta_lbs_input  ]: {opts.use_hyb_delta_lbs_input}\n"
+            text+= f"   [   no_use_translation       ]: {opts.no_use_translation}\n"
+            text+= f"   [   use_weighted_joint_pos   ]: {opts.use_weighted_joint_pos}\n"
+            text+= f"   [   use_hyb_joint_train      ]: {opts.use_hyb_joint_train}\n"
+            text+= f"   [   use_hyb_concat_lbs       ]: {opts.use_hyb_concat_lbs}\n"
+            text+= f"   [   use_hyb_delta_lbs_input  ]: {opts.use_hyb_delta_lbs_input}\n" 
+            text+= f"   [   use_finetune_lbs         ]: {opts.use_finetune_lbs}\n"
             text+= "========== Regularizers ==========\n"
             text+= f"[         use_lbs_ent       ]: {opts.use_lbs_ent}\n"
             text+= f"[      use_lbs_laplacian    ]: {opts.use_lbs_laplacian}\n"
@@ -3208,11 +3213,23 @@ class Trainer():
             text+= "===============================+++\n"
             return text
 
-        def rebuild_optimizer(model):
+        # def rebuild_optimizer(model):
+        #     params = []
+        #     for p in model.parameters():
+        #         if p.requires_grad:
+        #             params.append(p)
+        #     self.optimizer = torch.optim.AdamW(
+        #         params,
+        #         lr=self.opts.lr,
+        #         betas=(0.9, 0.999)
+        #     )
+            
+        def rebuild_optimizer_model_list(models : list):
             params = []
-            for p in model.parameters():
-                if p.requires_grad:
-                    params.append(p)
+            for model in models:
+                for p in model.parameters():
+                    if p.requires_grad:
+                        params.append(p)
             self.optimizer = torch.optim.AdamW(
                 params,
                 lr=self.opts.lr,
@@ -3224,10 +3241,12 @@ class Trainer():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
         
-        for p in self.model.parameters():
-            p.requires_grad_(False)
-
-        rebuild_optimizer(self.model_CBD)
+        if self.opts.use_finetune_lbs: # if train LBS branch as well at stage2
+            rebuild_optimizer_model_list([self.model, self.model_CBD])
+        else:
+            for p in self.model.parameters():
+                p.requires_grad_(False)
+            rebuild_optimizer_model_list([self.model_CBD])
         
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -3296,8 +3315,9 @@ class Trainer():
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
         
         # stage2_mode = (self.opts.start_stage == 2) or (self.opts.start_epoch >= self.opts.lbs_pretrained_epochs)
-        resume_mode = (self.opts.ckpt is not None) or (self.opts.log_dir is not None)
-        if resume_mode:
+        # resume_mode = (self.opts.ckpt is not None) or (self.opts.log_dir is not None)
+        # if resume_mode:
+        if  "lbs_ckpt" in self.opts.ckpt:
             os.makedirs(self.opts.log_dir, exist_ok=True)
             # if self.opts.ckpt and self.opts.log_dir:
             #     pass
@@ -3553,8 +3573,6 @@ class Trainer():
                         loss_dict['recon-neu'] = F.mse_loss(batch_template_v*t_mask, pred_source*t_mask)
                         loss_dict['recon-neu'] += F.mse_loss(batch_template_v*inv_t_mask, pred_source*inv_t_mask)
 
-                
-                
                 #-------( not used )------------------------------------------------------------------------------
                 if self.model.use_shp_recon:
                     loss_dict['shape'] = F.mse_loss(
@@ -3758,10 +3776,12 @@ class Trainer():
 
             # save model
             if epoch % self.opts.save_interval == 0:
-                # torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth') # save LBS
-                torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth') # save CBD
+                if self.opts.use_finetune_lbs:
+                    torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_lbs_{epoch:03d}.pth') # save LBS
+                    torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_cbd_{epoch:03d}.pth') # save LBS
+                else:
+                    torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth') # save CBD
                 
-            
             ######################################################################################################
             # validation -----------------------------------------------------------------------------------------
             self.model.eval()
@@ -3919,7 +3939,13 @@ class Trainer():
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-                torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_best.pth') # save model CBD 
+                
+                if self.opts.use_finetune_lbs:
+                    torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_lbs_best.pth') # save LBS
+                    torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_cbd_best.pth') # save LBS
+                else:
+                    torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_best.pth') # save CBD
+                # torch.save(self.model_CBD.state_dict(), f'{self.opts.log_dir}/model_best.pth') # save model CBD 
             else:
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
@@ -3936,11 +3962,12 @@ class Trainer():
             text+= f"[    use_lbs_joint_center   ]: {opts.use_lbs_joint_center}\n"
             text+= f"   [      use_joint_predict    ]: {opts.use_joint_predict}\n"
             text+= f"       [   use_exp_joint_predict   ]: {opts.use_exp_joint_predict}\n"
-            text+= f"   [     no_use_translation    ]: {opts.no_use_translation}\n"
-            text+= f"   [   use_weighted_joint_pos  ]: {opts.use_weighted_joint_pos}\n"
-            text+= f"   [   use_hyb_joint_train  ]: {opts.use_hyb_joint_train}\n"
-            text+= f"   [   use_hyb_concat_lbs  ]: {opts.use_hyb_concat_lbs}\n"
-            text+= f"   [   use_hyb_delta_lbs_input  ]: {opts.use_hyb_delta_lbs_input}\n"
+            text+= f"   [   no_use_translation       ]: {opts.no_use_translation}\n"
+            text+= f"   [   use_weighted_joint_pos   ]: {opts.use_weighted_joint_pos}\n"
+            text+= f"   [   use_hyb_joint_train      ]: {opts.use_hyb_joint_train}\n"
+            text+= f"   [   use_hyb_concat_lbs       ]: {opts.use_hyb_concat_lbs}\n"
+            text+= f"   [   use_hyb_delta_lbs_input  ]: {opts.use_hyb_delta_lbs_input}\n" 
+            text+= f"   [   use_finetune_lbs         ]: {opts.use_finetune_lbs}\n"
             text+= "========== Regularizers ==========\n"
             text+= f"[         use_lbs_ent       ]: {opts.use_lbs_ent}\n"
             text+= f"[      use_lbs_laplacian    ]: {opts.use_lbs_laplacian}\n"

@@ -124,6 +124,8 @@ def Options():
     parser.set_defaults(use_hyb_delta_lbs_input=False)
     parser.add_argument("--use_hyb_concat_lbs",dest='use_hyb_concat_lbs', action='store_true')
     parser.set_defaults(use_hyb_concat_lbs=False)
+    parser.add_argument("--use_finetune_lbs",dest='use_finetune_lbs', action='store_true')
+    parser.set_defaults(use_finetune_lbs=False)
     
     ## ---- eval lbs --------
 
