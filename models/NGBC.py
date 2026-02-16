@@ -1257,6 +1257,7 @@ class NeuralGeneralizedBarycentricCoordinateLBS(nn.Module):
             # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
         
         return key_d
+
     
     def forward(self, 
                 source_vert, 
@@ -1425,7 +1426,160 @@ class NeuralGeneralizedBarycentricCoordinateLBS(nn.Module):
         else:
             ## added W_lbs, T_lbs
             return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_d, key_weight, W_lbs, T_lbs
+
+
+    def retarget(self, 
+                 src_neu_vert, src_neu_norm, src_def_vert, src_def_norm, tgt_neu_vert, tgt_neu_norm,
+                 mesh_data=0, out_kw=False, recon_out=True):
+        """
+        Args:
+            src_neu_vert (torch.tensor): [B, N, 3] source neutral mesh vertex positions
+            src_neu_norm (torch.tensor): [B, N, 3] source neutral mesh vertex normals
             
+            src_def_vert (torch.tensor): [B, N, 3] source deformed mesh vertex positions
+            src_def_norm (torch.tensor): [B, N, 3] source deformed mesh vertex normals
+            
+            tgt_neu_vert (torch.tensor): [B, M, 3] target neutral mesh vertex positions
+            tgt_neu_norm (torch.tensor): [B, M, 3] target neutral mesh vertex normals
+            
+            mesh_data (int): indicator for data (0: voca, 1: biwi, 2: multiface) -- not used!
+            
+        Returns:
+            (pred_deformed, pred_source):
+            predicted target deformation and neutral mesh using weight and cage prediction
+        """
+        B, N, _ = src_def_vert.shape
+        
+        tgt_in = tgt_neu_vert        
+        src_in = src_neu_vert
+        
+        deform_in_d = src_def_vert-src_neu_vert # as a delta
+        deform_in_s = src_neu_vert-src_neu_vert # as a delta
+                
+        if self.in_type > 0:
+            tgt_in = torch.cat([tgt_in, tgt_neu_norm], dim=-1)
+            src_in = torch.cat([src_in, src_neu_norm], dim=-1)
+            deform_in_d = torch.cat([deform_in_d, src_def_norm], dim=-1)
+            deform_in_s = torch.cat([deform_in_s, src_def_norm], dim=-1)
+            
+        deform_in_d = torch.cat([deform_in_d, src_in], dim=-1)
+        deform_in_s = torch.cat([deform_in_s, src_in], dim=-1)
+
+        if self.in_type == 2:
+            src_hat_mask = plateau_hat_points(src_neu_vert)
+            src_in = torch.cat([src_in, src_hat_mask], dim=-1)
+            deform_in_s = torch.cat([deform_in_s, src_hat_mask], dim=-1)
+            deform_in_d = torch.cat([deform_in_d, src_hat_mask], dim=-1)
+            
+            tgt_hat_mask = plateau_hat_points(tgt_neu_vert)
+            tgt_in = torch.cat([tgt_in, tgt_hat_mask], dim=-1)
+        
+
+        with torch.no_grad():
+            
+            # W_lbs = torch.zeros((B, N, J), device=device, dtype=dtype) 
+            # T_lbs = torch.zeros((B, N, 3, 4), device=device, dtype=dtype)
+            # rigid_v = torch.zeros((B, N, 3), device=device, dtype=dtype)
+            # delta_v = torch.zeros((B, N, 3), device=device, dtype=dtype)
+            # key_d = torch.zeros((B,M,3), device=device,dtype=dtype)
+            # key_weight = torch.zeros((B,N,M), device=device,dtype=dtype)
+            
+            exp_z_lbs = self.lbs_exp_z_model(deform_in_d) # (B, 1, L)
+            exp_z_lbs_s = self.lbs_exp_z_model(deform_in_s) # (B, 1, L)
+
+            W_lbs = self.lbs_weight_model(tgt_in) # (B, N, J)
+            ## LBS transforms
+            if self.no_use_translation:
+                T = self.lbs_pose_model(exp_z_lbs).reshape(B, self.num_lbs_joints, 6)  # (B, J, 6)
+                T_s = self.lbs_pose_model(exp_z_lbs_s).reshape(B, self.num_lbs_joints, 6)
+            else:
+                T = self.lbs_pose_model(exp_z_lbs).reshape(B, self.num_lbs_joints, 9)  # (B, J, 9)
+                T_s = self.lbs_pose_model(exp_z_lbs_s).reshape(B, self.num_lbs_joints, 9)  # (B, J, 9)
+                
+            if self.no_use_translation:
+                R6 = T # (B, J, 6)
+                R6_s = T_s # (B, J, 6)
+            else:
+                R6, t = T[..., :6], T[..., 6:] # (B, J, 6), (B, J, 3)
+                R6_s, t_s = T_s[..., :6], T_s[..., 6:] # (B, J, 6), (B, J, 3)
+
+            R = self._6D_to_rot_lbs(R6).reshape(B, self.num_lbs_joints, 3, 3) # (B, J, 3, 3)
+            R_s = self._6D_to_rot_lbs(R6_s).reshape(B, self.num_lbs_joints, 3, 3) # (B, J, 3, 3)
+
+            if self.no_use_translation:
+                T_lbs = R # (B, J, 3, 3)
+                T_lbs_s = R_s # (B, J, 3, 3)
+            else:
+                T_lbs = torch.cat([R, t[..., None]], dim=-1) # (B, J, 3, 4)
+                T_lbs_s = torch.cat([R_s, t_s[..., None]], dim=-1) # (B, J, 3, 4)
+
+            if not self.use_lbs_joint_center:
+                rigid_v = self.apply_lbs_no_center(tgt_neu_vert, W_lbs, T_lbs) # (B, N, 3)
+                rigid_v_s = self.apply_lbs_no_center(tgt_neu_vert, W_lbs, T_lbs_s) # (B, N, 3)
+            else:
+                if self.use_joint_predict: # using network to predict joint, loss calculation should be needed in the training loop
+                    if self.use_exp_joint_predict:
+                        C_lbs = self.lbs_joint_center_model(exp_z_lbs).reshape(B, self.num_lbs_joints, 3)
+                        C_lbs_s = self.lbs_joint_center_model(exp_z_lbs_s).reshape(B, self.num_lbs_joints, 3) # (B, J, 3)
+                    else: # default is this
+                        C_lbs = self.lbs_joint_center_model(tgt_in).reshape(B, self.num_lbs_joints, 3) # (B, J, 3)
+                    rigid_v = self.apply_lbs(tgt_neu_vert, W_lbs, T_lbs, C_lbs)
+                    if self.use_exp_joint_predict:
+                        rigid_v_s = self.apply_lbs(tgt_neu_vert, W_lbs, T_lbs_s, C_lbs_s)
+                    else: 
+                        rigid_v_s = self.apply_lbs(tgt_neu_vert, W_lbs, T_lbs_s, C_lbs)
+                        
+                else:
+                    # C_bar = self.joint_position_from_weights(source_vert, W_lbs) # (B,J,3)
+                    # rigid_v = self.apply_lbs(source_vert, W_lbs, T_lbs, C_bar)
+                    if self.use_weighted_joint_pos:
+                        C_bar = self.joint_position_from_weights(tgt_neu_vert, W_lbs) # (B,J,3)
+                    else: # just use t as C_bar, and always dimension should be 9 for pose_model
+                        C_bar = t
+                        C_bar_s = t_s
+                    rigid_v = self.apply_lbs(tgt_neu_vert, W_lbs, T_lbs, C_bar)
+                    if self.use_weighted_joint_pos: 
+                        rigid_v_s = self.apply_lbs(tgt_neu_vert, W_lbs, T_lbs_s, C_bar)
+                    else: 
+                        rigid_v_s = self.apply_lbs(tgt_neu_vert, W_lbs, T_lbs_s, C_bar_s)
+
+            
+            # delta_v = 0
+            # ## ===============================
+            # ## [added] final composition
+            # ## ===============================    
+            # pred_deformed = rigid_v + delta_v
+        
+        if self.use_full_vertex:
+            pred_deformed = rigid_v
+            pred_source = rigid_v_s
+        else:
+            pred_deformed = rigid_v + tgt_neu_vert
+            pred_source = rigid_v_s + tgt_neu_vert
+        
+        # supple networks -------------------------------------
+        # ## necessary -- not really...
+        # if self.use_shp_recon and recon_out:
+        #     recon_source = self.recon_shp_model[mesh_data](z_ID_B)
+        #     recon_source = recon_source.reshape(B, -1, 3)
+        # else:
+        #     recon_source = 0
+        
+        # ## unnecessary
+        # if self.use_exp_recon and recon_out:
+        #     recon_delta_v = self.recon_exp_model[mesh_data](exp_z_d)
+        #     recon_delta_v = recon_delta_v.reshape(B, -1, 3)
+        #     recon_deformed = recon_delta_v + source_vert
+        # else:
+        #     recon_deformed = 0
+        # -----------------------------------------------------
+        
+        if out_kw:
+            return pred_deformed, pred_source, exp_z_lbs, T_lbs, exp_z_lbs_s, T_lbs_s, W_lbs
+
+        return pred_deformed, pred_source
+    
+ 
             
 class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
     """
@@ -1903,106 +2057,113 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
             
         return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_weight
 
-    def retarget(self, 
-                 src_neu_vert, src_neu_norm, src_def_vert, src_def_norm, tgt_neu_vert, tgt_neu_norm,
-                 mesh_data=0, out_kw=False, recon_out=True):
+    
+    def retarget(
+        self,
+        src_neu_vert, src_neu_norm,
+        src_def_vert, src_def_norm,
+        tgt_neu_vert, tgt_neu_norm,
+        mesh_data=0,
+        out_kw=False,
+        lbs_output=None,     # only used if use_hyb_concat_lbs
+        lbs_source=None      # only used if use_hyb_concat_lbs (neutral path)
+    ):
         """
-        Args:
-            src_neu_vert (torch.tensor): [B, N, 3] source neutral mesh vertex positions
-            src_neu_norm (torch.tensor): [B, N, 3] source neutral mesh vertex normals
-            
-            src_def_vert (torch.tensor): [B, N, 3] source deformed mesh vertex positions
-            src_def_norm (torch.tensor): [B, N, 3] source deformed mesh vertex normals
-            
-            tgt_neu_vert (torch.tensor): [B, M, 3] target neutral mesh vertex positions
-            tgt_neu_norm (torch.tensor): [B, M, 3] target neutral mesh vertex normals
-            
-            mesh_data (int): indicator for data (0: voca, 1: biwi, 2: multiface) -- not used!
-            
-        Returns:
-            (pred_deformed, pred_source):
-            predicted target deformation and neutral mesh using weight and cage prediction
+        Cross-retargeting (CBD or Hybrid-Concat only)
+
+        - exp_z/key_d : extracted from SOURCE
+        - key_weight  : extracted from TARGET
+        - residual(LBS delta) mode is intentionally removed (not meaningful for cross-retarget)
         """
+
         B, N, _ = src_def_vert.shape
-        
-        tgt_in = tgt_neu_vert        
+
+        # ----------------------------------------
+        # Base inputs
+        # ----------------------------------------
+        tgt_in = tgt_neu_vert
         src_in = src_neu_vert
-        
-        deform_in_d = src_def_vert-src_neu_vert # as a delta
-        deform_in_s = src_neu_vert-src_neu_vert # as a delta
-                
+
+        deform_in_d = src_def_vert - src_neu_vert
+        deform_in_s = src_neu_vert - src_neu_vert  # zero
+
+        # ----------------------------------------
+        # feature concat (match forward default)
+        # ----------------------------------------
         if self.in_type > 0:
-            tgt_in = torch.cat([tgt_in, tgt_neu_norm], dim=-1)
             src_in = torch.cat([src_in, src_neu_norm], dim=-1)
+            tgt_in = torch.cat([tgt_in, tgt_neu_norm], dim=-1)
+
             deform_in_d = torch.cat([deform_in_d, src_def_norm], dim=-1)
             deform_in_s = torch.cat([deform_in_s, src_def_norm], dim=-1)
-            
+
+        if self.in_type == 2:
+            src_hat = plateau_hat_points(src_neu_vert)
+            tgt_hat = plateau_hat_points(tgt_neu_vert)
+
+            src_in = torch.cat([src_in, src_hat], dim=-1)
+            tgt_in = torch.cat([tgt_in, tgt_hat], dim=-1)
+
+            deform_in_d = torch.cat([deform_in_d, src_hat], dim=-1)
+            deform_in_s = torch.cat([deform_in_s, src_hat], dim=-1)
+
         deform_in_d = torch.cat([deform_in_d, src_in], dim=-1)
         deform_in_s = torch.cat([deform_in_s, src_in], dim=-1)
 
-        if self.in_type == 2:
-            src_hat_mask = plateau_hat_points(src_neu_vert)
-            src_in = torch.cat([src_in, src_hat_mask], dim=-1)
-            deform_in_s = torch.cat([deform_in_s, src_hat_mask], dim=-1)
-            deform_in_d = torch.cat([deform_in_d, src_hat_mask], dim=-1)
-            
-            tgt_hat_mask = plateau_hat_points(tgt_neu_vert)
-            tgt_in = torch.cat([tgt_in, tgt_hat_mask], dim=-1)
-            
+        # ----------------------------------------
+        # Hybrid concat mode only
+        # ----------------------------------------
+        if self.opts.use_hyb_concat_lbs:
+            if lbs_output is None or lbs_source is None:
+                raise ValueError("Hybrid concat mode requires lbs_output and lbs_source")
+
+            deform_in_d = torch.cat([deform_in_d, lbs_output], dim=-1)
+            deform_in_s = torch.cat([deform_in_s, lbs_source], dim=-1)
+
+        # ----------------------------------------
+        # Forward pass
+        # ----------------------------------------
         with torch.no_grad():
+
             if self.use_shp:
-                z_ID_B = self.shape_model(src_in) # (B, 1, L)
-                
-                exp_z_d = self.exp_z_model(deform_in_d, z_ID_B) # (B, 1, L)
-                key_d = self.key_d_model(exp_z_d, z_ID_B)
-                
-                exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)
-                key_s = self.key_d_model(exp_z_s, z_ID_B)
+                z_ID_B = self.shape_model(src_in)
+
+                exp_z_d = self.exp_z_model(deform_in_d, z_ID_B)
+                key_d   = self.key_d_model(exp_z_d, z_ID_B)
+
+                exp_z_s = self.exp_z_model(deform_in_s, z_ID_B)
+                key_s   = self.key_d_model(exp_z_s, z_ID_B)
             else:
-                exp_z_d = self.exp_z_model(deform_in_d) # (B, 1, L)
-                key_d = self.key_d_model(exp_z_d)
-                
-                exp_z_s = self.exp_z_model(deform_in_s) # (B, 1, L)
-                key_s = self.key_d_model(exp_z_s)
-            
+                exp_z_d = self.exp_z_model(deform_in_d)
+                key_d   = self.key_d_model(exp_z_d)
+
+                exp_z_s = self.exp_z_model(deform_in_s)
+                key_s   = self.key_d_model(exp_z_s)
+
             key_d = self.reshape_key_d(key_d, B)
             key_s = self.reshape_key_d(key_s, B)
-                
-            key_weight = self.key_weight_model(tgt_in, N=self.NZ) # (B, N, K)
-            # --> (B, N, 4K) if self.opts.out_type == 2
-            
-            delta_dv = torch.einsum('bnc,bci->bni',key_weight,key_d)
-            delta_sv = torch.einsum('bnc,bci->bni',key_weight,key_s)
-        
-        
+
+            key_weight = self.key_weight_model(tgt_in, N=self.NZ)
+
+            delta_dv = torch.einsum('bnc,bci->bni', key_weight, key_d)
+            delta_sv = torch.einsum('bnc,bci->bni', key_weight, key_s)
+
+        # ----------------------------------------
+        # Output assembly
+        # ----------------------------------------
         if self.use_full_vertex:
             pred_deformed = delta_dv
-            pred_source = delta_sv
+            pred_source   = delta_sv
         else:
             pred_deformed = delta_dv + tgt_neu_vert
-            pred_source = delta_sv + tgt_neu_vert
-        
-        # supple networks -------------------------------------
-        # ## necessary -- not really...
-        # if self.use_shp_recon and recon_out:
-        #     recon_source = self.recon_shp_model[mesh_data](z_ID_B)
-        #     recon_source = recon_source.reshape(B, -1, 3)
-        # else:
-        #     recon_source = 0
-        
-        # ## unnecessary
-        # if self.use_exp_recon and recon_out:
-        #     recon_delta_v = self.recon_exp_model[mesh_data](exp_z_d)
-        #     recon_delta_v = recon_delta_v.reshape(B, -1, 3)
-        #     recon_deformed = recon_delta_v + source_vert
-        # else:
-        #     recon_deformed = 0
-        # -----------------------------------------------------
-        
+            pred_source   = delta_sv + tgt_neu_vert
+
         if out_kw:
             return pred_deformed, pred_source, exp_z_d, key_d, exp_z_s, key_s, key_weight
 
         return pred_deformed, pred_source
+
+    
         
     @torch.no_grad()
     def predict_coordinate(self, tgt_neu_vert, tgt_neu_norm):
