@@ -459,7 +459,10 @@ class Trainer():
             if  "lbs_ckpt" in self.opts.ckpt: # if continue from stage 2 ckpt dir
                 parent_dir = os.path.dirname(self.opts.ckpt)
                 lbs_epoch = _parse_lbs_epoch_from_stage2_dir(self.opts.ckpt)
-                self._load_weight(self.model, name="lbs",ckpt_dir=parent_dir, epoch=lbs_epoch)
+                if self.opts.use_finetune_lbs:
+                    self._load_weight(self.model, name="lbs",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+                else:
+                    self._load_weight(self.model, name="lbs",ckpt_dir=parent_dir, epoch=lbs_epoch)
                 self._load_weight(self.model_CBD, name="cbd",ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
 
             else: # if start from scratch 
@@ -510,12 +513,18 @@ class Trainer():
             print(f"Loading... {ckpt_dir}")
             if self.opts.continue_ckpt:
                 if opts.version == 7:
-                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{epoch:03d}.pth"))[0]
+                    if self.opts.use_finetune_lbs:
+                        ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
+                    else:
+                        ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{epoch:03d}.pth"))[0]
                 elif opts.version == 8:
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
             else:
                 if opts.version == 7:
-                    ckpt = glob.glob(os.path.join(ckpt_dir, f"*_best.pth"))[0]
+                    if self.opts.use_finetune_lbs:
+                        ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
+                    else:
+                        ckpt = glob.glob(os.path.join(ckpt_dir, f"*_best.pth"))[0]
                 elif opts.version == 8:
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
             ckpt_dict = torch.load(ckpt)            
