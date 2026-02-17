@@ -30,23 +30,23 @@ tmux new-session -d -s $SESSION_NAME
 
 
 ## version should always be 6 for LBS training
-# python train_CBD.py \
-#     --max_epoch 600 \
-#     --tb \
-#     --lr 1e-4 \
-#     --sc_step 100 \
-#     --in_type 1 \
-#     --out_type 1 \
-#     --batch_size 16 \
-#     --version 6 \
-#     --use_data0 \
-#     --last_activation 'relu' \
-#     --use_lbs \
-#     --use_lbs_joint_center \
-#     --num_lbs_joints 32 \
-#     --lbs_pretrained_epochs 600 \
-#     --data_toggle \
-#     --use_perm
+## for big-LBS training (ablation for our hybrid setup) -> parameters 3,350,252
+CMD="python train_CBD.py \
+    --max_epoch 500 \
+    --tb \
+    --lr 1e-4 \
+    --sc_step 100000 \
+    --in_type 1 \
+    --out_type 1 \
+    --batch_size 16 \
+    --version 6 \
+    --use_data0 \
+    --last_activation 'relu' \
+    --use_lbs \
+    --use_lbs_joint_center \
+    --num_lbs_joints 1470 \
+    --use_perm \
+    --data_toggle"
 
 ## full data training
 # CMD="python train_CBD.py \
@@ -66,27 +66,27 @@ tmux new-session -d -s $SESSION_NAME
 #     --data_toggle \
 #     --use_perm"
 
-    ## continue
-    CMD="python train_CBD.py \
-        --continue_ckpt \
-        --start_epoch 250 \
-        --ckpt './ckpts_CBD/2026-02-11-08-37-13-NGBC++v6' \
-        --log_dir "./ckpts_CBD/2026-02-11-08-37-13-NGBC++v6" \
-        --max_epoch 500 \
-        --tb \
-        --lr 1e-4 \
-        --sc_step 100000 \
-        --in_type 1 \
-        --out_type 1 \
-        --batch_size 16 \
-        --version 6 \
-        --last_activation 'relu' \
-        --use_lbs \
-        --use_lbs_joint_center \
-        --num_lbs_joints 64 \
-        --lbs_pretrained_epochs 600 \
-        --data_toggle \
-        --use_perm"
+    # ## continue
+    # CMD="python train_CBD.py \
+    #     --continue_ckpt \
+    #     --start_epoch 250 \
+    #     --ckpt './ckpts_CBD/2026-02-11-08-37-13-NGBC++v6' \
+    #     --log_dir "./ckpts_CBD/2026-02-11-08-37-13-NGBC++v6" \
+    #     --max_epoch 500 \
+    #     --tb \
+    #     --lr 1e-4 \
+    #     --sc_step 100000 \
+    #     --in_type 1 \
+    #     --out_type 1 \
+    #     --batch_size 16 \
+    #     --version 6 \
+    #     --last_activation 'relu' \
+    #     --use_lbs \
+    #     --use_lbs_joint_center \
+    #     --num_lbs_joints 64 \
+    #     --lbs_pretrained_epochs 600 \
+    #     --data_toggle \
+    #     --use_perm"
 
 
 tmux send-keys -t $SESSION_NAME "$CMD" C-m
