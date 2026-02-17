@@ -9,7 +9,12 @@ import sys
 import pickle
 
 from pathlib import Path
-__abs_path__ = str(Path(__file__).parents[1].absolute())
+# __abs_path__ = str(Path(__file__).parents[1].absolute())
+
+_this = Path(__file__).resolve()     # <- 핵심
+__abs_path__ = str(_this.parents[1]) # models/NGBC.py 기준으로 NeuralFacialAnimation 루트
+
+
 __mesh_util_path__ = f'{__abs_path__}/mesh_utils'
 
 for __util_path__ in [__abs_path__, __mesh_util_path__]:
@@ -2306,3 +2311,228 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
             pred_deformed = cage_v + tgt_neu_vert
         
         return pred_deformed, key_d
+
+
+
+if __name__ == "__main__":
+    import argparse
+    from types import SimpleNamespace
+    import torch
+    import numpy as np
+
+    def count_params(m: torch.nn.Module) -> int:
+        return sum(p.numel() for p in m.parameters() if p.requires_grad)
+
+    def make_dummy_opts(
+        in_type=1,
+        out_type=1,
+        # LBS opts
+        use_lbs=True,
+        num_lbs_joints=64,
+        use_lbs_joint_center=False,
+        use_exp_joint_predict=False,
+        use_joint_predict=False,
+        use_weighted_joint_pos=False,
+        no_use_translation=False,
+        vis_joint_pos=False,
+        # CBD opts
+        use_hyb_concat_lbs=False,
+        use_hyb_delta_lbs_input=False,
+    ):
+        return SimpleNamespace(
+            in_type=in_type,
+            out_type=out_type,
+
+            # LBS-hybrid flags used inside LBS class
+            use_lbs=use_lbs,
+            num_lbs_joints=num_lbs_joints,
+            use_lbs_joint_center=use_lbs_joint_center,
+            use_exp_joint_predict=use_exp_joint_predict,
+            use_joint_predict=use_joint_predict,
+            use_weighted_joint_pos=use_weighted_joint_pos,
+            no_use_translation=no_use_translation,
+            vis_joint_pos=vis_joint_pos,
+
+            # CBD hybrid flags used inside CBD class
+            use_hyb_concat_lbs=use_hyb_concat_lbs,
+            use_hyb_delta_lbs_input=use_hyb_delta_lbs_input,
+        )
+
+    def build_lbs(opts, hid_dim=256, num_layers=4, device="cpu"):
+        # in_dim/out_dim/num_cage_vertices are mostly unused in LBS class
+        m = NeuralGeneralizedBarycentricCoordinateLBS(
+            opts=opts,
+            hid_dim=hid_dim,
+            num_layers=num_layers,
+            device=device,
+        )
+        return m
+
+    def build_cbd(opts, hid_dim=256, num_layers=4, num_cage_vertices=512, device="cpu"):
+        m = NeuralGeneralizedBarycentricCoordinateCBD(
+            opts=opts,
+            hid_dim=hid_dim,
+            num_layers=num_layers,
+            num_cage_vertices=num_cage_vertices,
+            device=device,
+        )
+        return m
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
+    ap.add_argument("--mode", default="single", choices=["single", "sweep"])
+    # single config
+    ap.add_argument("--which", default="both", choices=["lbs", "cbd", "both"])
+    ap.add_argument("--hid", type=int, default=256)
+    ap.add_argument("--layers", type=int, default=4)
+    ap.add_argument("--joints", type=int, default=64)
+    ap.add_argument("--cage", type=int, default=512)
+    # sweep ranges (comma-separated)
+    ap.add_argument("--hid_list", default="256,384,512,640")
+    ap.add_argument("--layers_list", default="4,6,8")
+    ap.add_argument("--joints_list", default="64,96,128,160")
+    ap.add_argument("--cage_list", default="256,512,768,1024,1536,2048")
+    # flags
+    ap.add_argument("--out_type", type=int, default=1)
+    ap.add_argument("--in_type", type=int, default=1)
+    ap.add_argument("--hyb_concat", action="store_true", help="CBD: use_hyb_concat_lbs")
+    ap.add_argument("--no_translation", action="store_true", help="LBS: no_use_translation")
+    args = ap.parse_args()
+
+    device = args.device
+    if device == "cuda" and not torch.cuda.is_available():
+        print("[WARN] cuda not available, falling back to cpu")
+        device = "cpu"
+
+    def parse_list(s):
+        return [int(x.strip()) for x in s.split(",") if x.strip()]
+
+    # base opts used for all builds
+    base_opts = make_dummy_opts(
+        in_type=args.in_type,
+        out_type=args.out_type,
+        num_lbs_joints=args.joints,
+        no_use_translation=args.no_translation,
+        use_hyb_concat_lbs=args.hyb_concat,
+        use_hyb_delta_lbs_input=False,
+    )
+
+    if args.mode == "single":
+        print("===== SINGLE CONFIG =====")
+        print(f"device={device} | in_type={args.in_type} | out_type={args.out_type} | hyb_concat={args.hyb_concat}")
+
+        if args.which in ("lbs", "both"):
+            opts_lbs = make_dummy_opts(
+                in_type=args.in_type, out_type=args.out_type,
+                num_lbs_joints=args.joints,
+                no_use_translation=args.no_translation,
+                use_hyb_concat_lbs=False,
+            )
+            m_lbs = build_lbs(opts_lbs, hid_dim=args.hid, num_layers=args.layers, device=device)
+            p_lbs = count_params(m_lbs)
+            print(f"[LBS] joints={args.joints} hid={args.hid} layers={args.layers} -> params = {p_lbs:,}")
+
+        if args.which in ("cbd", "both"):
+            opts_cbd = make_dummy_opts(
+                in_type=args.in_type, out_type=args.out_type,
+                num_lbs_joints=args.joints,  # unused by CBD, but harmless
+                use_hyb_concat_lbs=args.hyb_concat,
+            )
+            m_cbd = build_cbd(opts_cbd, hid_dim=args.hid, num_layers=args.layers, num_cage_vertices=args.cage, device=device)
+            p_cbd = count_params(m_cbd)
+            print(f"[CBD] cage={args.cage} hid={args.hid} layers={args.layers} out_type={args.out_type} -> params = {p_cbd:,}")
+
+        if args.which == "both":
+            # not “combined model”, just sum of two independent modules
+            total = 0
+            if "m_lbs" in locals(): total += p_lbs
+            if "m_cbd" in locals(): total += p_cbd
+            print(f"[SUM] LBS + CBD params = {total:,}")
+
+    else:
+        # sweep
+        hid_list    = parse_list(args.hid_list)
+        layers_list = parse_list(args.layers_list)
+        joints_list = parse_list(args.joints_list)
+        cage_list   = parse_list(args.cage_list)
+
+        print("===== SWEEP =====")
+        print(f"device={device} | in_type={args.in_type} | out_type={args.out_type} | hyb_concat={args.hyb_concat}")
+        print(f"hid_list={hid_list}")
+        print(f"layers_list={layers_list}")
+        print(f"joints_list={joints_list}")
+        print(f"cage_list={cage_list}")
+        print("")
+
+        # LBS sweep (joints x hid x layers)
+        if args.which in ("lbs", "both"):
+            print("---- LBS sweep ----")
+            best = None
+            for J in joints_list:
+                for H in hid_list:
+                    for L in layers_list:
+                        opts_lbs = make_dummy_opts(
+                            in_type=args.in_type, out_type=args.out_type,
+                            num_lbs_joints=J,
+                            no_use_translation=args.no_translation,
+                            use_hyb_concat_lbs=False,
+                        )
+                        m = build_lbs(opts_lbs, hid_dim=H, num_layers=L, device=device)
+                        p = count_params(m)
+                        print(f"[LBS] joints={J:4d} hid={H:4d} layers={L:2d} -> {p:,}")
+            print("")
+
+        # CBD sweep (cage x hid x layers)
+        if args.which in ("cbd", "both"):
+            print("---- CBD sweep ----")
+            for M in cage_list:
+                for H in hid_list:
+                    for L in layers_list:
+                        opts_cbd = make_dummy_opts(
+                            in_type=args.in_type, out_type=args.out_type,
+                            num_lbs_joints=args.joints,
+                            use_hyb_concat_lbs=args.hyb_concat,
+                        )
+                        m = build_cbd(opts_cbd, hid_dim=H, num_layers=L, num_cage_vertices=M, device=device)
+                        p = count_params(m)
+                        print(f"[CBD] cage={M:4d} hid={H:4d} layers={L:2d} out_type={args.out_type} -> {p:,}")
+            print("")
+
+        
+        """
+        목표(각각): 3,353,216
+
+        LBS(128 joints): 1,668,352 → +1,684,864 더 키워야 함
+            ( 3,340,672 ) python NGBC.py --mode single --which lbs --joints 576 --hid 1024 --layers 12 
+        
+        root@workspace-ryhqsm13jgxh-0:/source/inyup/NeuralFacialAnimation/models# python NGBC.py --mode single --which lbs --joints 1024 --hid 1024 --layers 4
+        ===== SINGLE CONFIG =====
+        device=cpu | in_type=1 | out_type=1 | hyb_concat=False
+        [LBS] joints=1024 hid=1024 layers=4 -> params = 3,119,872
+        root@workspace-ryhqsm13jgxh-0:/source/inyup/NeuralFacialAnimation/models# python NGBC.py --mode single --which lbs --joints 1024 --hid 2048 --layers 4
+        ===== SINGLE CONFIG =====
+        device=cpu | in_type=1 | out_type=1 | hyb_concat=False
+        [LBS] joints=1024 hid=2048 layers=4 -> params = 3,514,112
+        root@workspace-ryhqsm13jgxh-0:/source/inyup/NeuralFacialAnimation/models# python NGBC.py --mode single --which lbs --joints 1470 --hid 128 --layers 4
+        ===== SINGLE CONFIG =====
+        device=cpu | in_type=1 | out_type=1 | hyb_concat=False
+        [LBS] joints=1470 hid=128 layers=4 -> params = 3,350,252
+                
+        
+        
+        CBD(512 hid, M=512 추정): 1,767,424 → +1,585,792 더 키워야 함
+            ( 3,326,976 ) python NGBC.py --mode single --which cbd --cage 1024 --hid 1024 --layers 6
+        root@workspace-ryhqsm13jgxh-0:/source/inyup/NeuralFacialAnimation/models# python NGBC.py --mode single --which cbd --cage 1024 --hid 2048 --layers 4
+        ===== SINGLE CONFIG =====
+        device=cpu | in_type=1 | out_type=1 | hyb_concat=False
+        [CBD] cage=1024 hid=2048 layers=4 out_type=1 -> params = 3,453,952
+        root@workspace-ryhqsm13jgxh-0:/source/inyup/NeuralFacialAnimation/models# python NGBC.py --mode single --which cbd --cage 2048 --hid 1024 --layers 4
+        ===== SINGLE CONFIG =====
+        device=cpu | in_type=1 | out_type=1 | hyb_concat=False
+        [CBD] cage=2048 hid=1024 layers=4 out_type=1 -> params = 3,456,000
+        
+        root@workspace-ryhqsm13jgxh-0:/source/inyup/NeuralFacialAnimation/models# python NGBC.py --mode single --which cbd --cage 2740 --hid 128 --layers 4
+        ===== SINGLE CONFIG =====
+        device=cpu | in_type=1 | out_type=1 | hyb_concat=False
+        [CBD] cage=2740 hid=128 layers=4 out_type=1 -> params = 3,352,528
+        """
