@@ -6,6 +6,21 @@
 ########################################################################
 
 ##########################################
+## 64 joints - 9dof + 512 CBD finetute lbs at stage 2 train at char-s02
+python eval_CBD.py \
+--version 8 \
+--eval_use_hybrid_separate \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 800 \
+--ckpt "./ckpts_CBD/2026-02-03-11-10-40-NGBC++v5/2026-02-16-17-38-51-NGBC++v7-stage2-from_lbs_ckpt_300" \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+##########################################
 ## 64 joints - 9dof + 512 CBD default at char-s03
 # python eval_CBD.py \
 # --version 7 \
