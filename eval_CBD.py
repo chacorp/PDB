@@ -119,6 +119,10 @@ def Options():
     parser.set_defaults(eval_use_hybrid_separate=False) 
     parser.add_argument("--eval_cross_retarget", dest="eval_cross_retarget", action="store_true")
     parser.set_defaults(eval_cross_retarget=False)
+    parser.add_argument("--tgt_vert_path",         type=str,   default=None)    
+    parser.add_argument("--tgt_norm_path",         type=str,   default=None)    
+    parser.add_argument("--tgt_obj_path",         type=str,   default=None)    
+
     parser.add_argument("--hybrid_lbs_epoch", type=int, default=-1) # stage2 폴더명에서 from_lbs_ckpt_XXX 못읽을 때 수동 override 용
     parser.add_argument("--use_hyb_delta_lbs_input",dest='use_hyb_delta_lbs_input', action='store_true')
     parser.set_defaults(use_hyb_delta_lbs_input=False)
@@ -1330,7 +1334,9 @@ class Trainer():
                     # for visualization
                     vertices = batch.vertices.cpu()
                     # faces = batch.faces.cpu()
-                    faces = batch.faces[0].cpu()
+                    # faces = batch.faces[0].cpu()
+                    faces_s = batch.faces[0].cpu()
+                    faces_t = tgt_faces
                                     
                     frame = HB
                     v_list = [
@@ -1344,7 +1350,7 @@ class Trainer():
                         # pred_vertices[BS-1].cpu().detach(),
                     ]
                     len_v = len(v_list)
-                    f_list=[faces] * len_v
+                    f_list=[faces_s, faces_t]
                     save_logdir = f"{self.opts.log_dir}/img"
                     save_img_name = f"{index:04d}"
                     
@@ -1359,7 +1365,9 @@ class Trainer():
                 # for visualization
                 vertices = batch.vertices.cpu()
                 # faces = batch.faces.cpu()
-                faces = batch.faces[0].cpu()
+                # faces = batch.faces[0].cpu()
+                faces_s = batch.faces[0].cpu()
+                faces_t = tgt_faces
                                 
                 frame = HB
                 v_list = [
@@ -1373,7 +1381,7 @@ class Trainer():
                     # pred_vertices[BS-1].cpu().detach(),
                 ]
                 len_v = len(v_list)
-                f_list=[faces] * len_v
+                f_list=[faces_s, faces_t]
                 save_logdir = f"{self.opts.log_dir}/img-full"
                 save_img_name = f"{index:04d}"
                 
@@ -2616,7 +2624,6 @@ class Trainer():
                     batch.vertices, batch.vertices_normal,
                     tgt_neu_vert.expand(batch.template.shape[0], -1, -1),
                     tgt_neu_norm.expand(batch.template.shape[0], -1, -1),
-                    epoch=0,
                 )
                 
             # Metric -----------------------------------------------------------------------------------------
@@ -2652,8 +2659,8 @@ class Trainer():
                     # for visualization
                     vertices = batch.vertices.cpu()
                     # faces = batch.faces.cpu()
-                    # faces = batch.faces[0].cpu()
-                    faces = tgt_faces
+                    faces_s = batch.faces[0].cpu()
+                    faces_t = tgt_faces
                                     
                     frame = HB
                     v_list = [
@@ -2667,7 +2674,7 @@ class Trainer():
                         # pred_vertices[BS-1].cpu().detach(),
                     ]
                     len_v = len(v_list)
-                    f_list=[faces] * len_v
+                    f_list=[faces_s, faces_t]
                     save_logdir = f"{self.opts.log_dir}/img"
                     save_img_name = f"{index:04d}"
                     
@@ -2682,8 +2689,8 @@ class Trainer():
                 # for visualization
                 vertices = batch.vertices.cpu()
                 # faces = batch.faces.cpu()
-                # faces = batch.faces[0].cpu()
-                faces = tgt_faces
+                faces_s = batch.faces[0].cpu()
+                faces_t = tgt_faces
                                 
                 frame = HB
                 v_list = [
@@ -2697,7 +2704,7 @@ class Trainer():
                     # pred_vertices[BS-1].cpu().detach(),
                 ]
                 len_v = len(v_list)
-                f_list=[faces] * len_v
+                f_list=[faces_s, faces_t]
                 save_logdir = f"{self.opts.log_dir}/img-full"
                 save_img_name = f"{index:04d}"
                 
@@ -3545,7 +3552,6 @@ class Trainer():
                     src_def_vert, src_def_norm,
                     tgt_neu_vert.expand(src_neu_vert.shape[0], -1, -1),
                     tgt_neu_norm.expand(src_neu_vert.shape[0], -1, -1),
-                    epoch=0,
                 )
 
                 # 3-2 Cross retarget (CBD branch)
@@ -3592,8 +3598,8 @@ class Trainer():
                     # for visualization
                     vertices = batch.vertices.cpu()
                     # faces = batch.faces.cpu()
-                    # faces = batch.faces[0].cpu()
-                    faces = tgt_faces
+                    faces_s = batch.faces[0].cpu()
+                    faces_t = tgt_faces
                                     
                     frame = HB
                     v_list = [
@@ -3607,7 +3613,7 @@ class Trainer():
                         # pred_vertices[BS-1].cpu().detach(),
                     ]
                     len_v = len(v_list)
-                    f_list=[faces] * len_v
+                    f_list = [faces_s, faces_t] 
                     save_logdir = f"{self.opts.log_dir}/img"
                     save_img_name = f"{index:04d}"
                     
@@ -3622,8 +3628,8 @@ class Trainer():
                 # for visualization
                 vertices = batch.vertices.cpu()
                 # faces = batch.faces.cpu()
-                # faces = batch.faces[0].cpu()
-                faces = tgt_faces
+                faces_s = batch.faces[0].cpu()
+                faces_t = tgt_faces
                                 
                 frame = HB
                 v_list = [
@@ -3637,7 +3643,7 @@ class Trainer():
                     # pred_vertices[BS-1].cpu().detach(),
                 ]
                 len_v = len(v_list)
-                f_list=[faces] * len_v
+                f_list = [faces_s, faces_t] 
                 save_logdir = f"{self.opts.log_dir}/img-full"
                 save_img_name = f"{index:04d}"
                 
@@ -3794,11 +3800,11 @@ if __name__ == "__main__":
             if opts.eval_cross_retarget:
                 if opts.eval_use_lbs:
                     if opts.version == 6:
-                        trainer.evaluateLBS3Cross()
+                        trainer.evaluateLBS3Cross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path)
                 elif opts.eval_use_hybrid_separate:
-                    trainer.evaluateHybridSeparateCross()
+                    trainer.evaluateHybridSeparateCross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path)
                 else: # CBD
-                    trainer.evaluate2Cross() ## real test frames
+                    trainer.evaluate2Cross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path) ## real test frames
             else:
                 if opts.eval_use_lbs:
                     if opts.version == 6:
