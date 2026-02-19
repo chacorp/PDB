@@ -1,8 +1,76 @@
- ## NBC 
-        ## w/ 200
+#  ## NBC 
+## multiface only
+## ablation matching # of parameters with LBS + NBC
+#         ## w/ 200
+python eval_CBD.py \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 200 \
+--ckpt "./ckpts_CBD/2026-02-17-13-44-25-NGBCv5" \
+--version 3 \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+#         ## w/ 300
+python eval_CBD.py \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 300 \
+--ckpt "./ckpts_CBD/2026-02-17-13-44-25-NGBCv5" \
+--version 3 \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+#         ## w/ 400
+python eval_CBD.py \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 400 \
+--ckpt "./ckpts_CBD/2026-02-17-13-44-25-NGBCv5" \
+--version 3 \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+#         ## w/ 500
+python eval_CBD.py \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 500 \
+--ckpt "./ckpts_CBD/2026-02-17-13-44-25-NGBCv5" \
+--version 3 \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+#         ## w/ best
+python eval_CBD.py \
+--no_vis_interv \
+--data_selection 4 \
+--ckpt "./ckpts_CBD/2026-02-17-13-44-25-NGBCv5" \
+--version 3 \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+#######
+
+
+#         ## w/ 200
 # python eval_CBD.py \
 # --no_vis_interv \
-# --data_selection 3 \
+# --data_selection 4 \
 # --continue_ckpt \
 # --start_epoch 200 \
 # --ckpt "./ckpts_CBD/2026-01-26-09-29-24-NGBCv5/2026-01-28-17-35-52-NGBCv5" \
