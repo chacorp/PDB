@@ -27,10 +27,11 @@ for v_path in ${TARGET_DIR}/*.npy; do
         --tgt_vert_path "$v_path" \
         --tgt_norm_path "$n_path" \
         --tgt_obj_path "$o_path" \
+        --num_lbs_joints 64 \
         --no_vis_interv \
         --data_selection 3 \
         --continue_ckpt \
-        --start_epoch 200 \
+        --start_epoch 300 \
         --ckpt "/source/inyup/NeuralFacialAnimation/ckpts_CBD/2026-02-11-08-37-13-NGBC++v6" \
         --realtest \
         --batch_size 1 \

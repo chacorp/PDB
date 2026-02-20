@@ -108,8 +108,6 @@ def Options():
     parser.set_defaults(no_eval_metric=False)
     parser.add_argument("--no_vis_interv",dest='no_vis_interv', action='store_true')
     parser.set_defaults(no_vis_interv=False)
-    parser.add_argument("--vis_joint_pos",dest='vis_joint_pos', action='store_true')
-    parser.set_defaults(vis_joint_pos=False)
     ## ---- eval lbs --------
     parser.add_argument("--eval_use_lbs",dest='eval_use_lbs', action='store_true')
     parser.set_defaults(eval_use_lbs=False)
@@ -123,6 +121,13 @@ def Options():
     parser.add_argument("--tgt_norm_path",         type=str,   default=None)    
     parser.add_argument("--tgt_obj_path",         type=str,   default=None)    
 
+    ## at train_CBD.py
+    parser.add_argument("--num_lbs_joints", type=int, default=4, help='number of joints for LBS')
+    parser.add_argument("--lbs_pretrained_epochs", type=int, default=50, help='number of epochs to pretrain LBS')
+    parser.add_argument("--use_lbs", dest='use_lbs',  action='store_true')
+    parser.set_defaults(use_lbs=False)
+    parser.add_argument("--vis_joint_pos",dest='vis_joint_pos', action='store_true')
+    parser.set_defaults(vis_joint_pos=False)
     parser.add_argument("--hybrid_lbs_epoch", type=int, default=-1) # stage2 폴더명에서 from_lbs_ckpt_XXX 못읽을 때 수동 override 용
     parser.add_argument("--use_hyb_delta_lbs_input",dest='use_hyb_delta_lbs_input', action='store_true')
     parser.set_defaults(use_hyb_delta_lbs_input=False)
@@ -130,6 +135,27 @@ def Options():
     parser.set_defaults(use_hyb_concat_lbs=False)
     parser.add_argument("--use_finetune_lbs",dest='use_finetune_lbs', action='store_true')
     parser.set_defaults(use_finetune_lbs=False)
+    
+    parser.add_argument("--use_lbs_joint_center", dest='use_lbs_joint_center',  action='store_true')
+    parser.set_defaults(use_lbs_joint_center=False)     
+    parser.add_argument("--use_exp_joint_predict", dest='use_exp_joint_predict',  action='store_true')
+    parser.set_defaults(use_exp_joint_predict=False)
+    parser.add_argument("--use_joint_predict", dest='use_joint_predict',  action='store_true')
+    parser.set_defaults(use_joint_predict=False)
+    parser.add_argument("--use_weighted_joint_pos", dest='use_weighted_joint_pos',  action='store_true')
+    parser.set_defaults(use_weighted_joint_pos=False)
+    parser.add_argument("--no_use_translation", dest='no_use_translation', action='store_true')
+    parser.set_defaults(no_use_translation=False)
+    parser.add_argument("--use_lbs_laplacian",dest='use_lbs_laplacian', action='store_true')
+    parser.set_defaults(use_lbs_laplacian=False)
+    parser.add_argument("--use_lbs_ent",dest='use_lbs_ent', action='store_true')
+    parser.set_defaults(use_lbs_ent=False)
+    parser.add_argument("--use_lbs_t",dest='use_lbs_t', action='store_true')
+    parser.set_defaults(use_lbs_t=False)
+    parser.add_argument("--use_lbs_R",dest='use_lbs_R', action='store_true')
+    parser.set_defaults(use_lbs_R=False)
+    parser.add_argument("--use_lbs_bal",dest='use_lbs_bal', action='store_true')
+    parser.set_defaults(use_lbs_bal=False)
     
     ## ---- eval lbs --------
 
@@ -222,7 +248,6 @@ class Trainer():
         self.opts = opts
         self.set_seed(self.opts)
         self.device = opts.device
-
         last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         if opts.version==0:
@@ -1117,7 +1142,7 @@ class Trainer():
         """
             cross-retargeting task
         """
-        assert opts.version == 7 or opts.version == 8, "evaluate2Cross is for version 7, 8 only"
+        assert opts.version == 3, "evaluate2Cross is for version 3 only"
 
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
@@ -1160,12 +1185,14 @@ class Trainer():
                             
         ckpt_path = self.opts.ckpt.split('/')[-1]
         self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
-        
+
+        trg_name = os.path.splitext(os.path.basename(tgt_vert_path))[0]
+
         if self.opts.use_t_mask:
-            self.opts.log_dir = self.opts.log_dir + '-masked' + f'_e{self.opts.start_epoch:02d}'
+            self.opts.log_dir = self.opts.log_dir + '-masked' + f'_e{self.opts.start_epoch:02d}_{trg_name}'
             
         if self.opts.laplacian:
-            self.opts.log_dir = self.opts.log_dir + '-laplacian' + f'_e{self.opts.start_epoch:02d}'
+            self.opts.log_dir = self.opts.log_dir + '-laplacian' + f'_e{self.opts.start_epoch:02d}_{trg_name}'
         
         # if self.opts.use_t_mask:
         #     self.opts.log_dir = self.opts.log_dir + '-masked'
@@ -1223,7 +1250,7 @@ class Trainer():
         # else:
         #     self.model.eval()
         
-        self.model_CBD.eval()
+        self.model.eval()
                 
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
@@ -1300,7 +1327,7 @@ class Trainer():
                 src_neu_norm = batch.template_normal
                 src_def_norm = batch.vertices_normal
                 # 3-2 Cross retarget (CBD branch)
-                pred_vertices, pred_source = self.model_CBD.retarget(
+                pred_vertices, pred_source = self.model.retarget(
                     src_neu_vert, src_neu_norm,
                     src_def_vert, src_def_norm,
                     tgt_neu_vert.expand(src_neu_vert.shape[0], -1, -1),
@@ -1408,7 +1435,7 @@ class Trainer():
         if self.opts.no_vis_interv:
             images_to_video_cv(
             f"{self.opts.log_dir}/img-full",
-            f"{self.opts.log_dir}/{anim_name}.mp4",
+            f"{self.opts.log_dir}/{anim_name}_{trg_name}.mp4",
             fps=30
             )
             print("animation done!")
@@ -2517,11 +2544,13 @@ class Trainer():
         ckpt_path = self.opts.ckpt.split('/')[-1]
         self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
         
+        trg_name = os.path.splitext(os.path.basename(tgt_vert_path))[0]
+
         if self.opts.use_t_mask:
-            self.opts.log_dir = self.opts.log_dir + '-masked' + f'_e{self.opts.start_epoch:02d}'
+            self.opts.log_dir = self.opts.log_dir + '-masked' + f'_e{self.opts.start_epoch:02d}_{trg_name}'
             
         if self.opts.laplacian:
-            self.opts.log_dir = self.opts.log_dir + '-laplacian' + f'_e{self.opts.start_epoch:02d}'
+            self.opts.log_dir = self.opts.log_dir + '-laplacian' + f'_e{self.opts.start_epoch:02d}_{trg_name}'
             
         os.makedirs(self.opts.log_dir, exist_ok=True)
         
@@ -2728,7 +2757,7 @@ class Trainer():
         if self.opts.no_vis_interv:
             images_to_video_cv(
             f"{self.opts.log_dir}/img-full",
-            f"{self.opts.log_dir}/{anim_name}.mp4",
+            f"{self.opts.log_dir}/{anim_name}_{trg_name}.mp4",
             fps=30
             )
             print("animation done!")
@@ -3467,10 +3496,10 @@ class Trainer():
         
         dir_name = f'hybrid_cross_{trg_name}_lbse{self.lbs_epoch:02d}_cbde{self.opts.start_epoch:02d}'
         if self.opts.use_t_mask:
-            self.opts.log_dir = self.opts.log_dir + f'-masked_{dir_name}'
+            self.opts.log_dir = self.opts.log_dir + f'-masked_{dir_name}_{trg_name}'
             
         if self.opts.laplacian:
-            self.opts.log_dir = self.opts.log_dir + f'-laplacian_{dir_name}'
+            self.opts.log_dir = self.opts.log_dir + f'-laplacian_{dir_name}_{trg_name}'
             
         os.makedirs(self.opts.log_dir, exist_ok=True)
         
@@ -3669,7 +3698,7 @@ class Trainer():
         if self.opts.no_vis_interv:
             images_to_video_cv(
             f"{self.opts.log_dir}/img-full",
-            f"{self.opts.log_dir}/{anim_name}.mp4",
+            f"{self.opts.log_dir}/{anim_name}_{trg_name}.mp4",
             fps=30
             )
             print("animation done!")
@@ -3766,6 +3795,8 @@ if __name__ == "__main__":
         
     # update with argparse configs
     opts_ = vars(opts)
+    # import pdb;pdb.set_trace()
+
     opts_yaml.update(opts_)
     opts = argparse.Namespace(**opts_yaml)
     

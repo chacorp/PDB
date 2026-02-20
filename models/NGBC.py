@@ -760,16 +760,16 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             if self.use_shp:
                 z_ID_B = self.shape_model(src_in) # (B, 1, L)
                 
-                exp_z_d = self.exp_z_model(deform_in_d, z_ID_B) # (B, 1, L)
+                exp_z_d = self.cbd_exp_z_model(deform_in_d, z_ID_B) # (B, 1, L)
                 key_d = self.key_d_model(exp_z_d, z_ID_B)
                 
-                exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)
+                exp_z_s = self.cbd_exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)
                 key_s = self.key_d_model(exp_z_s, z_ID_B)
             else:
-                exp_z_d = self.exp_z_model(deform_in_d) # (B, 1, L)
+                exp_z_d = self.cbd_exp_z_model(deform_in_d) # (B, 1, L)
                 key_d = self.key_d_model(exp_z_d)
                 
-                exp_z_s = self.exp_z_model(deform_in_s) # (B, 1, L)
+                exp_z_s = self.cbd_exp_z_model(deform_in_s) # (B, 1, L)
                 key_s = self.key_d_model(exp_z_s)
             
             key_d = self.reshape_key_d(key_d, B)
