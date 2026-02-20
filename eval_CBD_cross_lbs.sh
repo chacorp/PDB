@@ -23,11 +23,14 @@ for v_path in ${TARGET_DIR}/*.npy; do
     python eval_CBD.py \
         --eval_cross_retarget \
         --eval_use_lbs \
+        --use_lbs \
         --version 6 \
         --tgt_vert_path "$v_path" \
         --tgt_norm_path "$n_path" \
         --tgt_obj_path "$o_path" \
         --num_lbs_joints 64 \
+        --lbs_pretrained_epochs 600 \
+        --use_lbs_joint_center \
         --no_vis_interv \
         --data_selection 3 \
         --continue_ckpt \

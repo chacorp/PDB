@@ -95,6 +95,10 @@ CMD="python train_CBD.py \
 ## 64 joints only at char-s02-nbcpp-01 ->> should be version 8
 ## full data train
 CMD="python train_CBD.py \
+    --continue_ckpt \
+    --start_epoch 350 \
+    --ckpt "/source/inyup/NeuralFacialAnimation/ckpts_CBD/2026-02-18-18-01-01-NGBC++v8" \
+    --log_dir "/source/inyup/NeuralFacialAnimation/ckpts_CBD/2026-02-18-18-01-01-NGBC++v8" \
     --use_hyb_joint_train \
     --max_epoch 500 \
     --tb \
@@ -109,7 +113,10 @@ CMD="python train_CBD.py \
     --num_lbs_joints 64 \
     --use_perm \
     --save_interval 50 \
-    --num_cage_v 512"
+    --num_cage_v 512 \
+    --data_toggle"
+
+
 
 # CMD="python train_CBD.py \
 #     --use_hyb_joint_train \
