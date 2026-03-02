@@ -427,7 +427,8 @@ def vis_mesh_key_weight(
         verts, faces, key_weight, cage_idx,
         SIZE=4, yrot=0, cmap='magma', vmin=None, vmax=None, show_cbar=True,
         view_yrots=(0, 90, 180),
-        save_path=None, close=True
+        save_path=None, close=True,
+        title=None, overlay_pos_3d=None,
     ):
     """
     Args:
@@ -506,8 +507,16 @@ def vis_mesh_key_weight(
             sm.set_array([])
             cbar = plt.colorbar(sm, ax=ax, fraction=0.02, pad=0.02)
             cbar.set_label(f"key_weight[:, {cage_idx}]")
-    
-        plt.title(f"Cage vertex {cage_idx} weight")
+
+        if overlay_pos_3d is not None:
+            P = normalize_homogeneous(np.array(overlay_pos_3d, dtype=np.float32).reshape(1, 3))
+            P_model = (P - V_mu) @ model.T + V_mu
+            P_proj = P_model @ MV.T
+            P_proj = P_proj[:, :3] / P_proj[:, 3:4]
+            ax.scatter(P_proj[0, 0], P_proj[0, 1],
+                       c='red', s=80, zorder=20, marker='*', linewidths=0)
+
+        plt.title(title if title is not None else f"Cage vertex {cage_idx} weight")
     if save_path is not None:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=200, bbox_inches="tight")

@@ -205,8 +205,24 @@ python eval_CBD.py \
 
 
 ######################## LBS only 
+## 1470 joints - 9dof
+python eval_CBD.py \
+--num_lbs_joints 1470 \
+--no_vis_interv \
+--data_selection 4 \
+--continue_ckpt \
+--start_epoch 500 \
+--ckpt "./ckpts_CBD/2026-02-17-16-25-31-NGBC++v6" \
+--version 6 \
+--eval_use_lbs \
+--realtest \
+--batch_size 1 \
+--save_vert \
+--use_t_mask
+
+
 ## 64 joints - 9dof
-#          ## w/ 200
+         ## w/ 200
 # python eval_CBD.py \
 # --no_vis_interv \
 # --data_selection 4 \

@@ -32,6 +32,10 @@ tmux new-session -d -s $SESSION_NAME
 ## version should always be 6 for LBS training
 ## for big-LBS training (ablation for our hybrid setup) -> parameters 3,350,252
 CMD="python train_CBD.py \
+    --ckpt './ckpts_CBD/2026-02-17-16-25-31-NGBC++v6' \
+    --log_dir "./ckpts_CBD/2026-02-17-16-25-31-NGBC++v6" \
+    --continue_ckpt \
+    --start_epoch 250 \
     --max_epoch 500 \
     --tb \
     --lr 1e-4 \
@@ -40,11 +44,12 @@ CMD="python train_CBD.py \
     --out_type 1 \
     --batch_size 16 \
     --version 6 \
-    --use_data0 \
+    --use_data1 \
     --last_activation 'relu' \
     --use_lbs \
     --use_lbs_joint_center \
     --num_lbs_joints 1470 \
+    --lbs_pretrained_epochs 600 \
     --use_perm \
     --data_toggle"
 
