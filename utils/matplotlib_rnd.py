@@ -497,6 +497,11 @@ def vis_mesh_key_weight(
         coll = PolyCollection(T_sorted, closed=True, linewidth=0.1,
                               facecolor=C, edgecolor=C)
         ax.add_collection(coll)
+        # Grey wireframe overlay for spatial reference
+        grey_coll = PolyCollection(T_sorted, closed=True, linewidth=0.3,
+                                   facecolors=(0, 0, 0, 0),
+                                   edgecolors=(0.35, 0.35, 0.35, 0.25))
+        ax.add_collection(grey_coll)
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
         # ax.set_title(f"y={yrot + add_rot}° ({mode})", fontsize=10)

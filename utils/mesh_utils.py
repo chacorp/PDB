@@ -201,6 +201,58 @@ def get_jacobian_matrix(verts, faces, template, return_torch=False):
     Q = torch.linalg.solve(neutral_span_matrix.permute(0, 1, 3, 2), span_matrix.permute(0, 1, 3, 2))
     return Q
 
+def compute_vertex_strain(deformed_verts, template_verts, faces, return_trace=False):
+    """
+    Per-vertex Green-Lagrange strain.
+
+    Args:
+        deformed_verts: [B, V, 3]
+        template_verts: [B, V, 3]
+        faces: [F, 3]
+        return_trace: if True, also return trace(E) per vertex (signed)
+
+    Returns:
+        strain_norm: [B, V, 1] — ||E||_F per vertex (unsigned magnitude)
+        strain_trace: [B, V, 1] — trace(E) per vertex (signed, only if return_trace)
+    """
+    B, V, _ = deformed_verts.shape
+    num_faces = faces.shape[0]
+    device = deformed_verts.device
+
+    # Per-face deformation gradient: [B, F, 3, 3]
+    F_grad = get_jacobian_matrix(deformed_verts, faces, template_verts)
+
+    # Green-Lagrange: E = 0.5 * (F^T F - I)
+    Ft = F_grad.permute(0, 1, 3, 2)  # [B, F, 3, 3]
+    FtF = torch.bmm(
+        Ft.reshape(-1, 3, 3),
+        F_grad.reshape(-1, 3, 3)
+    ).reshape(B, num_faces, 3, 3)
+    I = torch.eye(3, device=device).reshape(1, 1, 3, 3)
+    E = 0.5 * (FtF - I)
+
+    # Per-face Frobenius norm: [B, F]
+    strain_norm_face = torch.sqrt((E ** 2).sum(dim=(-2, -1)) + 1e-12)
+
+    # Scatter face values to vertices (average adjacent faces)
+    idx = faces.reshape(-1).unsqueeze(0).expand(B, -1)  # [B, 3F]
+    ones = torch.ones(B, 3 * num_faces, device=device)
+
+    def _expand3(x):
+        return x.unsqueeze(-1).expand(-1, -1, 3).reshape(B, -1)
+
+    norm_vert = scatter_add(_expand3(strain_norm_face), idx, dim=1, dim_size=V)  # [B, V]
+    count = scatter_add(ones, idx, dim=1, dim_size=V)  # [B, V]
+    strain_norm = (norm_vert / (count + 1e-12)).unsqueeze(-1)  # [B, V, 1]
+
+    if return_trace:
+        trace_face = E.diagonal(dim1=-2, dim2=-1).sum(-1)  # [B, F]
+        trace_vert = scatter_add(_expand3(trace_face), idx, dim=1, dim_size=V)
+        strain_trace = (trace_vert / (count + 1e-12)).unsqueeze(-1)  # [B, V, 1]
+        return strain_norm, strain_trace
+
+    return strain_norm
+
 class Normalizer(object):
     def __init__(self, std_path, device, zero_mean=True):
         if zero_mean:

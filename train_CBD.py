@@ -45,13 +45,15 @@ from utils.mesh_utils import calc_norm_torch
 
 from models.baseline import CageNet
 from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinate, 
-    NeuralGeneralizedBarycentricCoordinateLBS, 
-    NeuralGeneralizedBarycentricCoordinateCBD, 
+    NeuralGeneralizedBarycentricCoordinate,
+    NeuralGeneralizedBarycentricCoordinateLBS,
+    NeuralGeneralizedBarycentricCoordinateCBD,
+    NeuralStrainDisplacement,
     # NeuralGeneralizedBarycentricCoordinate5,
     # NeuralGeneralizedBarycentricCoordinate8,
     # NeuralGeneralizedBarycentricCoordinate55,
 )
+from utils.mesh_utils import compute_vertex_strain
 
 
 
@@ -152,6 +154,14 @@ def Options():
     
     parser.add_argument("--debug_stage",dest='debug_stage', action='store_true')
     parser.set_defaults(debug_stage=False)
+    ## ----------------------
+
+    ## strain displacement options ---
+    parser.add_argument("--use_strain", dest='use_strain', action='store_true')
+    parser.set_defaults(use_strain=False)
+    parser.add_argument("--strain_dim", type=int, default=1, help='1: norm only, 2: norm+trace')
+    parser.add_argument("--strain_full_grad", dest='strain_full_grad', action='store_true')
+    parser.set_defaults(strain_full_grad=False)
     ## ----------------------
     
     parser.add_argument("--no_t_mask",dest='no_t_mask', action='store_true')
@@ -444,9 +454,25 @@ class Trainer():
                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
+        elif opts.version == 9:
+            self.model = NeuralGeneralizedBarycentricCoordinateLBS(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, use_shp_recon=False, use_shp=False,
+                use_relu=last_act_list[0], use_elu=last_act_list[1],
+                use_softmax=last_act_list[2], use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                is_train=True, use_pou=~self.opts.no_pou, device=self.device,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+            strain_dim = self.opts.strain_dim if self.opts.use_strain else 0
+            self.model_disp = NeuralStrainDisplacement(
+                opts, hid_dim=256, num_layers=4,
+                strain_dim=strain_dim, device=self.device,
+            )
         else:
             raise NotImplementedError('No matching model version')
-        
+
         if opts.version == 7: # LBS pretrained + CBD training
             def _parse_lbs_epoch_from_stage2_dir(stage2_dir: str) -> int:
                 name = os.path.basename(stage2_dir)
@@ -472,7 +498,12 @@ class Trainer():
         elif opts.version == 8: # LBS + CBD joint training
             self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
             self._load_weight(self.model_CBD, name="cbd", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
-            
+
+        elif opts.version == 9: # LBS + Strain Displacement joint training
+            if self.opts.continue_ckpt and self.opts.ckpt:
+                self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+                self._load_weight(self.model_disp, name="disp", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+
         elif opts.version == 5:
             ckpt_has_cbd = False        
             if self.opts.ckpt is not None:
@@ -4701,9 +4732,604 @@ class Trainer():
             else:
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
-    
-    
-    
+
+
+    def train_vStrainDisp(self, epochs):
+        """
+        Joint training of LBS + Strain-conditioned Displacement Network (v9).
+        Based on train_vLBSHybrid3 with CBD replaced by DispNet.
+        """
+
+        def get_lbs_config(opts):
+            text = "===========[LBS config]===========\n"
+            text+= f"[    use_lbs_joint_center   ]: {opts.use_lbs_joint_center}\n"
+            text+= f"   [      use_joint_predict    ]: {opts.use_joint_predict}\n"
+            text+= f"       [   use_exp_joint_predict   ]: {opts.use_exp_joint_predict}\n"
+            text+= f"   [   no_use_translation       ]: {opts.no_use_translation}\n"
+            text+= f"   [   use_weighted_joint_pos   ]: {opts.use_weighted_joint_pos}\n"
+            text+= f"========== Strain Disp ==========\n"
+            text+= f"[         use_strain        ]: {opts.use_strain}\n"
+            text+= f"[         strain_dim        ]: {opts.strain_dim}\n"
+            text+= f"[      strain_full_grad     ]: {opts.strain_full_grad}\n"
+            text+= f"========== Regularizers ==========\n"
+            text+= f"[         use_lbs_ent       ]: {opts.use_lbs_ent}\n"
+            text+= f"[      use_lbs_laplacian    ]: {opts.use_lbs_laplacian}\n"
+            text+= f"[          use_lbs_R        ]: {opts.use_lbs_R}\n"
+            text+= f"[          use_lbs_t        ]: {opts.use_lbs_t}\n"
+            text+= f"[         use_lbs_bal       ]: {opts.use_lbs_bal}\n"
+            text+= "===============================+++\n"
+            return text
+
+        def rebuild_optimizer_model_list(models : list):
+            params = []
+            for model in models:
+                for p in model.parameters():
+                    if p.requires_grad:
+                        params.append(p)
+            self.optimizer = torch.optim.AdamW(
+                params,
+                lr=self.opts.lr,
+                betas=(0.9, 0.999)
+            )
+
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+        ## joint training: LBS + DispNet
+        rebuild_optimizer_model_list(models=[self.model, self.model_disp])
+
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        #########################################################################################
+
+        self.opts.sc_step = 1000000 # turning this off
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer,
+            step_size=self.opts.sc_step,
+            gamma=self.opts.sc_gamma
+        )
+
+        ##########################################################################################################
+        # define dataset -----------------------------------------------------------------------------------------
+        BS = self.opts.batch_size
+        BS_denom = 1 / BS
+
+        self.train_dataset = CBDDataset(
+            self.opts,
+            is_train=True,
+            toggle=self.opts.data_toggle
+        )
+        self.valid_dataset = CBDDataset(
+            self.opts,
+            is_valid=True,
+            toggle=self.opts.data_toggle
+        )
+
+        train_sampler = CBDdataSampler(
+            self.train_dataset.len_list,
+            self.opts.batch_size,
+            shuffle=True,
+            balance=False,
+            is_train=True
+        )
+        self.train_dataloader = torch.utils.data.DataLoader(
+            self.train_dataset,
+            batch_sampler=train_sampler,
+            collate_fn=partial(CBD_collate_wrapper, device=opts.device),
+            num_workers=0,
+        )
+
+        valid_sampler = CBDdataSampler(
+            self.valid_dataset.len_list,
+            self.opts.batch_size,
+            shuffle=True,
+            balance=False,
+            is_valid=True
+        )
+        self.valid_dataloader = torch.utils.data.DataLoader(
+            self.valid_dataset,
+            batch_sampler=valid_sampler,
+            collate_fn=partial(CBD_collate_wrapper, device=opts.device),
+            num_workers=0
+        )
+        ##########################################################################################################
+
+        ###### Logging ###########################################################################################
+        import datetime
+        now = datetime.datetime.now()
+        now = now.strftime("%Y-%m-%d-%H-%M-%S")
+
+        resume_mode = (self.opts.ckpt is not None) and ((self.opts.log_dir is not None))
+        if resume_mode:
+            os.makedirs(self.opts.log_dir, exist_ok=True)
+        else:
+            tag = f"-NGBC++v{self.opts.version}"
+            self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
+            os.makedirs(self.opts.log_dir, exist_ok=True)
+
+        os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
+
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+
+        if self.opts.tb:
+            train_ = os.path.join(self.opts.log_dir, "train")
+            valid_ = os.path.join(self.opts.log_dir, "valid")
+            self.writer_train = SummaryWriter(log_dir=train_)
+            self.writer_valid = SummaryWriter(log_dir=valid_)
+
+        self.logger = Logger(os.path.join(self.opts.log_dir, "log.txt"))
+        print(f'Saving log at: {self.logger.file_path}')
+
+        print(self.train_dataset.get_data_config())
+        print(train_sampler.get_sampler_config())
+        print(self.valid_dataset.get_data_config())
+        print(valid_sampler.get_sampler_config())
+
+        print("LBS model:\n", self.model.get_model_config())
+        self.logger.write(self.model.get_model_config())
+        print("Disp model:\n", self.model_disp)
+        self.logger.write(str(self.model_disp))
+
+        self.logger.write(self.train_dataset.get_data_config())
+        self.logger.write(train_sampler.get_sampler_config())
+        self.logger.write(self.valid_dataset.get_data_config())
+        self.logger.write(valid_sampler.get_sampler_config())
+        #---------------------------------------------------------------------------------------------------------
+
+        ##############
+        ## LBS logging
+        ##############
+        text = get_lbs_config(self.opts)
+        print(text)
+        self.logger.write(text)
+
+        ##########################################################################################################
+        # training loop -----------------------------------------------------------------------------------------
+        global_step = 0
+        BEST_LOSS = 100_000_000
+        BEST_EPOCH = 0
+        start_epoch = self.opts.start_epoch
+
+        # define loss lambda
+        self.loss_lambda = {
+            "recon-def": self.opts.lambda_vert,
+            "recon-neu": self.opts.lambda_vert,
+            "exp-z": self.opts.lambda_vert * 0.5,
+            "exp-v": self.opts.lambda_vert,
+            "shape": self.opts.lambda_vert,
+        }
+        if self.opts.use_laplacian:
+            self.loss_lambda['lap'] = 1.0
+        if self.opts.use_normal_loss:
+            self.loss_lambda['norm-def']=0.1
+            self.loss_lambda['norm-neu']=0.1
+
+        ## lbs regularizer flags
+        if self.opts.use_lbs_laplacian:
+            self.loss_lambda['lbs-lap'] = 1e-2
+        if self.opts.use_lbs_ent:
+            self.loss_lambda['lbs-ent'] = 1e-3
+        if self.opts.use_lbs_t:
+            self.loss_lambda['lbs-t'] = 1e-2
+        if self.opts.use_lbs_R:
+            self.loss_lambda['lbs-R'] = 1e-3
+        if self.opts.use_lbs_bal:
+            self.loss_lambda['lbs-bal'] = 1e-4
+
+        len_train_data = len(self.train_dataloader)
+        len_valid_data = len(self.valid_dataloader)
+        interv_train = round(len_train_data / 10)
+
+        for epoch in range(start_epoch, epochs+1):
+            print(f"[{epoch:03d}/{epochs:03d}][Train]")
+            running_losses = {
+                "recon-def": 0.0,
+                "recon-neu": 0.0,
+                "exp-z": 0.0,
+                "exp-v": 0.0,
+                "shape": 0.0,
+                "total": 0.0
+            }
+
+            if self.opts.use_laplacian:
+                running_losses['lap']=0.0
+            if self.opts.use_normal_loss:
+                running_losses['norm-def']=0.0
+                running_losses['norm-neu']=0.0
+
+            self.model.train()
+            self.model_disp.train()
+            train_counter = 0
+
+            is_stepped = False
+            is_stts_added = False
+
+            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
+            for index, batch in pbar:
+                self.optimizer.zero_grad()
+
+                with torch.no_grad():
+                    ## v9: disable use_perm (strain needs face connectivity)
+                    N = batch.template.shape[1]
+                    randperm_idx = torch.arange(N)
+                    rearange_idx = torch.argsort(randperm_idx)
+
+                    batch_template_v = batch.template[:, randperm_idx]
+                    batch_template_n = batch.template_normal[:, randperm_idx]
+                    batch_vertices_v = batch.vertices[:, randperm_idx]
+                    batch_vertices_n = batch.vertices_normal[:, randperm_idx]
+
+                ## 1. LBS forward -------------------------------------------------------------------
+                pred_lbs, recon_vertices, recon_source, exp_z, pred_source, t_mask, key_d, pred_key_weight, W_lbs, T_lbs = self.model(
+                    batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
+                    batch.mesh_data, epoch=epoch
+                )
+
+                ## 2. Compute strain (optional) -----------------------------------------------------
+                strain = None
+                if self.opts.use_strain:
+                    lbs_for_strain = pred_lbs.detach() if not self.opts.strain_full_grad else pred_lbs
+                    if self.opts.strain_dim == 2:
+                        strain_norm, strain_trace = compute_vertex_strain(
+                            lbs_for_strain, batch_template_v, batch.faces, return_trace=True
+                        )
+                        strain = torch.cat([strain_norm, strain_trace], dim=-1)  # [B,N,2]
+                    else:
+                        strain = compute_vertex_strain(
+                            lbs_for_strain, batch_template_v, batch.faces, return_trace=False
+                        )  # [B,N,1]
+
+                ## 3. Compute LBS normals -----------------------------------------------------------
+                lbs_norm = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+
+                ## 4. DispNet forward ---------------------------------------------------------------
+                displacement, exp_z_disp = self.model_disp(
+                    pred_lbs, lbs_norm,
+                    batch_template_v, batch_template_n,
+                    strain=strain
+                )
+
+                ## 5. Final composition -------------------------------------------------------------
+                pred_vertices = pred_lbs + displacement
+
+                # -----------------------------------------------------------------------------------
+                if self.opts.no_t_mask:
+                    t_mask = 1.0
+                    inv_t_mask = 0.0
+                else:
+                    inv_t_mask = 1.0 - t_mask
+
+                # loss ------------------------------------------------------------------------------
+                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
+
+                loss_dict = {}
+                HB = batch.vertices.shape[0] // 2
+
+                if self.opts.no_t_mask:
+                    loss_dict['recon-def'] = F.mse_loss(batch_vertices_v, pred_vertices)
+                else:
+                    loss_dict['recon-def'] = F.mse_loss(batch_vertices_v*t_mask, pred_vertices*t_mask)
+                    loss_dict['recon-def'] += F.mse_loss(batch_template_v*inv_t_mask, pred_vertices*inv_t_mask)
+                if self.model.use_full_vertex:
+                    if self.opts.no_t_mask:
+                        loss_dict['recon-neu'] = F.mse_loss(batch_template_v, pred_source)
+                    else:
+                        loss_dict['recon-neu'] = F.mse_loss(batch_template_v*t_mask, pred_source*t_mask)
+                        loss_dict['recon-neu'] += F.mse_loss(batch_template_v*inv_t_mask, pred_source*inv_t_mask)
+
+                if self.model.use_shp_recon:
+                    loss_dict['shape'] = F.mse_loss(
+                        batch_template_v[:,rearange_idx]*t_mask,
+                        recon_source[:,randperm_idx[rearange_idx]]*t_mask
+                    )
+                if self.model.use_exp_recon:
+                    loss_dict['exp-v'] = F.mse_loss(
+                        batch_vertices_v[:,rearange_idx]*t_mask,
+                        recon_vertices[:,randperm_idx[rearange_idx]]*t_mask
+                    )
+
+                # Laplacian smoothing ---------------------------------------------------------------
+                if self.opts.use_laplacian:
+                    loss_dict['lap'] = laplacian_loss(
+                        batch, pred_key_weight, self.train_dataset, mesh_data_num, self.device
+                    ) * BS_denom
+
+                # vertex normal loss ----------------------------------------------------------------
+                if self.opts.use_normal_loss:
+                    pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts')
+
+                    if self.opts.no_t_mask:
+                        loss_dict['norm-def'] = F.mse_loss(batch_vertices_n, pred_vertices_norm)
+                    else:
+                        loss_dict['norm-def'] = (
+                            F.mse_loss(batch_vertices_n*t_mask, pred_vertices_norm*t_mask)
+                            + F.mse_loss(batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask)
+                        )
+                    if self.model.use_full_vertex:
+                        pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')
+                        loss_dict['norm-neu'] = F.mse_loss(batch_template_n, pred_template_norm)
+
+                # latent alignment loss -------------------------------------------------------------
+                if self.opts.align_latent:
+                    if mesh_data=='ict':
+                        loss_dict['exp-z'] = F.mse_loss(
+                            batch.exp_coeff.unsqueeze(1), exp_z
+                        )
+                    else:
+                        exp_z_facs, exp_z_ext = exp_z[...,:53], exp_z[...,53:]
+                        loss_dict['exp-z'] = non_ict_loss(exp_z_facs)
+                        loss_dict['exp-z'] += F.mse_loss(
+                            torch.zeros_like(exp_z_ext).to(self.device), exp_z_ext
+                        )
+
+                # get total loss -------------------------------------------------------------------
+                loss = 0
+                for key, value in loss_dict.items():
+                    tmp = value*self.loss_lambda[key]
+                    loss += tmp
+                    running_losses[key] += tmp
+                loss_dict["total"] = loss
+
+                # backward -------------------------------------------------------------------------
+                loss.backward()
+                self.optimizer.step()
+
+                running_losses["total"] += loss_dict["total"]
+                pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
+
+                global_step += 1
+                train_counter += 1
+
+                if index % interv_train == 1:
+                    IDX = torch.tensor([0, 1, HB, BS-1])
+                    with torch.no_grad():
+                        pred_lbs_vis, recon_vertices, recon_source, exp_z, pred_source, _, _, key_weight, W_lbs, T_lbs = self.model(
+                            batch.template[IDX], batch.vertices[IDX],
+                            batch.template_normal[IDX], batch.vertices_normal[IDX],
+                            batch.mesh_data, epoch=epoch, out_kw=True,
+                        )
+                        strain_vis = None
+                        if self.opts.use_strain:
+                            if self.opts.strain_dim == 2:
+                                sn, st = compute_vertex_strain(
+                                    pred_lbs_vis, batch.template[IDX], batch.faces, return_trace=True
+                                )
+                                strain_vis = torch.cat([sn, st], dim=-1)
+                            else:
+                                strain_vis = compute_vertex_strain(
+                                    pred_lbs_vis, batch.template[IDX], batch.faces, return_trace=False
+                                )
+                        lbs_norm_vis = calc_norm_torch(pred_lbs_vis, batch.faces, at='verts')
+                        disp_vis, _ = self.model_disp(
+                            pred_lbs_vis, lbs_norm_vis,
+                            batch.template[IDX], batch.template_normal[IDX],
+                            strain=strain_vis
+                        )
+                        pred_vertices_vis = pred_lbs_vis + disp_vis
+
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+
+                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
+                    __idx__ = 1/train_counter
+                    for key, value in running_losses.items():
+                        log_text += f"{key}: {value*__idx__:.6e} "
+
+                    if not is_stts_added:
+                        log_text+='\n>>> Sum across vertex weights on each cage: '
+                        log_text+=f'(max: {key_weight[0].sum(0).max().item():.5e}, min: {key_weight[0].sum(0).min().item():.5e})\n'
+                        log_text+=f'>>> Num actually used cage vertex: {torch.count_nonzero(key_weight[0].sum(0))} / {key_weight.shape[-1]}'
+                        is_stts_added=True
+                    self.logger.write(log_text+"\n")
+
+                    v_list = [
+                        vertices[0].cpu().detach(),
+                        vertices[1].cpu().detach(),
+                        vertices[HB].cpu().detach(),
+                        vertices[BS-1].cpu().detach(),
+                        pred_vertices_vis[0].cpu().detach(),
+                        pred_vertices_vis[1].cpu().detach(),
+                        pred_vertices_vis[2].cpu().detach(),
+                        pred_vertices_vis[3].cpu().detach(),
+                    ]
+
+                    len_v = len(v_list)
+                    f_list = [faces] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img/train/mesh"
+                    save_img_name = f"{epoch:03d}_{index:04d}"
+
+                    plot_image_array(
+                        v_list, f_list,
+                        rot_list=[[0,0,0]] * len_v,
+                        size=1, bg_black=False, mode='shade',
+                        logdir=save_logdir,
+                        name=save_img_name, save=True
+                    )
+
+                if self.opts.debug:
+                    break
+
+            ### scheduler -------------------------------------------------------------------
+            if epoch != 0:
+                self.scheduler.step()
+                curr_lr = self.optimizer.param_groups[0]["lr"]
+                if epoch % self.opts.sc_step==0 and not is_stepped:
+                    log_notice = f'[{epoch:03d}/{epochs:03d}][{index:04d}][Train] scheduler stepped: {curr_lr:.6e}'
+                    self.logger.write(log_notice+"\n")
+                    is_stepped=True
+
+            # log
+            if self.opts.tb:
+                self.log_loss(self.writer_train, running_losses, epoch, train_counter)
+
+            # save model
+            if epoch % self.opts.save_interval == 0:
+                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_lbs_{epoch:03d}.pth')
+                torch.save(self.model_disp.state_dict(), f'{self.opts.log_dir}/model_disp_{epoch:03d}.pth')
+
+            ######################################################################################################
+            # validation -----------------------------------------------------------------------------------------
+            self.model.eval()
+            self.model_disp.eval()
+
+            print(f"[{epoch:03d}/{epochs:03d}][Valid]")
+            running_losses_val = {
+                "recon-def": 0.0,
+                "recon-neu": 0.0,
+                "exp-z": 0.0,
+                "exp-v": 0.0,
+                "shape": 0.0,
+                "total": 0.0
+            }
+
+            if self.opts.use_lbs_laplacian:
+                running_losses_val['lbs-lap']=0.0
+            if self.opts.use_lbs_ent:
+                running_losses_val['lbs-ent']=0.0
+            if self.opts.use_lbs_t:
+                running_losses_val['lbs-t']=0.0
+            if self.opts.use_lbs_R:
+                running_losses_val['lbs-R']=0.0
+            if self.opts.use_lbs_bal:
+                running_losses_val['lbs-bal']=0.0
+
+            counter = 0
+            pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
+            for index, batch in pbar:
+                counter += 1
+
+                with torch.no_grad():
+                    ## 1. LBS forward
+                    pred_lbs, recon_vertices, recon_source, exp_z, pred_source, _, _, pred_key_weight, W_lbs, T_lbs = self.model(
+                        batch.template, batch.vertices,
+                        batch.template_normal, batch.vertices_normal,
+                        batch.mesh_data, epoch=epoch
+                    )
+
+                    ## 2. Compute strain
+                    strain = None
+                    if self.opts.use_strain:
+                        if self.opts.strain_dim == 2:
+                            sn, st = compute_vertex_strain(
+                                pred_lbs, batch.template, batch.faces, return_trace=True
+                            )
+                            strain = torch.cat([sn, st], dim=-1)
+                        else:
+                            strain = compute_vertex_strain(
+                                pred_lbs, batch.template, batch.faces, return_trace=False
+                            )
+
+                    ## 3. LBS normals + DispNet
+                    lbs_norm = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+                    displacement, _ = self.model_disp(
+                        pred_lbs, lbs_norm,
+                        batch.template, batch.template_normal,
+                        strain=strain
+                    )
+
+                    ## 4. Final composition
+                    pred_vertices = pred_lbs + displacement
+
+                # loss --------------------------------------------------------------------------
+                with torch.no_grad():
+                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
+
+                    loss_dict = {}
+                    HB = batch.vertices.shape[0] // 2
+
+                    loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices)
+                    if self.model.use_full_vertex:
+                        loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source)
+
+                    if self.model.use_shp_recon:
+                        loss_dict['shape'] = F.mse_loss(batch.template, recon_source)
+                    if self.model.use_exp_recon:
+                        loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices)
+
+                    if self.opts.use_lbs_laplacian:
+                        loss_dict['lbs-lap'] = 0.0
+                    if self.opts.use_lbs_ent:
+                        loss_dict['lbs-ent'] = 0.0
+                    if self.opts.use_lbs_t:
+                        loss_dict['lbs-t'] = 0.0
+                    if self.opts.use_lbs_R:
+                        loss_dict['lbs-R'] = 0.0
+                    if self.opts.use_lbs_bal:
+                        loss_dict['lbs-bal'] = 0.0
+
+                    loss = 0
+                    for key, value in loss_dict.items():
+                        key_ = key.split("_")[0]
+                        tmp = value.item()*self.loss_lambda[key_]
+                        loss += tmp
+                        running_losses_val[key] += tmp
+                    loss_dict["total"] = loss
+
+                running_losses_val["total"] += loss_dict["total"]
+                pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
+
+                interv_val = round(len_valid_data / 5)
+                if index % interv_val == 0:
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+
+                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
+                    __jdx__ = 1/counter
+                    for key, value in running_losses_val.items():
+                        log_text += f"{key}: {value*__jdx__:.6e} "
+                    self.logger.write(log_text+"\n")
+
+                    v_list = [
+                        vertices[0].cpu().detach(),
+                        vertices[1].cpu().detach(),
+                        vertices[HB].cpu().detach(),
+                        vertices[BS-1].cpu().detach(),
+                        pred_vertices[0].cpu().detach(),
+                        pred_vertices[1].cpu().detach(),
+                        pred_vertices[HB].cpu().detach(),
+                        pred_vertices[BS-1].cpu().detach(),
+                    ]
+                    len_v = len(v_list)
+                    f_list=[faces] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                    save_img_name = f"{epoch:03d}_{counter:04d}"
+
+                    plot_image_array(
+                        v_list, f_list,
+                        rot_list=[[0,0,0]] * len_v,
+                        size=1, bg_black=False, mode='shade',
+                        logdir=save_logdir,
+                        name=save_img_name, save=True
+                    )
+
+                if self.opts.debug:
+                    break
+
+            # log
+            if self.opts.tb:
+                self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
+
+            # best loss
+            val_loss = running_losses_val["total"]/counter
+            if val_loss < BEST_LOSS:
+                BEST_LOSS = val_loss
+                BEST_EPOCH = epoch
+                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
+                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
+                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_lbs_best.pth')
+                torch.save(self.model_disp.state_dict(), f'{self.opts.log_dir}/model_disp_best.pth')
+            else:
+                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
+                print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
+
+
     @staticmethod
     def log_loss(writer, loss_dict, step, counter=None):
         if counter:
@@ -4800,6 +5426,8 @@ if __name__ == "__main__":
         trainer.train_vLBSHybrid2(epochs=opts.max_epoch)
     elif opts.version==8: # train LBS + CBD jointly
         trainer.train_vLBSHybrid3(epochs=opts.max_epoch)
+    elif opts.version==9: # train LBS + Strain Displacement jointly
+        trainer.train_vStrainDisp(epochs=opts.max_epoch)
     else:
         raise NotImplementedError('no matching version!') 
     

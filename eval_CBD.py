@@ -41,7 +41,8 @@ from utils.ckpt_utils import *
 from utils.exp_utils import plateau_hat_points
 
 from models.baseline import CageNet
-from models.NGBC import NeuralGeneralizedBarycentricCoordinate, NeuralGeneralizedBarycentricCoordinateLBS, NeuralGeneralizedBarycentricCoordinateCBD
+from models.NGBC import NeuralGeneralizedBarycentricCoordinate, NeuralGeneralizedBarycentricCoordinateLBS, NeuralGeneralizedBarycentricCoordinateCBD, NeuralStrainDisplacement
+from utils.mesh_utils import compute_vertex_strain, calc_norm_torch
 # from models.NGBCv2 import NeuralBarycentricCoordinatev2, NeuralBarycentricCoordinatev3
 
 import torch.multiprocessing as mp
@@ -156,7 +157,16 @@ def Options():
     parser.set_defaults(use_lbs_R=False)
     parser.add_argument("--use_lbs_bal",dest='use_lbs_bal', action='store_true')
     parser.set_defaults(use_lbs_bal=False)
-    
+
+    ## strain displacement options ---
+    parser.add_argument("--use_strain", dest='use_strain', action='store_true')
+    parser.set_defaults(use_strain=False)
+    parser.add_argument("--strain_dim", type=int, default=1, help='1: norm only, 2: norm+trace')
+    parser.add_argument("--strain_full_grad", dest='strain_full_grad', action='store_true')
+    parser.set_defaults(strain_full_grad=False)
+    parser.add_argument("--eval_use_strain_disp", dest="eval_use_strain_disp", action="store_true")
+    parser.set_defaults(eval_use_strain_disp=False)
+
     ## ---- eval lbs --------
 
     parser.add_argument("--tb",           action='store_true')
@@ -347,11 +357,28 @@ class Trainer():
                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
-        
+
+        elif opts.version == 9:
+            self.model = NeuralGeneralizedBarycentricCoordinateLBS(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, use_shp_recon=False, use_shp=False,
+                use_relu=last_act_list[0], use_elu=last_act_list[1],
+                use_softmax=last_act_list[2], use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                is_train=True, use_pou=~self.opts.no_pou, device=self.device,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+            strain_dim = self.opts.strain_dim if self.opts.use_strain else 0
+            self.model_disp = NeuralStrainDisplacement(
+                opts, hid_dim=256, num_layers=4,
+                strain_dim=strain_dim, device=self.device,
+            )
+
         else:
             raise NotImplementedError('No matching model version')
-        
-        
+
+
         if opts.version == 7: # LBS pretrained + CBD training
             
             parent_dir = os.path.dirname(self.opts.ckpt)
@@ -363,7 +390,12 @@ class Trainer():
             self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
             self._load_weight(self.model_CBD, name="cbd", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
             self.lbs_epoch = self.opts.start_epoch # joint training, so start_epoch -> lbs_epoch
-        
+
+        elif opts.version == 9: # LBS + Strain Displacement joint training
+            self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+            self._load_weight(self.model_disp, name="disp", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+            self.lbs_epoch = self.opts.start_epoch
+
         elif opts.version == 3: # corresponds to version 5 in train_CBD.py
             ckpt_has_cbd = False        
             if self.opts.ckpt is not None:
@@ -411,12 +443,12 @@ class Trainer():
             if self.opts.continue_ckpt:
                 if opts.version == 7:
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{epoch:03d}.pth"))[0]
-                elif opts.version == 8:
+                elif opts.version == 8 or opts.version == 9:
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
             else:
                 if opts.version == 7:
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_best.pth"))[0]
-                elif opts.version == 8:
+                elif opts.version == 8 or opts.version == 9:
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
             ckpt_dict = torch.load(ckpt)            
             model.load_state_dict(ckpt_dict)
@@ -3414,8 +3446,222 @@ class Trainer():
             fps=30
             )
             print("animation done!")
-    
-    
+
+
+    def evaluateStrainDisp(self):
+        """
+        Self-retargeting evaluation for v9: LBS + Strain Displacement.
+        """
+        assert opts.version == 9, "evaluateStrainDisp is for version 9 only"
+        ##########################################################################################################
+        # define dataset -----------------------------------------------------------------------------------------
+        print("Running LBS+StrainDisp evaluation on EvalDataset (real test set)")
+        BS = self.opts.batch_size
+        HB = BS // 2
+        device = self.device
+
+        stage2_dir = self.opts.ckpt
+        assert stage2_dir is not None, "--ckpt must be logdir path"
+
+        if self.opts.data_selection == -1:
+            raise NotImplementedError('only works for individual data')
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
+        selection = data_name_list[self.opts.data_selection]
+
+        self.dataset = EvalDataset(data_name=selection, toggle=False)
+
+        self.dataloader = torch.utils.data.DataLoader(
+            self.dataset,
+            batch_size=self.opts.batch_size,
+            collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
+        )
+        ##########################################################################################################
+
+        ###### Logging ###########################################################################################
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+
+        ckpt_path = self.opts.ckpt.split('/')[-1]
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
+
+        dir_name = f'straindisp_e{self.opts.start_epoch:02d}'
+        if self.opts.use_t_mask:
+            self.opts.log_dir = self.opts.log_dir + f'-masked_{dir_name}'
+
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+
+        if self.opts.no_vis_interv == False:
+            os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+        else:
+            os.makedirs(f"{self.opts.log_dir}/img-full", exist_ok=True)
+
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+
+        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
+        print(f'Saving log at: {self.opts.log_dir}')
+
+        print(self.dataset.get_data_config())
+        self.logger.write(self.dataset.get_data_config())
+        #---------------------------------------------------------------------------------------------------------
+        ##########################################################################################################
+
+        # eval loop ##############################################################################################
+        len_data = len(self.dataloader)
+        denom = 1 / len_data
+
+        self.model.eval()
+        self.model_disp.eval()
+
+        losses_val = {"MSE": 0.0}
+        if self.opts.use_t_mask:
+            losses_val["MSE-in"] = 0.0
+            losses_val["MSE-out"] = 0.0
+
+        mesh_data = self.dataset.data_name
+
+        pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
+
+        for index, batch in pbar:
+            # model forward ----------------------------------------------------------------------------------
+            with torch.no_grad():
+                ## 1. LBS forward
+                pred_lbs, recon_vertices, recon_source, exp_z, pred_source, t_mask, key_d, pred_key_weight, W_lbs, T_lbs = self.model(
+                    batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
+                    batch.mesh_data, epoch=0
+                )
+
+                ## 2. Compute strain
+                strain = None
+                if self.opts.use_strain:
+                    if self.opts.strain_dim == 2:
+                        sn, st = compute_vertex_strain(
+                            pred_lbs, batch.template, batch.faces[0] if batch.faces.dim() == 3 else batch.faces,
+                            return_trace=True
+                        )
+                        strain = torch.cat([sn, st], dim=-1)
+                    else:
+                        strain = compute_vertex_strain(
+                            pred_lbs, batch.template,
+                            batch.faces[0] if batch.faces.dim() == 3 else batch.faces,
+                            return_trace=False
+                        )
+
+                ## 3. LBS normals + DispNet
+                faces_for_norm = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
+                lbs_norm = calc_norm_torch(pred_lbs, faces_for_norm, at='verts')
+                displacement, _ = self.model_disp(
+                    pred_lbs, lbs_norm,
+                    batch.template, batch.template_normal,
+                    strain=strain
+                )
+
+                ## 4. Final composition
+                pred_vertices = pred_lbs + displacement
+
+            # Metric -----------------------------------------------------------------------------------------
+            with torch.no_grad():
+                mesh_data_num = batch.mesh_data.cpu().numpy()
+
+            if self.opts.no_eval_metric == False:
+                if self.opts.use_t_mask:
+                    inner_mask = plateau_hat_points(batch.template)
+                    outter_mask = 1 - inner_mask
+
+                    losses_val['MSE-in'] += F.mse_loss(
+                        batch.vertices*inner_mask, pred_vertices*inner_mask
+                    ).item() * denom
+
+                    losses_val['MSE-out'] += F.mse_loss(
+                        batch.template*outter_mask, pred_vertices*outter_mask
+                    ).item() * denom
+
+                losses_val['MSE'] += F.mse_loss(
+                    batch.vertices, pred_vertices
+                ).item() * denom
+            # ------------------------------------------------------------------------------------------------
+
+            if self.opts.save_gt:
+                save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
+                os.makedirs(save_gt_logdir, exist_ok=True)
+                curr_batch = batch.vertices.shape[0]
+                for b_idx in range(curr_batch):
+                    save_gt_name = f"{save_gt_logdir}/{index*curr_batch + b_idx:06d}.npy"
+                    np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
+
+            if self.opts.save_vert:
+                save_vert_logdir = f"{self.opts.log_dir}/verts"
+                os.makedirs(save_vert_logdir, exist_ok=True)
+                curr_batch = pred_vertices.shape[0]
+                for b_idx in range(curr_batch):
+                    save_vert_name = f"{save_vert_logdir}/{index*curr_batch + b_idx:06d}.npy"
+                    np.save(save_vert_name, pred_vertices[b_idx].detach().cpu().numpy())
+
+            # ------------------------------------------------------------------------------------------------
+            if self.opts.no_vis_interv == False:
+                interv_val = round(len_data / 5)
+                if index % interv_val == 0:
+                    vertices = batch.vertices.cpu()
+                    faces_cpu = batch.faces[0].cpu() if batch.faces.dim() == 3 else batch.faces.cpu()
+
+                    v_list = [
+                        vertices[0].cpu().detach(),
+                        pred_vertices[0].cpu().detach(),
+                    ]
+                    len_v = len(v_list)
+                    f_list = [faces_cpu] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img"
+                    save_img_name = f"{index:04d}"
+
+                    plot_image_array(
+                        v_list, f_list,
+                        rot_list=[[0,0,0]]*len_v,
+                        size=1, bg_black=False, mode='shade',
+                        logdir=save_logdir,
+                        name=save_img_name, save=True
+                    )
+            else:
+                vertices = batch.vertices.cpu()
+                faces_cpu = batch.faces[0].cpu() if batch.faces.dim() == 3 else batch.faces.cpu()
+
+                v_list = [
+                    vertices[0].cpu().detach(),
+                    pred_vertices[0].cpu().detach(),
+                ]
+                len_v = len(v_list)
+                f_list = [faces_cpu] * len_v
+                save_logdir = f"{self.opts.log_dir}/img-full"
+                save_img_name = f"{index:04d}"
+
+                plot_image_array(
+                    v_list, f_list,
+                    rot_list=[[0,0,0]]*len_v,
+                    size=1, bg_black=False, mode='shade',
+                    logdir=save_logdir,
+                    name=save_img_name, save=True
+                )
+        ##########################################################################################################
+
+        log_text = f"[Eval] "
+        for key, value in losses_val.items():
+            txt = f"{key}: {value:.6e} "
+            print(txt)
+            log_text += txt
+        self.logger.write(log_text+"\n")
+        print('done!')
+
+        anim_name = f"animation_straindisp_e{self.opts.start_epoch}"
+
+        if self.opts.no_vis_interv:
+            images_to_video_cv(
+            f"{self.opts.log_dir}/img-full",
+            f"{self.opts.log_dir}/{anim_name}.mp4",
+            fps=30
+            )
+            print("animation done!")
+
+
     def evaluateHybridSeparateCross(self, tgt_vert_path, tgt_norm_path, tgt_obj_path):
         """
         Cross-retarget:
@@ -3783,7 +4029,7 @@ if __name__ == "__main__":
     
     # argparse configs
     opts = Options()
-    
+
     # base configs (yaml)
     # import pdb;pdb.set_trace()
     if opts.version==0:
@@ -3792,7 +4038,7 @@ if __name__ == "__main__":
     else:
         config = f'{opts.ckpt}/train_opts.yml'
         opts_yaml = yaml.load(open(config), Loader=yaml.FullLoader)
-        
+
     # update with argparse configs
     opts_ = vars(opts)
     # import pdb;pdb.set_trace()
@@ -3846,6 +4092,8 @@ if __name__ == "__main__":
                     trainer.evaluateHybrid()
                 elif opts.eval_use_hybrid_separate:
                     trainer.evaluateHybridSeparate()
+                elif opts.eval_use_strain_disp:
+                    trainer.evaluateStrainDisp()
                 else:
                     trainer.evaluate2() ## real test frames
     else:

@@ -2313,6 +2313,103 @@ class NeuralGeneralizedBarycentricCoordinateCBD(nn.Module):
         return pred_deformed, key_d
 
 
+class NeuralStrainDisplacement(nn.Module):
+    """
+    Strain-conditioned per-vertex displacement network.
+    Replaces CBD. Output = per-vertex delta displacement.
+
+    Experiment 1 (strain_dim=0): DispNet(lbs_deformed) → delta
+    Experiment 2 (strain_dim=1): DispNet(lbs_deformed, strain) → delta
+    """
+    def __init__(self, opts=None, hid_dim=256, num_layers=4,
+                 strain_dim=1, device='cpu'):
+        super().__init__()
+        self.opts = opts
+        self.strain_dim = strain_dim  # 0: no strain, 1: ||E||_F, 2: [||E||_F, trace(E)]
+
+        # in_type=1: pos(3) + norm(3) = 6
+        self.in_type = opts.in_type if opts else 1
+        base_dim = 6 if self.in_type >= 1 else 3
+
+        # DispNet input: lbs_pos(3) [+ lbs_norm(3)] [+ strain(strain_dim)]
+        disp_in_dim = base_dim + strain_dim  # 7 (with strain) or 6 (without)
+
+        # Expression encoder input: [lbs_delta(3) + lbs_norm(3) + template_in(base_dim) + strain(strain_dim)]
+        exp_in_dim = base_dim + base_dim + strain_dim  # 13 or 12
+
+        L = hid_dim
+
+        # Expression encoder (global feature from LBS output)
+        self.exp_z_model = LinearEncoder(
+            in_dim=exp_in_dim, out_dim=L,
+            num_layers=num_layers, out_type='global',
+        ).to(device)
+
+        # Per-vertex displacement decoder (conditioned by exp_z via AdaIN)
+        # hid_dim=L so AdaIN layers match exp_z dimension
+        self.disp_model = LinearEncoder(
+            in_dim=disp_in_dim, out_dim=3, hid_dim=L,
+            num_layers=num_layers, out_type='vertices',
+            no_activation=True,
+        ).to(device)
+
+    def get_model_config(self):
+        text = "===========[Strain Disp config]===========\n"
+        text += f"[     in_type     ]: {self.in_type}\n"
+        text += f"[    strain_dim   ]: {self.strain_dim}\n"
+        text += f"[   exp_z in_dim  ]: {self.exp_z_model.layer_in.in_features}\n"
+        text += f"[   disp  in_dim  ]: {self.disp_model.layer_in.in_features}\n"
+        text += "==========================================\n"
+        return text
+
+    def forward(self, lbs_deformed, lbs_deformed_norm,
+                source_vert, source_norm, strain=None):
+        """
+        Args:
+            lbs_deformed:      [B, N, 3] LBS output (coarse deformation)
+            lbs_deformed_norm: [B, N, 3] LBS output vertex normals
+            source_vert:       [B, N, 3] template (neutral) vertices
+            source_norm:       [B, N, 3] template vertex normals
+            strain:            [B, N, strain_dim] or None
+
+        Returns:
+            displacement: [B, N, 3] per-vertex delta displacement
+            exp_z: [B, 1, L] global expression code
+        """
+        B, N, _ = lbs_deformed.shape
+
+        # Build source_in from lbs_deformed
+        if self.in_type >= 1:
+            source_in = torch.cat([lbs_deformed, lbs_deformed_norm], dim=-1)  # [B,N,6]
+        else:
+            source_in = lbs_deformed  # [B,N,3]
+
+        # DispNet input: optionally concat strain
+        if strain is not None and self.strain_dim > 0:
+            disp_in = torch.cat([source_in, strain], dim=-1)  # [B,N,7]
+        else:
+            disp_in = source_in  # [B,N,6]
+
+        # Expression encoder input: [lbs_delta, lbs_norm, template_pos, template_norm, (strain)]
+        lbs_delta = lbs_deformed - source_vert  # [B,N,3]
+        if self.in_type >= 1:
+            template_in = torch.cat([source_vert, source_norm], dim=-1)  # [B,N,6]
+            exp_in = torch.cat([lbs_delta, lbs_deformed_norm], dim=-1)  # [B,N,6]
+        else:
+            template_in = source_vert
+            exp_in = lbs_delta
+        exp_in = torch.cat([exp_in, template_in], dim=-1)  # [B,N,12]
+        if strain is not None and self.strain_dim > 0:
+            exp_in = torch.cat([exp_in, strain], dim=-1)  # [B,N,13]
+
+        # Global expression code
+        exp_z = self.exp_z_model(exp_in)  # [B, 1, L]
+
+        # Per-vertex displacement (conditioned on exp_z via AdaIN)
+        displacement = self.disp_model(disp_in, id_in=exp_z)  # [B, N, 3]
+
+        return displacement, exp_z
+
 
 if __name__ == "__main__":
     import argparse

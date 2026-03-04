@@ -187,7 +187,7 @@ class Trainer:
         self._set_seed(opts)
         self.device = opts.device
 
-        assert opts.version == 8, "analyze_CBD.py only supports version 8 (joint LBS+CBD)"
+        assert opts.version in (6, 8), "analyze_CBD.py supports version 6 (LBS-only) and 8 (LBS+CBD)"
 
         last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         la = [opts.last_activation == l for l in last_act_list]
@@ -206,18 +206,23 @@ class Trainer:
             hid_dim=128 if opts.align_latent else 256,
         )
 
-        self.model     = NeuralGeneralizedBarycentricCoordinateLBS(opts, **model_kwargs).to(self.device)
-        self.model_CBD = NeuralGeneralizedBarycentricCoordinateCBD(opts, **model_kwargs).to(self.device)
+        self.model = NeuralGeneralizedBarycentricCoordinateLBS(opts, **model_kwargs).to(self.device)
 
-        self._load_weight(self.model,     name="lbs", ckpt_dir=opts.ckpt, epoch=opts.start_epoch)
-        self._load_weight(self.model_CBD, name="cbd", ckpt_dir=opts.ckpt, epoch=opts.start_epoch)
+        if opts.version == 8:
+            self.model_CBD = NeuralGeneralizedBarycentricCoordinateCBD(opts, **model_kwargs).to(self.device)
+            self._load_weight(self.model,     name="lbs", ckpt_dir=opts.ckpt, epoch=opts.start_epoch)
+            self._load_weight(self.model_CBD, name="cbd", ckpt_dir=opts.ckpt, epoch=opts.start_epoch)
+            self.model_CBD.eval()
+        elif opts.version == 6:
+            self.model_CBD = None
+            self._load_weight_v6(self.model, ckpt_dir=opts.ckpt, epoch=opts.start_epoch)
 
         self.model.eval()
-        self.model_CBD.eval()
 
     # ------------------------------------------------------------------
 
     def _load_weight(self, model, name, ckpt_dir, epoch):
+        """v8: model_lbs_best.pth / model_cbd_best.pth style."""
         if not ckpt_dir:
             print(f"[warn] No ckpt_dir for {name}")
             return
@@ -228,6 +233,19 @@ class Trainer:
         ckpt_dict = torch.load(ckpt, map_location=self.device)
         model.load_state_dict(ckpt_dict)
         print(f"[load] {name}: {os.path.basename(ckpt)}")
+
+    def _load_weight_v6(self, model, ckpt_dir, epoch):
+        """v6 (LBS-only): single model_300.pth style."""
+        if not ckpt_dir:
+            print("[warn] No ckpt_dir for v6")
+            return
+        if self.opts.continue_ckpt:
+            ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{epoch:03d}.pth"))[0]
+        else:
+            ckpt = glob.glob(os.path.join(ckpt_dir, "*_best.pth"))[0]
+        ckpt_dict = torch.load(ckpt, map_location=self.device)
+        model.load_state_dict(ckpt_dict)
+        print(f"[load] v6: {os.path.basename(ckpt)}")
 
     @staticmethod
     def _set_seed(opts):
@@ -317,29 +335,35 @@ class Trainer:
                     batch.mesh_data, epoch=0,
                 )
 
-                # -- CBD forward with out_kw=True --
-                # Returns 6 values: pred_cbd, recon, recon_src, exp_z, key_d, key_weight
-                if self.opts.use_hyb_delta_lbs_input:
-                    (pred_cbd, _r, _rs, _ez, key_d, key_weight) = self.model_CBD(
-                        batch.template, batch.vertices,
-                        batch.template_normal, batch.vertices_normal,
-                        batch.mesh_data, epoch=0, lbs_output=pred_lbs, out_kw=True,
-                    )
-                elif self.opts.use_hyb_concat_lbs:
-                    (pred_cbd, _r, _rs, _ez, key_d, key_weight) = self.model_CBD(
-                        batch.template, batch.vertices,
-                        batch.template_normal, batch.vertices_normal,
-                        batch.mesh_data, epoch=0,
-                        lbs_output=pred_lbs, lbs_source=_pred_src_lbs, out_kw=True,
-                    )
-                else:  # default: independent CBD branches
-                    (pred_cbd, _r, _rs, _ez, key_d, key_weight) = self.model_CBD(
-                        batch.template, batch.vertices,
-                        batch.template_normal, batch.vertices_normal,
-                        batch.mesh_data, epoch=0, out_kw=True,
-                    )
-
-                pred_final = pred_lbs + pred_cbd
+                # -- CBD forward (v8 only) --
+                if self.model_CBD is not None:
+                    # Returns 6 values: pred_cbd, recon, recon_src, exp_z, key_d, key_weight
+                    if self.opts.use_hyb_delta_lbs_input:
+                        (pred_cbd, _r, _rs, _ez, key_d, key_weight) = self.model_CBD(
+                            batch.template, batch.vertices,
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=0, lbs_output=pred_lbs, out_kw=True,
+                        )
+                    elif self.opts.use_hyb_concat_lbs:
+                        (pred_cbd, _r, _rs, _ez, key_d, key_weight) = self.model_CBD(
+                            batch.template, batch.vertices,
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=0,
+                            lbs_output=pred_lbs, lbs_source=_pred_src_lbs, out_kw=True,
+                        )
+                    else:  # default: independent CBD branches
+                        (pred_cbd, _r, _rs, _ez, key_d, key_weight) = self.model_CBD(
+                            batch.template, batch.vertices,
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=0, out_kw=True,
+                        )
+                    pred_final = pred_lbs + pred_cbd
+                else:
+                    # v6: LBS only
+                    pred_cbd = torch.zeros_like(pred_lbs)
+                    key_d = None
+                    key_weight = None
+                    pred_final = pred_lbs
 
             # ---- numpy conversion (batch_size=1) ----
             template_np   = batch.template[0].cpu().numpy()      # (N, 3)
@@ -348,15 +372,12 @@ class Trainer:
             pred_cbd_np   = pred_cbd[0].cpu().numpy()             # (N, 3)
             pred_final_np = pred_final[0].cpu().numpy()           # (N, 3)
             W_lbs_np      = W_lbs[0].cpu().numpy()                # (N, J)
-            key_weight_np = key_weight[0].cpu().numpy()           # (N, M)
+            key_weight_np = key_weight[0].cpu().numpy() if key_weight is not None else None
 
             # Joint centers = T_lbs last column (translation t).
-            # Config: use_lbs_joint_center=true, use_joint_predict=false,
-            # use_weighted_joint_pos=false → C_bar = t = T[..., 6:]
             # T_lbs is (B, J, 3, 4) = [R | t], so last column is joint center.
-            # Shape: (J, 3)
             C_lbs_np = T_lbs[0, :, :, 3].cpu().numpy()            # (J, 3)
-            key_d_np      = key_d[0].cpu().numpy()                # (M, 3)
+            key_d_np = key_d[0].cpu().numpy() if key_d is not None else None
 
             # batch.faces is (B, F, 3) — always take [0] to get (F, 3)
             faces_np = batch.faces[0].cpu().numpy()
@@ -367,11 +388,12 @@ class Trainer:
                 first_faces_np    = faces_np.copy()
                 first_W_lbs_np    = W_lbs_np.copy()
                 first_C_lbs_np    = C_lbs_np.copy()
-                first_kw_np       = key_weight_np.copy()
+                first_kw_np       = key_weight_np.copy() if key_weight_np is not None else None
                 first_frame_done  = True
 
-            # Accumulate key_d norm for top-K cage selection
-            key_d_norms_list.append(np.linalg.norm(key_d_np, axis=-1))  # (M,)
+            # Accumulate key_d norm for top-K cage selection (v8 only)
+            if key_d_np is not None:
+                key_d_norms_list.append(np.linalg.norm(key_d_np, axis=-1))  # (M,)
 
             # ---- MSE analysis ----
             mse_full = float(np.mean((gt_np - pred_final_np) ** 2))
@@ -470,50 +492,52 @@ class Trainer:
         )
         print(f"[analyze] LBS weights → {lbs_w_dir}")
 
-        # ---- (2) CBD cage vertex weight heatmaps ----
-        print("\n[analyze] Generating CBD cage weight visualizations...")
-        key_d_mean_norms = np.stack(key_d_norms_list, axis=0).mean(axis=0)  # (M,)
-        top_k   = min(self.opts.num_top_cage, first_kw_np.shape[1])
-        top_idx = np.argsort(key_d_mean_norms)[::-1][:top_k]
+        # ---- (2) CBD cage vertex weight heatmaps (v8 only) ----
+        if first_kw_np is not None and len(key_d_norms_list) > 0:
+            print("\n[analyze] Generating CBD cage weight visualizations...")
+            key_d_mean_norms = np.stack(key_d_norms_list, axis=0).mean(axis=0)  # (M,)
+            top_k   = min(self.opts.num_top_cage, first_kw_np.shape[1])
+            top_idx = np.argsort(key_d_mean_norms)[::-1][:top_k]
 
-        np.save(os.path.join(cbd_w_dir, "top_k_cage_indices.npy"), top_idx)
-        np.save(os.path.join(cbd_w_dir, "key_d_mean_norms.npy"),   key_d_mean_norms)
+            np.save(os.path.join(cbd_w_dir, "top_k_cage_indices.npy"), top_idx)
+            np.save(os.path.join(cbd_w_dir, "key_d_mean_norms.npy"),   key_d_mean_norms)
 
-        # Global vmax across all M cage vertices for consistent brightness mapping
-        global_vmax_cbd = float(first_kw_np.max())
+            # Global vmax across all M cage vertices for consistent brightness mapping
+            global_vmax_cbd = float(first_kw_np.max())
 
-        # Precompute implied position for every cage vertex (weighted centroid of template)
-        w_kw = first_kw_np  # (N, M)
-        w_sum = np.maximum(w_kw.sum(0), 1e-8)  # (M,)
-        cage_implied_pos = (w_kw.T @ first_template_np) / w_sum[:, None]  # (M, 3)
+            # Precompute implied position for every cage vertex (weighted centroid of template)
+            w_kw = first_kw_np  # (N, M)
+            w_sum = np.maximum(w_kw.sum(0), 1e-8)  # (M,)
+            cage_implied_pos = (w_kw.T @ first_template_np) / w_sum[:, None]  # (M, 3)
 
-        for rank, m in enumerate(tqdm(top_idx, desc="CBD cages", ncols=80)):
-            vis_mesh_key_weight(
+            for rank, m in enumerate(tqdm(top_idx, desc="CBD cages", ncols=80)):
+                vis_mesh_key_weight(
+                    verts=first_template_np, faces=first_faces_np,
+                    key_weight=first_kw_np, cage_idx=int(m),
+                    cmap="magma", vmin=0.0, vmax=global_vmax_cbd,
+                    view_yrots=(0, 90, 180, 270),
+                    save_path=os.path.join(cbd_w_dir, f"cage_{rank:03d}_m{m:03d}.png"),
+                    title=f"Cage vertex {rank} (m{m}) weight",
+                    overlay_pos_3d=cage_implied_pos[m],
+                )
+
+            # Argmax overview
+            vis_mesh_all_cage_weights(
                 verts=first_template_np, faces=first_faces_np,
-                key_weight=first_kw_np, cage_idx=int(m),
-                cmap="magma", vmin=0.0, vmax=global_vmax_cbd,
+                key_weight=first_kw_np,
+                cage_indices=top_idx.tolist(),
+                mode="argmax",
                 view_yrots=(0, 90, 180, 270),
-                save_path=os.path.join(cbd_w_dir, f"cage_{rank:03d}_m{m:03d}.png"),
-                title=f"Cage vertex {rank} (m{m}) weight",
-                overlay_pos_3d=cage_implied_pos[m],
             )
+            plt.savefig(os.path.join(cbd_w_dir, "cbd_cage_argmax_topk.png"), dpi=150, bbox_inches="tight")
+            plt.close("all")
 
-        # Argmax overview: which cage vertex dominates each face region
-        # Note: vis_mesh_all_cage_weights calls plt.show() internally (no-op under Agg backend)
-        vis_mesh_all_cage_weights(
-            verts=first_template_np, faces=first_faces_np,
-            key_weight=first_kw_np,
-            cage_indices=top_idx.tolist(),
-            mode="argmax",
-            view_yrots=(0, 90, 180, 270),
-        )
-        plt.savefig(os.path.join(cbd_w_dir, "cbd_cage_argmax_topk.png"), dpi=150, bbox_inches="tight")
-        plt.close("all")
-
-        # Grid summary
-        cage_imgs = sorted(glob.glob(os.path.join(cbd_w_dir, "cage_*.png")))
-        make_grid_from_images(cage_imgs, os.path.join(cbd_w_dir, "cbd_cage_weight_grid.png"), ncols=8)
-        print(f"[analyze] CBD weights → {cbd_w_dir}")
+            # Grid summary
+            cage_imgs = sorted(glob.glob(os.path.join(cbd_w_dir, "cage_*.png")))
+            make_grid_from_images(cage_imgs, os.path.join(cbd_w_dir, "cbd_cage_weight_grid.png"), ncols=8)
+            print(f"[analyze] CBD weights → {cbd_w_dir}")
+        else:
+            print("\n[analyze] Skipping CBD weight visualizations (v6: LBS only)")
 
         # ---- (3) Residual videos ----
         if not self.opts.weight_vis_only:
@@ -607,9 +631,12 @@ class Trainer:
             Z  = -VF[:, :, 2].mean(1)
             order = np.argsort(Z)
 
+            # Transparent mesh: face fill very low alpha so interior joints are visible,
+            # edges at moderate alpha to preserve silhouette.
             coll = PolyCollection(
-                T[order], closed=True, linewidth=0.1,
-                facecolor="lightgrey", edgecolor="lightgrey", alpha=0.6,
+                T[order], closed=True, linewidth=0.3,
+                facecolors=(0.75, 0.75, 0.75, 0.10),
+                edgecolors=(0.40, 0.40, 0.40, 0.35),
             )
             ax.add_collection(coll)
 
