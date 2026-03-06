@@ -3630,12 +3630,13 @@ class Trainer():
                 disp_mag = np.linalg.norm(displacement[0].cpu().numpy(), axis=-1)  # [V]
 
                 panel_specs = [
-                    (gt_np, np.zeros((gt_np.shape[0], 1)), 'gray', 'GT'),
+                    (gt_np, np.zeros(gt_np.shape[0])[:, None], 'YlOrRd', 'GT'),
+                    (pred_np, np.zeros(pred_np.shape[0])[:, None], 'YlOrRd', 'Pred'),
                 ]
                 if strain is not None:
                     strain_np = strain[0].cpu().numpy().squeeze()
-                    panel_specs.append((lbs_np, strain_np[:, None], 'hot', 'strain_on_LBS'))
-                panel_specs.append((pred_np, disp_mag[:, None], 'coolwarm', 'disp_on_Pred'))
+                    panel_specs.append((lbs_np, strain_np[:, None], 'coolwarm', 'strain_on_LBS'))
+                panel_specs.append((pred_np, disp_mag[:, None], 'YlOrRd', 'disp_on_Pred'))
 
                 panels = []
                 tmp_dir = os.path.join(save_logdir, '_tmp')
@@ -3648,6 +3649,7 @@ class Trainer():
                         cmap=cmap, vmin=0, vmax=vmax,
                         view_yrots=(0,),
                         save_path=tmp_path, close=True, title=title,
+                        shade=True,
                     )
                     panels.append(Image.open(tmp_path))
                     os.remove(tmp_path)
@@ -3809,12 +3811,13 @@ class Trainer():
                 disp_mag = np.linalg.norm(displacement[0].cpu().numpy(), axis=-1)
 
                 panel_specs = [
-                    (lbs_np, np.zeros((lbs_np.shape[0], 1)), 'gray', 'LBS_retarget'),
+                    (lbs_np, np.zeros(lbs_np.shape[0])[:, None], 'YlOrRd', 'LBS_retarget'),
+                    (pred_np, np.zeros(pred_np.shape[0])[:, None], 'YlOrRd', 'Pred'),
                 ]
                 if strain is not None:
                     strain_np = strain[0].cpu().numpy().squeeze()
-                    panel_specs.append((lbs_np, strain_np[:, None], 'hot', 'strain_on_LBS'))
-                panel_specs.append((pred_np, disp_mag[:, None], 'coolwarm', 'disp_on_Pred'))
+                    panel_specs.append((lbs_np, strain_np[:, None], 'coolwarm', 'strain_on_LBS'))
+                panel_specs.append((pred_np, disp_mag[:, None], 'YlOrRd', 'disp_on_Pred'))
 
                 panels = []
                 tmp_dir = os.path.join(save_logdir, '_tmp')
@@ -3827,6 +3830,7 @@ class Trainer():
                         cmap=cmap, vmin=0, vmax=vmax,
                         view_yrots=(0,),
                         save_path=tmp_path, close=True, title=title,
+                        shade=True,
                     )
                     panels.append(Image.open(tmp_path))
                     os.remove(tmp_path)
@@ -4078,16 +4082,17 @@ class Trainer():
                 tmp_dir = os.path.join(save_logdir, '_tmp')
                 os.makedirs(tmp_dir, exist_ok=True)
 
-                # Panel 1: GT (always)
+                # Panel 1: GT, Panel 2: Pred (shaded)
                 panel_specs = [
-                    (gt_np, np.zeros((gt_np.shape[0], 1)), 'gray', 'GT'),
+                    (gt_np, np.zeros(gt_np.shape[0])[:, None], 'YlOrRd', 'GT'),
+                    (pred_np, np.zeros(pred_np.shape[0])[:, None], 'YlOrRd', 'Pred'),
                 ]
-                # Panel 2: strain on LBS (only if use_strain)
+                # Panel 3: strain on LBS (only if use_strain)
                 if strain is not None:
                     strain_np = strain[0].cpu().numpy().squeeze()
-                    panel_specs.append((lbs_np, strain_np[:, None], 'hot', 'strain_on_LBS'))
-                # Panel 3: displacement on pred (always)
-                panel_specs.append((pred_np, disp_mag[:, None], 'coolwarm', 'disp_on_Pred'))
+                    panel_specs.append((lbs_np, strain_np[:, None], 'coolwarm', 'strain_on_LBS'))
+                # Panel 4: displacement on pred
+                panel_specs.append((pred_np, disp_mag[:, None], 'YlOrRd', 'disp_on_Pred'))
 
                 for verts, weights, cmap, title in panel_specs:
                     tmp_path = os.path.join(tmp_dir, f'{index:04d}_{title}.png')
@@ -4097,6 +4102,7 @@ class Trainer():
                         cmap=cmap, vmin=0, vmax=vmax,
                         view_yrots=(0,),
                         save_path=tmp_path, close=True, title=title,
+                        shade=True,
                     )
                     panels.append(Image.open(tmp_path))
                     os.remove(tmp_path)

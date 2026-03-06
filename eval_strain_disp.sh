@@ -3,7 +3,7 @@
 ## Matches train_strain_disp.sh experiments
 ## Usage: Update --ckpt path and --start_epoch, then run selected block
 
-set -e
+# set -e
 
 ## Common flags
 COMMON="python eval_CBD.py \
@@ -24,22 +24,22 @@ COMMON="python eval_CBD.py \
 ## Experiment 1: Naive (no strain)
 ########################################
 ## >>> Update ckpt path after training <<<
-EXP1_CKPT="./ckpts_CBD/<EXP1_FOLDER>"
+EXP1_CKPT="./ckpts_CBD/2026-03-04-19-26-56-NGBC++v9"
 
 # specific epoch
-# eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 50
-# eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 100
-# eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 200
-# eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 500
+eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 200 &
+eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 300 &
+eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 400 &
+eval $COMMON --ckpt "$EXP1_CKPT" --start_epoch 500 &
 
 # best
-# eval $COMMON --ckpt "$EXP1_CKPT"
+eval $COMMON --ckpt "$EXP1_CKPT"
 
 ########################################
 ## Experiment 2: With strain (stop-grad)
 ########################################
 ## >>> Update ckpt path after training <<<
-EXP2_CKPT="./ckpts_CBD/<EXP2_FOLDER>"
+# EXP2_CKPT="./ckpts_CBD/<EXP2_FOLDER>"
 
 # eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 50
 # eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 100
@@ -53,7 +53,7 @@ EXP2_CKPT="./ckpts_CBD/<EXP2_FOLDER>"
 ## Experiment 2b: With strain (full-grad)
 ########################################
 ## >>> Update ckpt path after training <<<
-EXP2B_CKPT="./ckpts_CBD/<EXP2B_FOLDER>"
+# EXP2B_CKPT="./ckpts_CBD/<EXP2B_FOLDER>"
 
 # eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 50
 # eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 100

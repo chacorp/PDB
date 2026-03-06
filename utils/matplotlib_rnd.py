@@ -429,6 +429,7 @@ def vis_mesh_key_weight(
         view_yrots=(0, 90, 180),
         save_path=None, close=True,
         title=None, overlay_pos_3d=None,
+        shade=False, light_dir=np.array([0, 0, 1]),
     ):
     """
     Args:
@@ -436,6 +437,10 @@ def vis_mesh_key_weight(
         faces: (F, 3) int
         key_weight: (N, K)
         cage_idx: int
+        shade: if True, use shaded rendering (lighting-based gray base).
+               weight=0 shows pure gray shade, weight>0 blends with cmap.
+               If key_weight is all uniform (e.g. GT panel), renders pure shaded mesh.
+        light_dir: light direction for shade mode
     """
 
     assert key_weight.shape[0] == verts.shape[0], \
@@ -480,28 +485,43 @@ def vis_mesh_key_weight(
         Z = -VF[:, :, 2].mean(1)
         order = np.argsort(Z)
     
-        T_sorted  = T[order]
-        W_sorted  = Wf[order]
-    
-        C = cmap_fn(norm(W_sorted))  # (F,4)
-    
-        #fig = plt.figure(figsize=(SIZE, SIZE))
-        # ax = fig.add_axes([0, 0, 1, 1], xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
-        # coll = PolyCollection(T_sorted, closed=True, linewidth=0.2, facecolor=C, edgecolor=C)
-        # ax.add_collection(coll)
-        # ax.set_xticks([]); ax.set_yticks([])
-        # ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
+        if shade:
+            # Back-face culling + shade
+            C_norm = calc_face_norm(V_model[:, :3], faces)
+            front = C_norm[:, 2] > 0
+            T = T[front]; Z = Z[front]; C_norm = C_norm[front]
+            Wf_front = Wf[front]
+            order = np.argsort(Z)
+            T_sorted = T[order]
+            C_norm = C_norm[order]
+            W_sorted = Wf_front[order]
+
+            # Gray shade base (same as plot_image_array shade mode)
+            shade_val = (C_norm @ light_dir)[:, np.newaxis].repeat(3, axis=-1)
+            shade_val = np.clip(shade_val, 0, 1) * 0.7 + 0.2
+
+            # Blend heatmap on top based on weight
+            heatmap_rgb = cmap_fn(norm(W_sorted))[:, :3]
+            alpha = np.clip((W_sorted - vmin) / (vmax - vmin + 1e-12), 0, 1)[:, np.newaxis]
+            C = shade_val * (1 - alpha) + heatmap_rgb * alpha
+            C = np.clip(C, 0, 1)
+        else:
+            T_sorted = T[order]
+            W_sorted = Wf[order]
+            C = cmap_fn(norm(W_sorted))  # (F,4)
+
         ax = fig.add_axes([j / num_views, 0, 1 / num_views, 1],
                           xlim=[-1, 1], ylim=[-1, 1], aspect=1, frameon=False)
 
         coll = PolyCollection(T_sorted, closed=True, linewidth=0.1,
                               facecolor=C, edgecolor=C)
         ax.add_collection(coll)
-        # Grey wireframe overlay for spatial reference
-        grey_coll = PolyCollection(T_sorted, closed=True, linewidth=0.3,
-                                   facecolors=(0, 0, 0, 0),
-                                   edgecolors=(0.35, 0.35, 0.35, 0.25))
-        ax.add_collection(grey_coll)
+        if not shade:
+            # Grey wireframe overlay (only for flat mode)
+            grey_coll = PolyCollection(T_sorted, closed=True, linewidth=0.3,
+                                       facecolors=(0, 0, 0, 0),
+                                       edgecolors=(0.35, 0.35, 0.35, 0.25))
+            ax.add_collection(grey_coll)
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
         # ax.set_title(f"y={yrot + add_rot}° ({mode})", fontsize=10)
