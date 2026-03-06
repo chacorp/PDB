@@ -36,7 +36,7 @@ from dataloader_CBD import (
 )
 
 # from utils.mesh_utils import Renderer #, calc_cent
-from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig, plot_image_array_points
+from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig, plot_image_array_points, vis_mesh_key_weight
 from utils.ckpt_utils import *
 from utils.exp_utils import plateau_hat_points
 
@@ -3610,48 +3610,57 @@ class Trainer():
                     np.save(save_vert_name, pred_vertices[b_idx].detach().cpu().numpy())
 
             # ------------------------------------------------------------------------------------------------
-            if self.opts.no_vis_interv == False:
+            # Render: GT | strain heatmap on LBS | displacement heatmap on pred
+            is_full = self.opts.no_vis_interv
+            if not is_full:
                 interv_val = round(len_data / 5)
-                if index % interv_val == 0:
-                    vertices = batch.vertices.cpu()
-                    faces_cpu = batch.faces[0].cpu() if batch.faces.dim() == 3 else batch.faces.cpu()
-
-                    v_list = [
-                        vertices[0].cpu().detach(),
-                        pred_vertices[0].cpu().detach(),
-                    ]
-                    len_v = len(v_list)
-                    f_list = [faces_cpu] * len_v
-                    save_logdir = f"{self.opts.log_dir}/img"
-                    save_img_name = f"{index:04d}"
-
-                    plot_image_array(
-                        v_list, f_list,
-                        rot_list=[[0,0,0]]*len_v,
-                        size=1, bg_black=False, mode='shade',
-                        logdir=save_logdir,
-                        name=save_img_name, save=True
-                    )
+                should_render = (index % interv_val == 0)
             else:
-                vertices = batch.vertices.cpu()
-                faces_cpu = batch.faces[0].cpu() if batch.faces.dim() == 3 else batch.faces.cpu()
+                should_render = True
 
-                v_list = [
-                    vertices[0].cpu().detach(),
-                    pred_vertices[0].cpu().detach(),
+            if should_render:
+                from PIL import Image
+                faces_cpu = batch.faces[0].cpu().numpy() if batch.faces.dim() == 3 else batch.faces.cpu().numpy()
+                save_logdir = f"{self.opts.log_dir}/{'img-full' if is_full else 'img'}"
+                save_path = os.path.join(save_logdir, f"{index:04d}.png")
+
+                gt_np = batch.vertices[0].cpu().numpy()
+                lbs_np = pred_lbs[0].cpu().numpy()
+                pred_np = pred_vertices[0].cpu().numpy()
+                disp_mag = np.linalg.norm(displacement[0].cpu().numpy(), axis=-1)  # [V]
+
+                panel_specs = [
+                    (gt_np, np.zeros((gt_np.shape[0], 1)), 'gray', 'GT'),
                 ]
-                len_v = len(v_list)
-                f_list = [faces_cpu] * len_v
-                save_logdir = f"{self.opts.log_dir}/img-full"
-                save_img_name = f"{index:04d}"
+                if strain is not None:
+                    strain_np = strain[0].cpu().numpy().squeeze()
+                    panel_specs.append((lbs_np, strain_np[:, None], 'hot', 'strain_on_LBS'))
+                panel_specs.append((pred_np, disp_mag[:, None], 'coolwarm', 'disp_on_Pred'))
 
-                plot_image_array(
-                    v_list, f_list,
-                    rot_list=[[0,0,0]]*len_v,
-                    size=1, bg_black=False, mode='shade',
-                    logdir=save_logdir,
-                    name=save_img_name, save=True
-                )
+                panels = []
+                tmp_dir = os.path.join(save_logdir, '_tmp')
+                os.makedirs(tmp_dir, exist_ok=True)
+                for verts, weights, cmap, title in panel_specs:
+                    tmp_path = os.path.join(tmp_dir, f'{index:04d}_{title}.png')
+                    vmax = max(float(weights.max()), 1e-6)
+                    vis_mesh_key_weight(
+                        verts, faces_cpu, weights, cage_idx=0,
+                        cmap=cmap, vmin=0, vmax=vmax,
+                        view_yrots=(0,),
+                        save_path=tmp_path, close=True, title=title,
+                    )
+                    panels.append(Image.open(tmp_path))
+                    os.remove(tmp_path)
+
+                # stitch horizontally
+                total_w = sum(p.width for p in panels)
+                max_h = max(p.height for p in panels)
+                stitched = Image.new('RGB', (total_w, max_h), (255, 255, 255))
+                x_off = 0
+                for p in panels:
+                    stitched.paste(p, (x_off, 0))
+                    x_off += p.width
+                stitched.save(save_path)
         ##########################################################################################################
 
         log_text = f"[Eval] "
@@ -3672,6 +3681,174 @@ class Trainer():
             )
             print("animation done!")
 
+
+
+    def evaluateStrainDispCross(self, tgt_vert_path, tgt_norm_path, tgt_obj_path):
+        """
+        Cross-retarget for v9: LBS + Strain Displacement.
+        source = test dataset sequence (expressions)
+        target = external neutral mesh
+        """
+        assert opts.version == 9, "evaluateStrainDispCross is for version 9 only"
+        BS = self.opts.batch_size
+        device = self.device
+
+        if self.opts.data_selection == -1:
+            raise NotImplementedError('only works for individual data')
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
+        selection = data_name_list[self.opts.data_selection]
+
+        self.dataset = EvalDataset(data_name=selection, toggle=False)
+        self.dataloader = torch.utils.data.DataLoader(
+            self.dataset,
+            batch_size=self.opts.batch_size,
+            collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
+        )
+
+        ###### Logging
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        trg_name = os.path.splitext(os.path.basename(tgt_vert_path))[0]
+        ckpt_path = self.opts.ckpt.split('/')[-1]
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
+
+        epoch_tag = f'e{self.opts.start_epoch:03d}' if self.opts.start_epoch > 0 else 'eBest'
+        strain_tag = '_strain' if self.opts.use_strain else ''
+        if self.opts.use_strain and self.opts.strain_full_grad:
+            strain_tag += '_fullgrad'
+        dir_name = f'straindisp_cross_{trg_name}_{epoch_tag}{strain_tag}'
+        self.opts.log_dir = self.opts.log_dir + f'_{dir_name}'
+
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        if self.opts.no_vis_interv:
+            os.makedirs(f"{self.opts.log_dir}/img-full", exist_ok=True)
+        else:
+            os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+        self.logger = open(os.path.join(self.opts.log_dir, "log.txt"), 'w')
+        print(f'Saving log at: {self.opts.log_dir}')
+
+        ###### Load target mesh
+        self.model.eval()
+        self.model_disp.eval()
+        print("Running Cross-Retarget Evaluation (StrainDisp)")
+
+        tgt_neu_vert = torch.from_numpy(np.load(tgt_vert_path)).float().to(device).unsqueeze(0)
+        tgt_neu_norm = torch.from_numpy(np.load(tgt_norm_path)).float().to(device).unsqueeze(0)
+
+        tgt_mesh = trimesh.load(tgt_obj_path, process=False)
+        if isinstance(tgt_mesh, trimesh.Scene):
+            tgt_mesh = trimesh.util.concatenate(tuple(tgt_mesh.geometry.values()))
+        tgt_faces = torch.from_numpy(tgt_mesh.faces.astype(np.int64)).to(device)
+        tgt_faces_np = tgt_mesh.faces
+
+        len_data = len(self.dataloader)
+        pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
+
+        for index, batch in pbar:
+            with torch.no_grad():
+                B_cur = batch.template.shape[0]
+
+                ## 1. LBS retarget: source expression -> target mesh
+                pred_lbs, pred_source = self.model.retarget(
+                    batch.template, batch.template_normal,
+                    batch.vertices, batch.vertices_normal,
+                    tgt_neu_vert.expand(B_cur, -1, -1),
+                    tgt_neu_norm.expand(B_cur, -1, -1),
+                )
+
+                ## 2. Compute strain on target mesh
+                strain = None
+                if self.opts.use_strain:
+                    tgt_template = tgt_neu_vert.expand(B_cur, -1, -1)
+                    if self.opts.strain_dim == 2:
+                        sn, st = compute_vertex_strain(pred_lbs, tgt_template, tgt_faces, return_trace=True)
+                        strain = torch.cat([sn, st], dim=-1)
+                    else:
+                        strain = compute_vertex_strain(pred_lbs, tgt_template, tgt_faces, return_trace=False)
+
+                ## 3. LBS normals + DispNet
+                lbs_norm = calc_norm_torch(pred_lbs, tgt_faces, at='verts')
+                displacement, _ = self.model_disp(
+                    pred_lbs, lbs_norm,
+                    tgt_neu_vert.expand(B_cur, -1, -1),
+                    tgt_neu_norm.expand(B_cur, -1, -1),
+                    strain=strain
+                )
+
+                ## 4. Final composition
+                pred_vertices = pred_lbs + displacement
+
+            # Save vertices
+            if self.opts.save_vert:
+                save_vert_logdir = f"{self.opts.log_dir}/verts"
+                os.makedirs(save_vert_logdir, exist_ok=True)
+                for b_idx in range(B_cur):
+                    np.save(
+                        f"{save_vert_logdir}/{index*B_cur + b_idx:06d}.npy",
+                        pred_vertices[b_idx].detach().cpu().numpy()
+                    )
+
+            # Render
+            is_full = self.opts.no_vis_interv
+            if not is_full:
+                interv_val = round(len_data / 5)
+                should_render = (index % interv_val == 0)
+            else:
+                should_render = True
+
+            if should_render:
+                from PIL import Image
+                save_logdir = f"{self.opts.log_dir}/{'img-full' if is_full else 'img'}"
+                save_path = os.path.join(save_logdir, f"{index:04d}.png")
+
+                lbs_np = pred_lbs[0].cpu().numpy()
+                pred_np = pred_vertices[0].cpu().numpy()
+                disp_mag = np.linalg.norm(displacement[0].cpu().numpy(), axis=-1)
+
+                panel_specs = [
+                    (lbs_np, np.zeros((lbs_np.shape[0], 1)), 'gray', 'LBS_retarget'),
+                ]
+                if strain is not None:
+                    strain_np = strain[0].cpu().numpy().squeeze()
+                    panel_specs.append((lbs_np, strain_np[:, None], 'hot', 'strain_on_LBS'))
+                panel_specs.append((pred_np, disp_mag[:, None], 'coolwarm', 'disp_on_Pred'))
+
+                panels = []
+                tmp_dir = os.path.join(save_logdir, '_tmp')
+                os.makedirs(tmp_dir, exist_ok=True)
+                for verts, weights, cmap, title in panel_specs:
+                    tmp_path = os.path.join(tmp_dir, f'{index:04d}_{title}.png')
+                    vmax = max(float(weights.max()), 1e-6)
+                    vis_mesh_key_weight(
+                        verts, tgt_faces_np, weights, cage_idx=0,
+                        cmap=cmap, vmin=0, vmax=vmax,
+                        view_yrots=(0,),
+                        save_path=tmp_path, close=True, title=title,
+                    )
+                    panels.append(Image.open(tmp_path))
+                    os.remove(tmp_path)
+
+                total_w = sum(p.width for p in panels)
+                max_h = max(p.height for p in panels)
+                stitched = Image.new('RGB', (total_w, max_h), (255, 255, 255))
+                x_off = 0
+                for p in panels:
+                    stitched.paste(p, (x_off, 0))
+                    x_off += p.width
+                stitched.save(save_path)
+
+        print('done!')
+        anim_name = f"animation_straindisp_cross_{trg_name}_e{self.opts.start_epoch}"
+        if self.opts.no_vis_interv:
+            images_to_video_cv(
+                f"{self.opts.log_dir}/img-full",
+                f"{self.opts.log_dir}/{anim_name}.mp4",
+                fps=30
+            )
+            print("animation done!")
 
     def evaluateHybridSeparateCross(self, tgt_vert_path, tgt_norm_path, tgt_obj_path):
         """
@@ -3878,68 +4055,60 @@ class Trainer():
                     np.save(save_vert_name, pred_vertices[b_idx].detach().cpu().numpy())
             
             # ------------------------------------------------------------------------------------------------
-            if self.opts.no_vis_interv == False:
+            # Render: GT | strain heatmap on LBS | displacement heatmap on pred
+            is_full = self.opts.no_vis_interv
+            if not is_full:
                 interv_val = round(len_data / 5)
-                if index % interv_val == 0:
-                    # for visualization
-                    vertices = batch.vertices.cpu()
-                    # faces = batch.faces.cpu()
-                    faces_s = batch.faces[0].cpu()
-                    faces_t = tgt_faces
-                                    
-                    frame = HB
-                    v_list = [
-                        vertices[0].cpu().detach(),
-                        # vertices[1].cpu().detach(),
-                        # vertices[HB].cpu().detach(),
-                        # vertices[BS-1].cpu().detach(),
-                        pred_vertices[0].cpu().detach(),
-                        # pred_vertices[1].cpu().detach(),
-                        # pred_vertices[HB].cpu().detach(),
-                        # pred_vertices[BS-1].cpu().detach(),
-                    ]
-                    len_v = len(v_list)
-                    f_list = [faces_s, faces_t] 
-                    save_logdir = f"{self.opts.log_dir}/img"
-                    save_img_name = f"{index:04d}"
-                    
-                    plot_image_array(
-                        v_list, f_list, 
-                        rot_list=[[0,0,0]]*len_v,
-                        size=1, bg_black=False, mode='shade', 
-                        logdir=save_logdir, 
-                        name=save_img_name, save=True
-                    )
+                should_render = (index % interv_val == 0)
             else:
-                # for visualization
-                vertices = batch.vertices.cpu()
-                # faces = batch.faces.cpu()
-                faces_s = batch.faces[0].cpu()
-                faces_t = tgt_faces
-                                
-                frame = HB
-                v_list = [
-                    vertices[0].cpu().detach(),
-                    # vertices[1].cpu().detach(),
-                    # vertices[HB].cpu().detach(),
-                    # vertices[BS-1].cpu().detach(),
-                    pred_vertices[0].cpu().detach(),
-                    # pred_vertices[1].cpu().detach(),
-                    # pred_vertices[HB].cpu().detach(),
-                    # pred_vertices[BS-1].cpu().detach(),
+                should_render = True
+
+            if should_render:
+                from PIL import Image
+                faces_cpu = batch.faces[0].cpu().numpy() if batch.faces.dim() == 3 else batch.faces.cpu().numpy()
+                save_logdir = f"{self.opts.log_dir}/{'img-full' if is_full else 'img'}"
+                save_path = os.path.join(save_logdir, f"{index:04d}.png")
+
+                gt_np = batch.vertices[0].cpu().numpy()
+                lbs_np = pred_lbs[0].cpu().numpy()
+                pred_np = pred_vertices[0].cpu().numpy()
+                disp_mag = np.linalg.norm(displacement[0].cpu().numpy(), axis=-1)  # [V]
+
+                panels = []
+                tmp_dir = os.path.join(save_logdir, '_tmp')
+                os.makedirs(tmp_dir, exist_ok=True)
+
+                # Panel 1: GT (always)
+                panel_specs = [
+                    (gt_np, np.zeros((gt_np.shape[0], 1)), 'gray', 'GT'),
                 ]
-                len_v = len(v_list)
-                f_list = [faces_s, faces_t] 
-                save_logdir = f"{self.opts.log_dir}/img-full"
-                save_img_name = f"{index:04d}"
-                
-                plot_image_array(
-                    v_list, f_list, 
-                    rot_list=[[0,0,0]]*len_v,
-                    size=1, bg_black=False, mode='shade', 
-                    logdir=save_logdir, 
-                    name=save_img_name, save=True
-                )
+                # Panel 2: strain on LBS (only if use_strain)
+                if strain is not None:
+                    strain_np = strain[0].cpu().numpy().squeeze()
+                    panel_specs.append((lbs_np, strain_np[:, None], 'hot', 'strain_on_LBS'))
+                # Panel 3: displacement on pred (always)
+                panel_specs.append((pred_np, disp_mag[:, None], 'coolwarm', 'disp_on_Pred'))
+
+                for verts, weights, cmap, title in panel_specs:
+                    tmp_path = os.path.join(tmp_dir, f'{index:04d}_{title}.png')
+                    vmax = max(float(weights.max()), 1e-6)
+                    vis_mesh_key_weight(
+                        verts, faces_cpu, weights, cage_idx=0,
+                        cmap=cmap, vmin=0, vmax=vmax,
+                        view_yrots=(0,),
+                        save_path=tmp_path, close=True, title=title,
+                    )
+                    panels.append(Image.open(tmp_path))
+                    os.remove(tmp_path)
+
+                total_w = sum(p.width for p in panels)
+                max_h = max(p.height for p in panels)
+                stitched = Image.new('RGB', (total_w, max_h), (255, 255, 255))
+                x_off = 0
+                for p in panels:
+                    stitched.paste(p, (x_off, 0))
+                    x_off += p.width
+                stitched.save(save_path)
         ##########################################################################################################
         
         # log_text = f"[Eval] "
@@ -4089,6 +4258,8 @@ if __name__ == "__main__":
                 if opts.eval_use_lbs:
                     if opts.version == 6:
                         trainer.evaluateLBS3Cross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path)
+                elif opts.eval_use_strain_disp:
+                    trainer.evaluateStrainDispCross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path)
                 elif opts.eval_use_hybrid_separate:
                     trainer.evaluateHybridSeparateCross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path)
                 else: # CBD
