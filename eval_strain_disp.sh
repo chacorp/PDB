@@ -39,26 +39,26 @@ COMMON="python eval_CBD.py \
 ## Experiment 2: With strain (stop-grad)
 ########################################
 ## >>> Update ckpt path after training <<<
-EXP2_CKPT="./ckpts_CBD/2026-03-05-07-09-56-NGBC++v9"
+# EXP2_CKPT="./ckpts_CBD/2026-03-05-07-09-56-NGBC++v9"
 
-eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 200 &
-eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 300 &
-eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 400 &
-eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 500 &
+# eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 200 &
+# eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 300 &
+# eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 400 &
+# eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT" --start_epoch 500 &
 
-# best
-eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT"
+# # best
+# eval $COMMON --use_strain --strain_dim 1 --ckpt "$EXP2_CKPT"
 
 ########################################
 ## Experiment 2b: With strain (full-grad)
 ########################################
 ## >>> Update ckpt path after training <<<
-# EXP2B_CKPT="./ckpts_CBD/<EXP2B_FOLDER>"
+EXP2B_CKPT="./ckpts_CBD/2026-03-05-10-05-18-NGBC++v9"
 
-# eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 50
-# eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 100
-# eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 200
-# eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 500
+eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 200 &
+eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 300 &
+eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 400 &
+eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT" --start_epoch 500 &
 
 # best
-# eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT"
+eval $COMMON --use_strain --strain_dim 1 --strain_full_grad --ckpt "$EXP2B_CKPT"
