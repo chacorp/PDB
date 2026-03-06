@@ -1,3 +1,22 @@
+# 0) tensorboard 사용법 
+# 1. 서버에서:
+
+# tensorboard --logdir=ckpts_CBD/2026-03-04-19-26-56-NGBC++v9 --port=6006 --bind_all
+# 2. 로컬 PC 터미널에서 (새 터미널 창):
+
+# ssh -L 6006:localhost:6006 <your_username>@<server_ip>
+# 이건 "서버의 6006 포트를 내 PC의 6006 포트로 연결해줘"라는 뜻입니다. user@server는 평소 SSH 접속할 때 쓰는 것과 동일합니다.
+
+# 3. 로컬 PC 브라우저에서:
+# http://localhost:6006 접속 → TensorBoard UI 표시
+
+# W&B에서 wandb.ai 웹사이트 접속하는 것처럼, TensorBoard는 로컬에서 웹서버를 직접 띄우는 방식입니다. SSH 포트포워딩은 원격 서버의 웹서버를 내 PC에서 볼 수 있게 해주는 터널입니다.
+
+# 참고로 이미 SSH 접속할 때 포트포워딩을 같이 걸 수도 있습니다:
+
+# ssh -L 6006:localhost:6006 <평소 쓰는 ssh 접속 명령>
+
+
 # pip uninstall opencv-python opencv-contrib-python opencv-python-headless numpy -y && pip install cupy h5py tensorboard numpy==2.3.2 opencv-python==4.10.0.84 
 
 ## if docker by docker.io/jeolpyeoni0/gltorch:cu124-vessl
