@@ -3483,9 +3483,20 @@ class Trainer():
         ckpt_path = self.opts.ckpt.split('/')[-1]
         self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval', selection)
 
-        dir_name = f'straindisp_e{self.opts.start_epoch:02d}'
+        if self.opts.start_epoch > 0:
+            epoch_tag = f'e{self.opts.start_epoch:03d}'
+        else:
+            epoch_tag = 'eBest'
+        strain_tag = ''
+        if self.opts.use_strain:
+            strain_tag = '_strain'
+            if self.opts.strain_full_grad:
+                strain_tag += '_fullgrad'
+        dir_name = f'straindisp_{epoch_tag}{strain_tag}'
         if self.opts.use_t_mask:
             self.opts.log_dir = self.opts.log_dir + f'-masked_{dir_name}'
+        else:
+            self.opts.log_dir = self.opts.log_dir + f'_{dir_name}'
 
         os.makedirs(self.opts.log_dir, exist_ok=True)
 
