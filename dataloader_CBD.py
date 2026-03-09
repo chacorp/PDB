@@ -459,6 +459,7 @@ class CBDDataset(data.Dataset):
         self.data_basedir = data_basedir
         self.n_components = n_components
         self.scale = scale
+        self.smooth_n_iter = getattr(opts, 'smooth_n_iter', 0)
         
         if self.opts.use_data0:
             self.n_components=400
@@ -663,11 +664,15 @@ class CBDDataset(data.Dataset):
         
         if self.use_voca:
             self.voca_pca_holder_list=[]
+            self.voca_smooth_pca_holder_list=[]
             self.voca_id_list=[]
             for id_name in voca_data_split[self.mode]:
                 self.voca_id_list.append(id_name)
                 npz_file = f"{data_basedir}/VOCA-COMA/VOCASET/{self.mode}/{id_name}_pca.npz"
                 self.voca_pca_holder_list.append(PCA_holder(npz_file))
+                if self.smooth_n_iter > 0:
+                    smooth_npz = f"{data_basedir}/VOCA-COMA/VOCASET/{self.mode}/{id_name}_smooth{self.smooth_n_iter}_pca.npz"
+                    self.voca_smooth_pca_holder_list.append(PCA_holder(smooth_npz))
             assert len(self.voca_pca_holder_list) == len(self.voca_id_list), "mismatch in voca"
             
             self.voca_len = len(self.voca_pca_holder_list)
@@ -706,15 +711,19 @@ class CBDDataset(data.Dataset):
         
         if self.use_biwi:
             self.biwi_pca_holder_list=[]
+            self.biwi_smooth_pca_holder_list=[]
             self.biwi_id_list=[]
             for id_name in biwi_data_split[self.mode]:
                 self.biwi_id_list.append(id_name)
-                
+
                 npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/vertices_npy/{id_name}_pca.npz"
                 if not os.path.exists(npz_file):
                     npz_file = f"{data_basedir}/BIWI_align_deci/{self.mode}/{id_name}_pca.npz"
-                    
+
                 self.biwi_pca_holder_list.append(PCA_holder(npz_file))
+                if self.smooth_n_iter > 0:
+                    smooth_npz = npz_file.replace('_pca.npz', f'_smooth{self.smooth_n_iter}_pca.npz')
+                    self.biwi_smooth_pca_holder_list.append(PCA_holder(smooth_npz))
             assert len(self.biwi_pca_holder_list) == len(self.biwi_id_list), "mismatch in biwi"
             
             self.biwi_len = len(self.biwi_pca_holder_list)
@@ -753,15 +762,19 @@ class CBDDataset(data.Dataset):
         
         if self.use_mf_SEN:
             self.mf_SEN_pca_holder_list=[]
+            self.mf_SEN_smooth_pca_holder_list=[]
             self.mf_SEN_id_list=[]
             for id_name in mf_data_split[self.mode]:
                 self.mf_SEN_id_list.append(id_name)
-                
+
                 npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/vertices_npy/{id_name}_pca.npz"
                 if not os.path.exists(npz_file):
                     npz_file = f"{data_basedir}/multiface_align/SEN/{self.mode}/{id_name}_pca.npz"
-                    
+
                 self.mf_SEN_pca_holder_list.append(PCA_holder(npz_file))
+                if self.smooth_n_iter > 0:
+                    smooth_npz = npz_file.replace('_pca.npz', f'_smooth{self.smooth_n_iter}_pca.npz')
+                    self.mf_SEN_smooth_pca_holder_list.append(PCA_holder(smooth_npz))
             assert len(self.mf_SEN_pca_holder_list) == len(self.mf_SEN_id_list), "mismatch in mf SEN"
                 
             self.mf_SEN_len = len(self.mf_SEN_pca_holder_list)
@@ -800,11 +813,15 @@ class CBDDataset(data.Dataset):
         
         if self.use_coma:
             self.coma_pca_holder_list=[]
+            self.coma_smooth_pca_holder_list=[]
             self.coma_id_list=[]
             for id_name in voca_data_split[self.mode]:
                 self.coma_id_list.append(id_name)
                 npz_file = f"{data_basedir}/VOCA-COMA/COMA/{self.mode}/{id_name}_pca.npz"
                 self.coma_pca_holder_list.append(PCA_holder(npz_file))
+                if self.smooth_n_iter > 0:
+                    smooth_npz = f"{data_basedir}/VOCA-COMA/COMA/{self.mode}/{id_name}_smooth{self.smooth_n_iter}_pca.npz"
+                    self.coma_smooth_pca_holder_list.append(PCA_holder(smooth_npz))
             assert len(self.coma_pca_holder_list) == len(self.coma_id_list), "mismatch in coma"
             
             self.coma_len = len(self.coma_pca_holder_list)
@@ -843,15 +860,19 @@ class CBDDataset(data.Dataset):
 
         if self.use_mf_ROM:
             self.mf_ROM_pca_holder_list=[]
+            self.mf_ROM_smooth_pca_holder_list=[]
             self.mf_ROM_id_list=[]
             for id_name in mf_data_split[self.mode]:
                 self.mf_ROM_id_list.append(id_name)
-                
+
                 npz_file = f"{data_basedir}/multiface_align/ROM/{self.mode}/vertices_npy/{id_name}_pca.npz"
                 if not os.path.exists(npz_file):
                     npz_file = f"{data_basedir}/multiface_align/ROM/{self.mode}/{id_name}_pca.npz"
-                    
+
                 self.mf_ROM_pca_holder_list.append(PCA_holder(npz_file))
+                if self.smooth_n_iter > 0:
+                    smooth_npz = npz_file.replace('_pca.npz', f'_smooth{self.smooth_n_iter}_pca.npz')
+                    self.mf_ROM_smooth_pca_holder_list.append(PCA_holder(smooth_npz))
             assert len(self.mf_ROM_pca_holder_list) == len(self.mf_ROM_id_list), "mismatch in mf ROM"
                 
             self.mf_ROM_len = len(self.mf_ROM_pca_holder_list)
@@ -993,8 +1014,9 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff, id_name)
-    
+        smooth_deformed = deformed  # ICT narrow: no smooth PCA, fallback
+        return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff, id_name, smooth_deformed)
+
     def get_ict(self, index, id_index):
         id_coeff = self.iden_vecs[id_index]
         id_name = f"{id_index:03d}"
@@ -1038,127 +1060,143 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
         
-        return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff, id_name)
-    
+        smooth_deformed = deformed  # ICT: no smooth PCA, fallback
+        return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff, id_name, smooth_deformed)
+
     def get_voca(self, index, id_index):
-        
+
         id_name = self.voca_id_list[id_index]
         pca_holder = self.voca_pca_holder_list[id_index]
         template = self.voca_mesh[id_name]
         faces = self.voca_mesh["face"]
-                
-        # if index < self.n_components:
-        if False:
-            deformed = pca_holder.sample_from_pca_one_axis(scale=self.scale, select=index, verbose=False)
-        else:
-            deformed = pca_holder.sample_from_pca(scale=self.scale)
-            
+
+        z = pca_holder.sample_z(scale=self.scale)
+        deformed = pca_holder.reconstruct(z)
+
+        smooth_deformed = deformed  # fallback: same as deformed
+        if self.smooth_n_iter > 0 and len(self.voca_smooth_pca_holder_list) > 0:
+            smooth_deformed = self.voca_smooth_pca_holder_list[id_index].reconstruct(z)
+
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
-        
+
         template = torch.tensor(template).float()
         deformed = torch.tensor(deformed).float()
+        smooth_deformed = torch.tensor(smooth_deformed).float()
         faces = torch.tensor(faces).long()
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
-        
-        return (template, deformed, faces, template_normal, deformed_normal, self.voca_seg, torch.zeros(128), id_name)
+
+        return (template, deformed, faces, template_normal, deformed_normal, self.voca_seg, torch.zeros(128), id_name, smooth_deformed)
 
     def get_coma(self, index, id_index):
-        
+
         id_name = self.coma_id_list[id_index]
         pca_holder = self.coma_pca_holder_list[id_index]
         template = self.coma_mesh[id_name]
         faces = self.coma_mesh["face"]
-                
-        # if index < self.n_components:
-        if False:
-            deformed = pca_holder.sample_from_pca_one_axis(scale=self.scale, select=index, verbose=False)
-        else:
-            deformed = pca_holder.sample_from_pca(scale=self.scale)
-            
+
+        z = pca_holder.sample_z(scale=self.scale)
+        deformed = pca_holder.reconstruct(z)
+
+        smooth_deformed = deformed  # fallback
+        if self.smooth_n_iter > 0 and len(self.coma_smooth_pca_holder_list) > 0:
+            smooth_deformed = self.coma_smooth_pca_holder_list[id_index].reconstruct(z)
+
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
-        
+
         template = torch.tensor(template).float()
         deformed = torch.tensor(deformed).float()
+        smooth_deformed = torch.tensor(smooth_deformed).float()
         faces = torch.tensor(faces).long()
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
-        
-        return (template, deformed, faces, template_normal, deformed_normal, self.coma_seg, torch.zeros(128), id_name)
+
+        return (template, deformed, faces, template_normal, deformed_normal, self.coma_seg, torch.zeros(128), id_name, smooth_deformed)
         
     def get_biwi(self, index, id_index):
-        
+
         id_name = self.biwi_id_list[id_index]
         pca_holder = self.biwi_pca_holder_list[id_index]
-        
-        # if index < self.n_components:
-        if False:
-            deformed = pca_holder.sample_from_pca_one_axis(scale=self.scale, select=index, verbose=False)
-        else:
-            deformed = pca_holder.sample_from_pca(scale=self.scale)
+
+        z = pca_holder.sample_z(scale=self.scale)
+        deformed = pca_holder.reconstruct(z)
+
+        smooth_deformed = deformed  # fallback
+        if self.smooth_n_iter > 0 and len(self.biwi_smooth_pca_holder_list) > 0:
+            smooth_deformed = self.biwi_smooth_pca_holder_list[id_index].reconstruct(z)
+
         template = self.biwi_mesh[id_name]
         faces = self.biwi_mesh["face"]
-        
+
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
-        
+
         template = torch.tensor(template).float()
         deformed = torch.tensor(deformed).float()
+        smooth_deformed = torch.tensor(smooth_deformed).float()
         faces = torch.tensor(faces).long()
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
-        
-        return (template, deformed, faces, template_normal, deformed_normal, self.biwi_seg, torch.zeros(128), id_name)
+
+        return (template, deformed, faces, template_normal, deformed_normal, self.biwi_seg, torch.zeros(128), id_name, smooth_deformed)
 
     
     def get_multiface_SEN(self, index, id_index):
-        
+
         id_name = self.mf_SEN_id_list[id_index]
         pca_holder = self.mf_SEN_pca_holder_list[id_index]
-        
-        if False:
-            deformed = pca_holder.sample_from_pca_one_axis(scale=self.scale, select=index, verbose=False)
-        else:
-            deformed = pca_holder.sample_from_pca(scale=self.scale)
+
+        z = pca_holder.sample_z(scale=self.scale)
+        deformed = pca_holder.reconstruct(z)
+
+        smooth_deformed = deformed  # fallback
+        if self.smooth_n_iter > 0 and len(self.mf_SEN_smooth_pca_holder_list) > 0:
+            smooth_deformed = self.mf_SEN_smooth_pca_holder_list[id_index].reconstruct(z)
+
         template = self.mf_SEN_mesh[id_name]
         faces = self.mf_SEN_mesh["face"]
-        
+
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
-        
+
         template = torch.tensor(template).float()
         deformed = torch.tensor(deformed).float()
+        smooth_deformed = torch.tensor(smooth_deformed).float()
         faces = torch.tensor(faces).long()
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
-        
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg, torch.zeros(128), id_name)
+
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg, torch.zeros(128), id_name, smooth_deformed)
     
     
     def get_multiface_ROM(self, index, id_index):
-        
+
         id_name = self.mf_ROM_id_list[id_index]
         pca_holder = self.mf_ROM_pca_holder_list[id_index]
-        
-        if False:
-            deformed = pca_holder.sample_from_pca_one_axis(scale=self.scale, select=index, verbose=False)
-        else:
-            deformed = pca_holder.sample_from_pca(scale=self.scale)
+
+        z = pca_holder.sample_z(scale=self.scale)
+        deformed = pca_holder.reconstruct(z)
+
+        smooth_deformed = deformed  # fallback
+        if self.smooth_n_iter > 0 and len(self.mf_ROM_smooth_pca_holder_list) > 0:
+            smooth_deformed = self.mf_ROM_smooth_pca_holder_list[id_index].reconstruct(z)
+
         template = self.mf_ROM_mesh[id_name]
         faces = self.mf_ROM_mesh["face"]
-        
+
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
-        
+
         template = torch.tensor(template).float()
         deformed = torch.tensor(deformed).float()
+        smooth_deformed = torch.tensor(smooth_deformed).float()
         faces = torch.tensor(faces).long()
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
-        
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128), id_name)
+
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128), id_name, smooth_deformed)
 
         
     def random_rotation_matrix(self, randgen=None):
@@ -1261,10 +1299,20 @@ class CBDDataset(data.Dataset):
         if False:
             return (*datas, mesh_data)
         else:
-            (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name) = datas
-            template, deformed = self.random_trans_scale(template, deformed)
-            
-            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data)
+            (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, smooth_deformed) = datas
+
+            ## Random Augmentation (apply same trans/scale to all)
+            trans, scale = 0.0, 1.0
+            if self.opts.data_rand_trans:
+                t_range = 0.1
+                trans = (torch.rand((1, 3))*t_range - t_range*0.5)
+            if self.opts.data_rand_scale:
+                scale = torch.rand((1)).repeat(3) * 0.4 + 0.8
+            template = template * scale + trans
+            deformed = deformed * scale + trans
+            smooth_deformed = smooth_deformed * scale + trans
+
+            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed)
     
     def get_slice_idx(self, F_idx, WS):
         """
@@ -1483,6 +1531,11 @@ class CBDDataBatch:
             
             self.exp_coeff = torch.stack(transposed_data[6], 0) # [B, V, 24]
             self.id_name = transposed_data[7][0] # string
+            # mesh_data is at index 8, smooth_vertices at index 9
+            if len(transposed_data) > 9:
+                self.smooth_vertices = torch.stack(transposed_data[9], 0) # [B, V, 3]
+            else:
+                self.smooth_vertices = self.vertices  # fallback
     
     @property
     def get_dfn_info(self): 

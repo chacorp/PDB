@@ -253,6 +253,94 @@ def compute_vertex_strain(deformed_verts, template_verts, faces, return_trace=Fa
 
     return strain_norm
 
+
+def laplacian_smooth_np(vertices, faces, n_iter=10, lambda_factor=0.5):
+    """
+    Naive uniform Laplacian smoothing (shrinks mesh). n_iter rounds of shrink only.
+    Uses uniform weights (average of neighbors) instead of cotangent weights.
+    """
+    from scipy.sparse import csr_matrix, diags
+    V = vertices.shape[0]
+    F = faces
+
+    # Build uniform adjacency Laplacian: L = D_inv @ A - I
+    # where A is adjacency, D is degree matrix
+    rows = np.concatenate([F[:, 0], F[:, 0], F[:, 1], F[:, 1], F[:, 2], F[:, 2]])
+    cols = np.concatenate([F[:, 1], F[:, 2], F[:, 0], F[:, 2], F[:, 0], F[:, 1]])
+    data = np.ones(len(rows), dtype=np.float64)
+    A = csr_matrix((data, (rows, cols)), shape=(V, V))
+    A = (A > 0).astype(np.float64)  # binary adjacency (remove duplicates)
+
+    degree = np.array(A.sum(axis=1)).flatten()
+    D_inv = diags(1.0 / (degree + 1e-12))
+
+    v = vertices.copy().astype(np.float64)
+    for _ in range(n_iter):
+        avg = (D_inv @ A @ v)  # neighbor average
+        v = v + lambda_factor * (avg - v)  # move toward average
+    return v.astype(np.float32)
+
+
+def taubin_smooth_np(vertices, faces, n_iter=10, lambda_factor=0.5, mu_factor=-0.53):
+    """
+    Taubin smoothing (shrinkage-free) on mesh vertices.
+    Linear iteration: exactly n_iter rounds of (shrink + inflate).
+
+    Args:
+        vertices: (V, 3) numpy array
+        faces: (F, 3) int numpy array
+        n_iter: number of smoothing iterations
+        lambda_factor: smoothing step (positive)
+        mu_factor: inflation step (negative, |mu| > lambda for shrinkage-free)
+    Returns:
+        smoothed: (V, 3) numpy float32 array
+    """
+    import igl
+    from scipy.sparse import diags
+    L = igl.cotmatrix(vertices.astype(np.float64), faces)
+    D_inv = diags(1.0 / (L.diagonal() + 1e-12))
+    L_norm = D_inv @ L
+
+    v = vertices.copy().astype(np.float64)
+    for _ in range(n_iter):
+        v = v + lambda_factor * (L_norm @ v)
+        v = v + mu_factor * (L_norm @ v)
+    return v.astype(np.float32)
+
+
+def build_smooth_operator(template_verts, faces, n_iter=10,
+                          lambda_factor=0.5, mu_factor=-0.53):
+    """
+    Build Taubin smoothing operator S as a sparse matrix. 
+    (Taubin smoothing, introduced by Gabriel Taubin in 1995, is a widely used iterative mesh smoothing algorithm in computer graphics 
+    and 3D modeling that removes high-frequency noise while preserving the overall volume and shape of a mesh)
+    S is computed from template (neutral) mesh topology — fixed regardless of deformation.
+    Usage: smooth_verts = S @ verts (per-column, i.e. S @ verts_Vx3)
+
+    Args:
+        template_verts: (V, 3) numpy array — neutral mesh vertices
+        faces: (F, 3) int numpy array
+        n_iter: number of Taubin iterations
+    Returns:
+        S: (V, V) scipy sparse matrix
+    """
+    import igl
+    from scipy.sparse import diags, eye
+    L = igl.cotmatrix(template_verts.astype(np.float64), faces)
+    D_inv = diags(1.0 / (L.diagonal() + 1e-12))
+    L_norm = D_inv @ L
+    I = eye(L.shape[0])
+
+    S_shrink = I + lambda_factor * L_norm
+    S_inflate = I + mu_factor * L_norm
+    S_1iter = S_inflate @ S_shrink
+
+    S = I
+    for _ in range(n_iter):
+        S = S_1iter @ S
+    return S
+
+
 class Normalizer(object):
     def __init__(self, std_path, device, zero_mean=True):
         if zero_mean:

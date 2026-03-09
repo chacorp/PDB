@@ -162,6 +162,8 @@ def Options():
     parser.add_argument("--strain_dim", type=int, default=1, help='1: norm only, 2: norm+trace')
     parser.add_argument("--strain_full_grad", dest='strain_full_grad', action='store_true')
     parser.set_defaults(strain_full_grad=False)
+    parser.add_argument("--smooth_n_iter", type=int, default=0,
+                        help='Taubin smoothing iterations for smooth GT decomposition (0=disabled, 8/16/32)')
     ## ----------------------
     
     parser.add_argument("--no_t_mask",dest='no_t_mask', action='store_true')
@@ -4751,6 +4753,7 @@ class Trainer():
             text+= f"[         use_strain        ]: {opts.use_strain}\n"
             text+= f"[         strain_dim        ]: {opts.strain_dim}\n"
             text+= f"[      strain_full_grad     ]: {opts.strain_full_grad}\n"
+            text+= f"[       smooth_n_iter       ]: {opts.smooth_n_iter}\n"
             text+= f"========== Regularizers ==========\n"
             text+= f"[         use_lbs_ent       ]: {opts.use_lbs_ent}\n"
             text+= f"[      use_lbs_laplacian    ]: {opts.use_lbs_laplacian}\n"
@@ -4920,6 +4923,9 @@ class Trainer():
             self.loss_lambda['lbs-R'] = 1e-3
         if self.opts.use_lbs_bal:
             self.loss_lambda['lbs-bal'] = 1e-4
+        if self.opts.smooth_n_iter > 0:
+            self.loss_lambda['recon-lbs'] = self.opts.lambda_vert
+            self.loss_lambda['recon-wrinkle'] = self.opts.lambda_vert
 
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
@@ -4941,6 +4947,9 @@ class Trainer():
             if self.opts.use_normal_loss:
                 running_losses['norm-def']=0.0
                 running_losses['norm-neu']=0.0
+            if self.opts.smooth_n_iter > 0:
+                running_losses['recon-lbs']=0.0
+                running_losses['recon-wrinkle']=0.0
 
             self.model.train()
             self.model_disp.train()
@@ -5010,6 +5019,18 @@ class Trainer():
 
                 loss_dict = {}
                 HB = batch.vertices.shape[0] // 2
+
+                # v10: smooth GT decomposition losses
+                if self.opts.smooth_n_iter > 0:
+                    batch_smooth_v = batch.smooth_vertices[:, randperm_idx]
+                    wrinkle_target = batch_vertices_v - batch_smooth_v  # GT - smooth_GT
+                    if self.opts.no_t_mask:
+                        loss_dict['recon-lbs'] = F.mse_loss(batch_smooth_v, pred_lbs)
+                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
+                    else:
+                        loss_dict['recon-lbs'] = F.mse_loss(batch_smooth_v*t_mask, pred_lbs*t_mask)
+                        loss_dict['recon-lbs'] += F.mse_loss(batch_template_v*inv_t_mask, pred_lbs*inv_t_mask)
+                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target*t_mask, displacement*t_mask)
 
                 if self.opts.no_t_mask:
                     loss_dict['recon-def'] = F.mse_loss(batch_vertices_v, pred_vertices)
@@ -5198,6 +5219,9 @@ class Trainer():
                 running_losses_val['lbs-R']=0.0
             if self.opts.use_lbs_bal:
                 running_losses_val['lbs-bal']=0.0
+            if self.opts.smooth_n_iter > 0:
+                running_losses_val['recon-lbs']=0.0
+                running_losses_val['recon-wrinkle']=0.0
 
             counter = 0
             pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
@@ -5243,6 +5267,12 @@ class Trainer():
 
                     loss_dict = {}
                     HB = batch.vertices.shape[0] // 2
+
+                    # v10: smooth GT decomposition losses (validation)
+                    if self.opts.smooth_n_iter > 0:
+                        wrinkle_target = batch.vertices - batch.smooth_vertices
+                        loss_dict['recon-lbs'] = F.mse_loss(batch.smooth_vertices, pred_lbs)
+                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
 
                     loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices)
                     if self.model.use_full_vertex:

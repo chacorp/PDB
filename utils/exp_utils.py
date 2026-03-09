@@ -3157,10 +3157,17 @@ class PCA_holder():
             z = z.reshape(-1,3)
         return z
     
+    def sample_z(self, scale=1.0):
+        """Generate random PCA coefficients."""
+        return np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
+
+    def reconstruct(self, z):
+        """Reconstruct vertices from PCA coefficients z."""
+        return (z @ self.components_ + self.mean_).reshape(-1, 3)
+
     def sample_from_pca(self, scale=1.0):
-        z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
-        z = z @ self.components_ + self.mean_
-        return z.reshape(-1,3)
+        z = self.sample_z(scale)
+        return self.reconstruct(z)
 
     def sample_from_pca_delta(self, scale=1.0):
         z = np.random.randn(self.n_components_) * np.sqrt(self.explained_variance_) * scale
