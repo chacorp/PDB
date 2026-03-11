@@ -1526,12 +1526,12 @@ class CBDDataBatch:
             self.template_normal = torch.stack(transposed_data[3], 0) # [B, V, 3]
             self.vertices_normal = torch.stack(transposed_data[4], 0) # [B, V, 3]
             
-            self.mesh_data = transposed_data[-1][0] # 1
             self.segmentation = torch.stack(transposed_data[5], 0) # [B, V, 24]
-            
+
             self.exp_coeff = torch.stack(transposed_data[6], 0) # [B, V, 24]
             self.id_name = transposed_data[7][0] # string
-            # mesh_data is at index 8, smooth_vertices at index 9
+            self.mesh_data = transposed_data[8][0] # dataset index
+            # smooth_vertices at index 9
             if len(transposed_data) > 9:
                 self.smooth_vertices = torch.stack(transposed_data[9], 0) # [B, V, 3]
             else:

@@ -68,3 +68,5 @@ tmp
 *.obj
 
 sanity_check_strain_output/
+dataset_vis/
+smooth_analysis_output/

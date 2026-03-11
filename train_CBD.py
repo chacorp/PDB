@@ -550,7 +550,7 @@ class Trainer():
                         ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
                     else:
                         ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{epoch:03d}.pth"))[0]
-                elif opts.version == 8:
+                elif opts.version in (8, 9):
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_{epoch:03d}.pth"))[0]
             else:
                 if opts.version == 7:
@@ -558,7 +558,7 @@ class Trainer():
                         ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
                     else:
                         ckpt = glob.glob(os.path.join(ckpt_dir, f"*_best.pth"))[0]
-                elif opts.version == 8:
+                elif opts.version in (8, 9):
                     ckpt = glob.glob(os.path.join(ckpt_dir, f"*_{name}_best.pth"))[0]
             ckpt_dict = torch.load(ckpt)            
             model.load_state_dict(ckpt_dict)
