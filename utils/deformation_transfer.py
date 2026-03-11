@@ -7,9 +7,14 @@ from scipy.sparse.linalg import splu as sparse_lu
 import scipy.sparse as sparse
 import scipy
 from matplotlib import pyplot as plt
-from cupyx.scipy.sparse.linalg import SuperLU as cupy_SuperLU
-from cupyx.scipy import sparse as cupy_sparse
-import cupy
+try:
+    from cupyx.scipy.sparse.linalg import SuperLU as cupy_SuperLU
+    from cupyx.scipy import sparse as cupy_sparse
+    import cupy
+except ImportError:
+    cupy_SuperLU = None
+    cupy_sparse = None
+    cupy = None
 import torch
 from torch.utils.dlpack import to_dlpack
 from torch.utils.dlpack import from_dlpack

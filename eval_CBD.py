@@ -66,6 +66,9 @@ def Options():
         help="Choose a last layer activation for NGBC.key_weight_model()"
     )
     
+    parser.add_argument("--data_toggle",dest='data_toggle', action='store_true')
+    parser.set_defaults(data_toggle=False)
+    
     parser.add_argument("--no_pou",dest='no_pou', action='store_true')
     parser.set_defaults(no_pou=False)
     
@@ -585,7 +588,7 @@ class Trainer():
             
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
@@ -1881,7 +1884,7 @@ class Trainer():
             
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
@@ -2145,7 +2148,7 @@ class Trainer():
                 
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
@@ -2412,7 +2415,7 @@ class Trainer():
                 
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
@@ -2689,7 +2692,7 @@ class Trainer():
                 
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
@@ -2993,7 +2996,7 @@ class Trainer():
                 
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
@@ -3324,7 +3327,7 @@ class Trainer():
                 
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 HB = batch.vertices.shape[0] // 2
@@ -3564,7 +3567,6 @@ class Trainer():
                 lbs_norm = calc_norm_torch(pred_lbs, faces_for_norm, at='verts')
                 displacement, _ = self.model_disp(
                     pred_lbs, lbs_norm,
-                    batch.template, batch.template_normal,
                     strain=strain
                 )
 
@@ -3573,7 +3575,7 @@ class Trainer():
 
             # Metric -----------------------------------------------------------------------------------------
             with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
 
             if self.opts.no_eval_metric == False:
                 if self.opts.use_t_mask:
@@ -3775,8 +3777,6 @@ class Trainer():
                 lbs_norm = calc_norm_torch(pred_lbs, tgt_faces, at='verts')
                 displacement, _ = self.model_disp(
                     pred_lbs, lbs_norm,
-                    tgt_neu_vert.expand(B_cur, -1, -1),
-                    tgt_neu_norm.expand(B_cur, -1, -1),
                     strain=strain
                 )
 

@@ -54,6 +54,7 @@ from models.NGBC import (
     # NeuralGeneralizedBarycentricCoordinate55,
 )
 from utils.mesh_utils import compute_vertex_strain
+from utils.vis_loader import CheckpointVisLoader
 
 
 
@@ -80,7 +81,9 @@ def Options():
     parser.add_argument("--sc_step",      type=int,   default=10,     help='scheduler step')
     
     parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
+    parser.add_argument("--num_workers",  type=int,   default=0,      help='DataLoader num_workers (0=main process; >0 requires collate on cpu)')
     parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
+    parser.add_argument("--vis_frames",   type=str,   default=None,   help='path to vis_frames.yml for checkpoint visualization')
     parser.add_argument("--ckpt",         type=str,   default=None)    
     parser.add_argument("--continue_ckpt",dest='continue_ckpt', action='store_true')
     parser.set_defaults(continue_ckpt=False)
@@ -764,7 +767,7 @@ class Trainer():
                 
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------                
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                                 
                 
@@ -905,7 +908,7 @@ class Trainer():
                 ##################################################################################################
                 # ------------------------------------------------------------------------------------------------ 
                 with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                     mesh_data = np.array(['voca', 'biwi', 'mf','voca','mf','ict'])[mesh_data_num]
                     template_expanded = batch.template#.expand_as(pred_vertices)
                     
@@ -1148,7 +1151,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
@@ -1271,7 +1274,7 @@ class Trainer():
                 
                 # loss ------------------------------------------------------------------------------------------- 
                 with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                     mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
@@ -1582,7 +1585,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
@@ -1833,7 +1836,7 @@ class Trainer():
                 
                 # loss ------------------------------------------------------------------------------------------- 
                 with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                     mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
@@ -2314,7 +2317,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
@@ -2597,7 +2600,7 @@ class Trainer():
                 
                 # loss ------------------------------------------------------------------------------------------- 
                 with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                     mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
@@ -3011,7 +3014,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
@@ -3595,7 +3598,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
@@ -3871,7 +3874,7 @@ class Trainer():
                 
                 # loss ------------------------------------------------------------------------------------------- 
                 with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                     mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
@@ -4341,7 +4344,7 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
@@ -4619,7 +4622,7 @@ class Trainer():
                 
                 # loss ------------------------------------------------------------------------------------------- 
                 with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                     mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
                     loss_dict = {} # make it as a dictionary
@@ -4815,11 +4818,15 @@ class Trainer():
             balance=False,
             is_train=True
         )
+        # collate always builds on CPU so num_workers > 0 is safe (no CUDA in workers)
+        # batch is moved to device at the start of each training iteration
+        _num_workers = getattr(opts, 'num_workers', 0)
         self.train_dataloader = torch.utils.data.DataLoader(
             self.train_dataset,
             batch_sampler=train_sampler,
-            collate_fn=partial(CBD_collate_wrapper, device=opts.device),
-            num_workers=0,
+            collate_fn=partial(CBD_collate_wrapper, device='cpu'),
+            num_workers=_num_workers,
+            persistent_workers=(_num_workers > 0),
         )
 
         valid_sampler = CBDdataSampler(
@@ -4832,9 +4839,13 @@ class Trainer():
         self.valid_dataloader = torch.utils.data.DataLoader(
             self.valid_dataset,
             batch_sampler=valid_sampler,
-            collate_fn=partial(CBD_collate_wrapper, device=opts.device),
-            num_workers=0
+            collate_fn=partial(CBD_collate_wrapper, device='cpu'),
+            num_workers=0,  # valid: keep 0 (small overhead, no benefit)
         )
+        ##########################################################################################################
+
+        ###### Checkpoint Visualization Loader ###################################################################
+        self.vis_loader = CheckpointVisLoader(opts, device=opts.device)
         ##########################################################################################################
 
         ###### Logging ###########################################################################################
@@ -4960,18 +4971,14 @@ class Trainer():
 
             pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
             for index, batch in pbar:
+                batch = batch.to(self.device)
                 self.optimizer.zero_grad()
 
-                with torch.no_grad():
-                    ## v9: disable use_perm (strain needs face connectivity)
-                    N = batch.template.shape[1]
-                    randperm_idx = torch.arange(N)
-                    rearange_idx = torch.argsort(randperm_idx)
-
-                    batch_template_v = batch.template[:, randperm_idx]
-                    batch_template_n = batch.template_normal[:, randperm_idx]
-                    batch_vertices_v = batch.vertices[:, randperm_idx]
-                    batch_vertices_n = batch.vertices_normal[:, randperm_idx]
+                ## v9: no vertex permutation (strain requires consistent face connectivity)
+                batch_template_v = batch.template
+                batch_template_n = batch.template_normal
+                batch_vertices_v = batch.vertices
+                batch_vertices_n = batch.vertices_normal
 
                 ## 1. LBS forward -------------------------------------------------------------------
                 pred_lbs, recon_vertices, recon_source, exp_z, pred_source, t_mask, key_d, pred_key_weight, W_lbs, T_lbs = self.model(
@@ -4983,14 +4990,17 @@ class Trainer():
                 strain = None
                 if self.opts.use_strain:
                     lbs_for_strain = pred_lbs.detach() if not self.opts.strain_full_grad else pred_lbs
+                    _nsi = getattr(batch, 'neutral_span_inv', None)  # [B,F,3,3] or None
                     if self.opts.strain_dim == 2:
                         strain_norm, strain_trace = compute_vertex_strain(
-                            lbs_for_strain, batch_template_v, batch.faces, return_trace=True
+                            lbs_for_strain, batch_template_v, batch.faces, return_trace=True,
+                            neutral_span_inv=_nsi,
                         )
                         strain = torch.cat([strain_norm, strain_trace], dim=-1)  # [B,N,2]
                     else:
                         strain = compute_vertex_strain(
-                            lbs_for_strain, batch_template_v, batch.faces, return_trace=False
+                            lbs_for_strain, batch_template_v, batch.faces, return_trace=False,
+                            neutral_span_inv=_nsi,
                         )  # [B,N,1]
 
                 ## 3. Compute LBS normals -----------------------------------------------------------
@@ -4999,11 +5009,12 @@ class Trainer():
                 ## 4. DispNet forward ---------------------------------------------------------------
                 displacement, exp_z_disp = self.model_disp(
                     pred_lbs, lbs_norm,
-                    batch_template_v, batch_template_n,
                     strain=strain
                 )
 
                 ## 5. Final composition -------------------------------------------------------------
+                if not self.opts.no_t_mask:
+                    displacement = displacement * t_mask  # zero out displacement outside face region
                 pred_vertices = pred_lbs + displacement
 
                 # -----------------------------------------------------------------------------------
@@ -5014,7 +5025,7 @@ class Trainer():
                     inv_t_mask = 1.0 - t_mask
 
                 # loss ------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
 
                 loss_dict = {}
@@ -5022,7 +5033,7 @@ class Trainer():
 
                 # v10: smooth GT decomposition losses
                 if self.opts.smooth_n_iter > 0:
-                    batch_smooth_v = batch.smooth_vertices[:, randperm_idx]
+                    batch_smooth_v = batch.smooth_vertices
                     wrinkle_target = batch_vertices_v - batch_smooth_v  # GT - smooth_GT
                     if self.opts.no_t_mask:
                         loss_dict['recon-lbs'] = F.mse_loss(batch_smooth_v, pred_lbs)
@@ -5046,13 +5057,13 @@ class Trainer():
 
                 if self.model.use_shp_recon:
                     loss_dict['shape'] = F.mse_loss(
-                        batch_template_v[:,rearange_idx]*t_mask,
-                        recon_source[:,randperm_idx[rearange_idx]]*t_mask
+                        batch_template_v * t_mask,
+                        recon_source * t_mask
                     )
                 if self.model.use_exp_recon:
                     loss_dict['exp-v'] = F.mse_loss(
-                        batch_vertices_v[:,rearange_idx]*t_mask,
-                        recon_vertices[:,randperm_idx[rearange_idx]]*t_mask
+                        batch_vertices_v * t_mask,
+                        recon_vertices * t_mask
                     )
 
                 # Laplacian smoothing ---------------------------------------------------------------
@@ -5109,30 +5120,11 @@ class Trainer():
 
                 if index % interv_train == 1:
                     IDX = torch.tensor([0, 1, HB, BS-1])
+                    # Reuse already-computed tensors from this step — no extra forward needed
                     with torch.no_grad():
-                        pred_lbs_vis, recon_vertices, recon_source, exp_z, pred_source, _, _, key_weight, W_lbs, T_lbs = self.model(
-                            batch.template[IDX], batch.vertices[IDX],
-                            batch.template_normal[IDX], batch.vertices_normal[IDX],
-                            batch.mesh_data, epoch=epoch, out_kw=True,
-                        )
-                        strain_vis = None
-                        if self.opts.use_strain:
-                            if self.opts.strain_dim == 2:
-                                sn, st = compute_vertex_strain(
-                                    pred_lbs_vis, batch.template[IDX], batch.faces, return_trace=True
-                                )
-                                strain_vis = torch.cat([sn, st], dim=-1)
-                            else:
-                                strain_vis = compute_vertex_strain(
-                                    pred_lbs_vis, batch.template[IDX], batch.faces, return_trace=False
-                                )
-                        lbs_norm_vis = calc_norm_torch(pred_lbs_vis, batch.faces, at='verts')
-                        disp_vis, _ = self.model_disp(
-                            pred_lbs_vis, lbs_norm_vis,
-                            batch.template[IDX], batch.template_normal[IDX],
-                            strain=strain_vis
-                        )
-                        pred_vertices_vis = pred_lbs_vis + disp_vis
+                        pred_lbs_vis     = pred_lbs[IDX].detach()
+                        pred_vertices_vis = pred_vertices[IDX].detach()
+                        key_weight = pred_key_weight  # for stats logging below
 
                     vertices = batch.vertices.cpu()
                     faces = batch.faces.cpu()
@@ -5149,11 +5141,21 @@ class Trainer():
                         is_stts_added=True
                     self.logger.write(log_text+"\n")
 
+                    # Row 1: GT  |  Row 2: smooth GT (LBS target)  |  Row 3: pred_lbs  |  Row 4: pred_full (LBS+disp)
+                    smooth_v = batch.smooth_vertices.cpu()
                     v_list = [
                         vertices[0].cpu().detach(),
                         vertices[1].cpu().detach(),
                         vertices[HB].cpu().detach(),
                         vertices[BS-1].cpu().detach(),
+                        smooth_v[0].cpu().detach(),
+                        smooth_v[1].cpu().detach(),
+                        smooth_v[HB].cpu().detach(),
+                        smooth_v[BS-1].cpu().detach(),
+                        pred_lbs_vis[0].cpu().detach(),
+                        pred_lbs_vis[1].cpu().detach(),
+                        pred_lbs_vis[2].cpu().detach(),
+                        pred_lbs_vis[3].cpu().detach(),
                         pred_vertices_vis[0].cpu().detach(),
                         pred_vertices_vis[1].cpu().detach(),
                         pred_vertices_vis[2].cpu().detach(),
@@ -5189,10 +5191,19 @@ class Trainer():
             if self.opts.tb:
                 self.log_loss(self.writer_train, running_losses, epoch, train_counter)
 
-            # save model
+            # save model + checkpoint visualization
             if epoch % self.opts.save_interval == 0:
                 torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_lbs_{epoch:03d}.pth')
                 torch.save(self.model_disp.state_dict(), f'{self.opts.log_dir}/model_disp_{epoch:03d}.pth')
+                self.vis_loader.visualize(
+                    self.model, self.model_disp, epoch,
+                    save_dir=f'{self.opts.log_dir}/img/ckpt_vis',
+                    use_strain=self.opts.use_strain,
+                    strain_dim=self.opts.strain_dim,
+                    strain_full_grad=self.opts.strain_full_grad,
+                    no_t_mask=self.opts.no_t_mask,
+                    smooth_n_iter=self.opts.smooth_n_iter,
+                )
 
             ######################################################################################################
             # validation -----------------------------------------------------------------------------------------
@@ -5226,11 +5237,12 @@ class Trainer():
             counter = 0
             pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
             for index, batch in pbar:
+                batch = batch.to(self.device)
                 counter += 1
 
                 with torch.no_grad():
                     ## 1. LBS forward
-                    pred_lbs, recon_vertices, recon_source, exp_z, pred_source, _, _, pred_key_weight, W_lbs, T_lbs = self.model(
+                    pred_lbs, recon_vertices, recon_source, exp_z, pred_source, t_mask_val, _, pred_key_weight, W_lbs, T_lbs = self.model(
                         batch.template, batch.vertices,
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
@@ -5239,30 +5251,34 @@ class Trainer():
                     ## 2. Compute strain
                     strain = None
                     if self.opts.use_strain:
+                        _nsi_val = getattr(batch, 'neutral_span_inv', None)
                         if self.opts.strain_dim == 2:
                             sn, st = compute_vertex_strain(
-                                pred_lbs, batch.template, batch.faces, return_trace=True
+                                pred_lbs, batch.template, batch.faces, return_trace=True,
+                                neutral_span_inv=_nsi_val,
                             )
                             strain = torch.cat([sn, st], dim=-1)
                         else:
                             strain = compute_vertex_strain(
-                                pred_lbs, batch.template, batch.faces, return_trace=False
+                                pred_lbs, batch.template, batch.faces, return_trace=False,
+                                neutral_span_inv=_nsi_val,
                             )
 
                     ## 3. LBS normals + DispNet
                     lbs_norm = calc_norm_torch(pred_lbs, batch.faces, at='verts')
                     displacement, _ = self.model_disp(
                         pred_lbs, lbs_norm,
-                        batch.template, batch.template_normal,
                         strain=strain
                     )
 
                     ## 4. Final composition
+                    if not self.opts.no_t_mask:
+                        displacement = displacement * t_mask_val
                     pred_vertices = pred_lbs + displacement
 
                 # loss --------------------------------------------------------------------------
                 with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
+                    mesh_data_num = batch.mesh_data.cpu().numpy().astype(int)
                     mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
 
                     loss_dict = {}

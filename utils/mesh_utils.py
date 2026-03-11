@@ -14,7 +14,10 @@ import trimesh
 from copy import deepcopy
 from torch_scatter import scatter_add
 from torch_sparse import coalesce, transpose
-from cupyx.scipy.sparse.linalg import SuperLU
+try:
+    from cupyx.scipy.sparse.linalg import SuperLU
+except ImportError:
+    SuperLU = None
 
 import pytorch3d
 
@@ -170,38 +173,65 @@ def get_span_matrix(batch_vertices, faces):
     span = torch.stack((v2 - v1, v3 - v1, v4 - v1), dim=-1)
     return span
 
-def get_jacobian_matrix(verts, faces, template, return_torch=False):
+def precompute_neutral_span_inv(template_verts, faces):
+    """Precompute (neutral_span^T)^{-1} per face for fast per-step Jacobian computation.
+
+    During training, replaces linalg.solve (template-dependent) with a precomputed
+    matmul: Q = neutral_span_inv[f] @ span_deformed^T[b,f].
+
+    Args:
+        template_verts: [V, 3] numpy array or tensor (single identity template)
+        faces: [F, 3] numpy array or tensor
+    Returns:
+        neutral_span_inv: [F, 3, 3] CPU tensor — (neutral_span^T)^{-1} per face
+    """
+    if isinstance(template_verts, np.ndarray):
+        template_verts = torch.tensor(template_verts, dtype=torch.float32)
+    if isinstance(faces, np.ndarray):
+        faces = torch.tensor(faces, dtype=torch.long)
+    with torch.no_grad():
+        neutral_span = get_span_matrix(template_verts.unsqueeze(0), faces)   # [1, F, 3, 3]
+        neutral_span_perm = neutral_span.permute(0, 1, 3, 2)                 # [1, F, 3, 3] (transposed per face)
+        # pinv handles near-degenerate (zero-area) faces gracefully
+        neutral_span_inv = torch.linalg.pinv(neutral_span_perm).squeeze(0)   # [F, 3, 3]
+    return neutral_span_inv.cpu()
+
+
+def get_jacobian_matrix(verts, faces, template=None, neutral_span_inv=None, return_torch=False):
     """Reference from Deformation Transfer for Triangle Meshes [Sumner and Popovic, 2004]
     Args
-        verts (torch.tensor): [B*T, V, 3] target vertices (deformed)
+        verts (torch.tensor): [B, V, 3] target vertices (deformed)
         faces (torch.tensor): [F, 3]
-        template (torch.tensor): [B, V, 3] source vertices (undeformed)
+        template (torch.tensor): [B, V, 3] source vertices — used when neutral_span_inv is None
+        neutral_span_inv (torch.tensor): [F, 3, 3] precomputed (neutral_span^T)^{-1};
+            if provided, skips template span computation and uses faster matmul.
     Return
-        Q (torch.tensor): [B, F, 3, 3] transformations (v2-v1, v3-v1, v4-v1)
+        Q (torch.tensor): [B, F, 3, 3] per-face deformation Jacobian
     """
-    B, V, _ = verts.shape
+    B = verts.shape[0]
+    num_faces = faces.shape[0]
 
-    span_matrix = get_span_matrix(verts, faces)
-    neutral_span_matrix = get_span_matrix(template, faces)
+    span_matrix = get_span_matrix(verts, faces)           # [B, F, 3, 3]
+    span_perm   = span_matrix.permute(0, 1, 3, 2)         # [B, F, 3, 3]
 
-    # https://pytorch.org/docs/stable/generated/torch.linalg.inv.html -> [Solving A @ X = B (X = A^-1 @ B)]
-    # Consider using torch.linalg.solve() if possible for multiplying a matrix on the left by the inverse, as:
-    # ``` linalg.solve(A, B) == linalg.inv(A) @ B ```
-    # When B is a matrix
-
-    # It is always preferred to use `solve()` when possible, 
-    # as it is faster and more numerically stable than computing the inverse explicitly.
-
-    # It is possible to compute the solution of the system X @ A = B (X = B @ A^-1) 
-    # by passing the inputs A and B transposed and transposing the output returned by this function.
-    # ``` linalg.solve(A.T, B.T).T == B @ linalg.inv(A) ```
-
-    # neutral_span_inv_matrix = torch.linalg.inv(neutral_span_matrix)
-    # Q = (span_matrix @ neutral_span_inv_matrix).permute(0, 1, 3, 2)
-    Q = torch.linalg.solve(neutral_span_matrix.permute(0, 1, 3, 2), span_matrix.permute(0, 1, 3, 2))
+    if neutral_span_inv is not None:
+        # Fast path: precomputed (neutral^T)^{-1} — matmul instead of solve
+        nsi = neutral_span_inv.to(verts.device)
+        if nsi.dim() == 3:
+            nsi = nsi.unsqueeze(0).expand(B, -1, -1, -1)  # [B, F, 3, 3]
+        Q = torch.bmm(
+            nsi.reshape(-1, 3, 3),
+            span_perm.reshape(-1, 3, 3)
+        ).reshape(B, num_faces, 3, 3)
+    else:
+        # Original path: compute template span and solve
+        neutral_span_matrix = get_span_matrix(template, faces)
+        Q = torch.linalg.solve(neutral_span_matrix.permute(0, 1, 3, 2), span_perm)
     return Q
 
-def compute_vertex_strain(deformed_verts, template_verts, faces, return_trace=False):
+
+def compute_vertex_strain(deformed_verts, template_verts, faces, return_trace=False,
+                          neutral_span_inv=None):
     """
     Per-vertex Green-Lagrange strain.
 
@@ -220,7 +250,8 @@ def compute_vertex_strain(deformed_verts, template_verts, faces, return_trace=Fa
     device = deformed_verts.device
 
     # Per-face deformation gradient: [B, F, 3, 3]
-    F_grad = get_jacobian_matrix(deformed_verts, faces, template_verts)
+    F_grad = get_jacobian_matrix(deformed_verts, faces, template_verts,
+                                  neutral_span_inv=neutral_span_inv)
 
     # Green-Lagrange: E = 0.5 * (F^T F - I)
     Ft = F_grad.permute(0, 1, 3, 2)  # [B, F, 3, 3]

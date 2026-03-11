@@ -1,0 +1,62 @@
+# vis_frames.yml
+# Frames visualized at every checkpoint save (eval on raw data, no PCA augmentation).
+# Fill in id_name / sequence / frame after visually inspecting the dataset.
+#
+# Path conventions (resolved from data_basedir in training opts):
+#   mf_SEN  : {data_basedir}/multiface_align/SEN/{split}/vertices_npy/{id_name}/{sequence}/{frame:05d}.npy
+#   mf_ROM  : {data_basedir}/multiface_align/ROM/{split}/vertices_npy/{id_name}/{sequence}/{frame:05d}.npy
+#   biwi    : {data_basedir}/BIWI_align_deci/{split}/vertices_npy/{id_name}_{sequence}/{frame:05d}.npy
+#   voca    : {data_basedir}/VOCA-COMA/VOCASET/{split}/{id_name}/vertices_npy/{sequence}/{frame:05d}.npy
+#
+# Fields:
+#   dataset    : one of [mf_SEN, mf_ROM, biwi, voca]
+#   split      : one of [train, val, test]
+#   id_name    : identity folder name (must match key in template pkl)
+#   expression : human-readable label used in saved image filename
+#   sequence   : sub-directory (sequence/sentence name) under the identity folder
+#   frame      : 0-based frame index within the sequence folder (sorted order)
+
+frames:
+  # ── MF SEN ──────────────────────────────────────────────────────────────────
+  - dataset: mf_SEN
+    split: train
+    id_name: "FILL_ID_NAME"          # e.g. "002643814"
+    expression: "cheek_puff"
+    sequence: "FILL_SEQUENCE"        # e.g. "E001_Neutral_Eyes_Open"
+    frame: 0
+
+  - dataset: mf_SEN
+    split: train
+    id_name: "FILL_ID_NAME"
+    expression: "max_ROM"
+    sequence: "FILL_SEQUENCE"
+    frame: 0
+
+  - dataset: mf_SEN
+    split: train
+    id_name: "FILL_ID_NAME"
+    expression: "cheek_suck"
+    sequence: "FILL_SEQUENCE"
+    frame: 0
+
+  # ── MF ROM ──────────────────────────────────────────────────────────────────
+  - dataset: mf_ROM
+    split: train
+    id_name: "FILL_ID_NAME"
+    expression: "cheek_puff"
+    sequence: "FILL_SEQUENCE"
+    frame: 0
+
+  - dataset: mf_ROM
+    split: train
+    id_name: "FILL_ID_NAME"
+    expression: "max_ROM"
+    sequence: "FILL_SEQUENCE"
+    frame: 0
+
+  - dataset: mf_ROM
+    split: train
+    id_name: "FILL_ID_NAME"
+    expression: "cheek_suck"
+    sequence: "FILL_SEQUENCE"
+    frame: 0

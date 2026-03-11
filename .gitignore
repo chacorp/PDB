@@ -70,3 +70,6 @@ tmp
 sanity_check_strain_output/
 dataset_vis/
 smooth_analysis_output/
+smooth_sanity_output/
+scripts/fit_pca_mf.py
+scripts/vis_smooth_sanity.py

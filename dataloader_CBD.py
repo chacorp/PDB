@@ -15,6 +15,7 @@ from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, K
 from utils.remesh_utils import map_vertices, decimate_mesh_vertex, ICT_face_model, procrustes_LDM
 from utils.exp_utils import PCA_holder, adjacency_matrix
 from utils.matplotlib_rnd import plot_image_array
+from utils.mesh_utils import precompute_neutral_span_inv
 
 
 import sys
@@ -786,7 +787,15 @@ class CBDDataset(data.Dataset):
             ## Added segmentation ##################################################################
             self.mf_SEN_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
             ########################################################################################
-            
+
+            ## Precompute neutral span inv per identity (replaces per-step linalg.solve in strain) #
+            _mf_faces = torch.tensor(np.array(self.mf_SEN_std['new_f'])).long()
+            self.mf_SEN_neutral_span_inv = {
+                id_name: precompute_neutral_span_inv(self.mf_SEN_mesh[id_name], _mf_faces)
+                for id_name in self.mf_SEN_id_list
+            }
+            #######################################################################################
+
             if self.use_laplacian:
                 self.mf_SEN_cotmatrix={}
                 mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
@@ -884,6 +893,15 @@ class CBDDataset(data.Dataset):
             ## Added segmentation ##################################################################
             self.mf_ROM_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
             ########################################################################################
+
+            ## Precompute neutral span inv per identity (replaces per-step linalg.solve in strain) #
+            _mf_faces_rom = torch.tensor(np.array(self.mf_ROM_std['new_f'])).long()
+            self.mf_ROM_neutral_span_inv = {
+                id_name: precompute_neutral_span_inv(self.mf_ROM_mesh[id_name], _mf_faces_rom)
+                for id_name in self.mf_ROM_id_list
+            }
+            #######################################################################################
+
             if self.use_laplacian:
                 self.mf_ROM_cotmatrix={}
                 mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
@@ -1168,7 +1186,8 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
 
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg, torch.zeros(128), id_name, smooth_deformed)
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg, torch.zeros(128), id_name, smooth_deformed,
+                self.mf_SEN_neutral_span_inv[id_name])
     
     
     def get_multiface_ROM(self, index, id_index):
@@ -1196,7 +1215,8 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
 
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128), id_name, smooth_deformed)
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128), id_name, smooth_deformed,
+                self.mf_ROM_neutral_span_inv[id_name])
 
         
     def random_rotation_matrix(self, randgen=None):
@@ -1526,16 +1546,20 @@ class CBDDataBatch:
             self.template_normal = torch.stack(transposed_data[3], 0) # [B, V, 3]
             self.vertices_normal = torch.stack(transposed_data[4], 0) # [B, V, 3]
             
+            self.mesh_data = transposed_data[8][0] # dataset index (must be index 8, not -1)
             self.segmentation = torch.stack(transposed_data[5], 0) # [B, V, 24]
 
             self.exp_coeff = torch.stack(transposed_data[6], 0) # [B, V, 24]
             self.id_name = transposed_data[7][0] # string
-            self.mesh_data = transposed_data[8][0] # dataset index
-            # smooth_vertices at index 9
+            # smooth_vertices at index 9, neutral_span_inv at index 10
             if len(transposed_data) > 9:
                 self.smooth_vertices = torch.stack(transposed_data[9], 0) # [B, V, 3]
             else:
                 self.smooth_vertices = self.vertices  # fallback
+            if len(transposed_data) > 10:
+                self.neutral_span_inv = torch.stack(transposed_data[10], 0)  # [B, F, 3, 3]
+            else:
+                self.neutral_span_inv = None
     
     @property
     def get_dfn_info(self): 
