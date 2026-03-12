@@ -2079,6 +2079,7 @@ class Trainer():
         stage2_mode = (self.opts.start_stage == 2) or (self.opts.start_epoch >= self.opts.lbs_pretrained_epochs)
         resume_mode = (self.opts.ckpt is not None) and self.opts.continue_ckpt and (not stage2_mode)
         if resume_mode:
+            self.opts.log_dir = self.opts.ckpt
             os.makedirs(self.opts.log_dir, exist_ok=True)
             # if self.opts.ckpt and self.opts.log_dir:
             #     pass
@@ -4858,8 +4859,9 @@ class Trainer():
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
 
-        resume_mode = (self.opts.ckpt is not None) and ((self.opts.log_dir is not None))
+        resume_mode = (self.opts.ckpt is not None) and self.opts.continue_ckpt
         if resume_mode:
+            self.opts.log_dir = self.opts.ckpt
             os.makedirs(self.opts.log_dir, exist_ok=True)
         else:
             tag = f"-NGBC++v{self.opts.version}"

@@ -15,7 +15,7 @@ from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, K
 from utils.remesh_utils import map_vertices, decimate_mesh_vertex, ICT_face_model, procrustes_LDM
 from utils.exp_utils import PCA_holder, adjacency_matrix
 from utils.matplotlib_rnd import plot_image_array
-from utils.mesh_utils import precompute_neutral_span_inv
+# from utils.mesh_utils import precompute_neutral_span_inv  # disabled: swap pressure
 
 
 import sys
@@ -788,13 +788,12 @@ class CBDDataset(data.Dataset):
             self.mf_SEN_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
             ########################################################################################
 
-            ## Precompute neutral span inv per identity (replaces per-step linalg.solve in strain) #
-            _mf_faces = torch.tensor(np.array(self.mf_SEN_std['new_f'])).long()
-            self.mf_SEN_neutral_span_inv = {
-                id_name: precompute_neutral_span_inv(self.mf_SEN_mesh[id_name], _mf_faces)
-                for id_name in self.mf_SEN_id_list
-            }
-            #######################################################################################
+            ## neutral_span_inv precompute disabled — causes swap pressure on 125GiB machines
+            # _mf_faces = torch.tensor(np.array(self.mf_SEN_std['new_f'])).long()
+            # self.mf_SEN_neutral_span_inv = {
+            #     id_name: precompute_neutral_span_inv(self.mf_SEN_mesh[id_name], _mf_faces)
+            #     for id_name in self.mf_SEN_id_list
+            # }
 
             if self.use_laplacian:
                 self.mf_SEN_cotmatrix={}
@@ -894,13 +893,12 @@ class CBDDataset(data.Dataset):
             self.mf_ROM_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
             ########################################################################################
 
-            ## Precompute neutral span inv per identity (replaces per-step linalg.solve in strain) #
-            _mf_faces_rom = torch.tensor(np.array(self.mf_ROM_std['new_f'])).long()
-            self.mf_ROM_neutral_span_inv = {
-                id_name: precompute_neutral_span_inv(self.mf_ROM_mesh[id_name], _mf_faces_rom)
-                for id_name in self.mf_ROM_id_list
-            }
-            #######################################################################################
+            ## neutral_span_inv precompute disabled — causes swap pressure on 125GiB machines
+            # _mf_faces_rom = torch.tensor(np.array(self.mf_ROM_std['new_f'])).long()
+            # self.mf_ROM_neutral_span_inv = {
+            #     id_name: precompute_neutral_span_inv(self.mf_ROM_mesh[id_name], _mf_faces_rom)
+            #     for id_name in self.mf_ROM_id_list
+            # }
 
             if self.use_laplacian:
                 self.mf_ROM_cotmatrix={}
@@ -1186,8 +1184,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
 
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg, torch.zeros(128), id_name, smooth_deformed,
-                self.mf_SEN_neutral_span_inv[id_name])
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_SEN_seg, torch.zeros(128), id_name, smooth_deformed)
     
     
     def get_multiface_ROM(self, index, id_index):
@@ -1215,8 +1212,7 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
 
-        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128), id_name, smooth_deformed,
-                self.mf_ROM_neutral_span_inv[id_name])
+        return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128), id_name, smooth_deformed)
 
         
     def random_rotation_matrix(self, randgen=None):
@@ -1319,12 +1315,7 @@ class CBDDataset(data.Dataset):
         if False:
             return (*datas, mesh_data)
         else:
-            # Some datasets (mf_SEN, mf_ROM) return neutral_span_inv as 10th element
-            if len(datas) == 10:
-                (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, smooth_deformed, neutral_span_inv) = datas
-            else:
-                (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, smooth_deformed) = datas
-                neutral_span_inv = None
+            (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, smooth_deformed) = datas
 
             ## Random Augmentation (apply same trans/scale to all)
             trans, scale = 0.0, 1.0
@@ -1337,10 +1328,7 @@ class CBDDataset(data.Dataset):
             deformed = deformed * scale + trans
             smooth_deformed = smooth_deformed * scale + trans
 
-            result = (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed)
-            if neutral_span_inv is not None:
-                result = result + (neutral_span_inv,)
-            return result
+            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed)
     
     def get_slice_idx(self, F_idx, WS):
         """
@@ -1564,10 +1552,8 @@ class CBDDataBatch:
                 self.smooth_vertices = torch.stack(transposed_data[9], 0) # [B, V, 3]
             else:
                 self.smooth_vertices = self.vertices  # fallback
-            if len(transposed_data) > 10:
-                self.neutral_span_inv = torch.stack(transposed_data[10], 0)  # [B, F, 3, 3]
-            else:
-                self.neutral_span_inv = None
+            # neutral_span_inv precompute disabled (swap pressure)
+            self.neutral_span_inv = None
     
     @property
     def get_dfn_info(self): 
