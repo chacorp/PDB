@@ -2,13 +2,15 @@
 CheckpointVisLoader
 ===================
 Loads fixed evaluation frames from raw .npy files (no PCA augmentation) and
-runs model forward + visualization at checkpoint save time.
+runs model forward + visualization at eval_iter intervals.
+
+Produces stitched panel images (like eval_CBD) with strain/displacement heatmaps.
 
 Usage (in train loop):
     vis_loader = CheckpointVisLoader(opts, device)
     ...
-    if epoch % opts.save_interval == 0:
-        vis_loader.visualize(model_lbs, model_disp, epoch, save_dir)
+    if epoch % opts.eval_iter == 0:
+        vis_loader.visualize(model_lbs, model_disp, epoch, save_dir, ...)
 """
 import os
 import glob
@@ -18,8 +20,8 @@ import torch
 import igl
 import yaml
 
-from utils.mesh_utils import calc_norm_torch
-from utils.matplotlib_rnd import plot_image_array
+from utils.mesh_utils import calc_norm_torch, compute_strain_signal, taubin_smooth_np
+from utils.matplotlib_rnd import vis_mesh_key_weight
 
 
 # Dataset label ints used by NGBC forward (matches CBDDataset encoding)
@@ -81,7 +83,7 @@ def _build_npy_path(entry, data_basedir):
 
 class CheckpointVisLoader:
     """
-    Loads raw evaluation frames and visualizes reconstruction at checkpoint saves.
+    Loads raw evaluation frames and visualizes reconstruction at eval_iter.
     Templates / faces / segmentations are loaded once at init.
     Raw .npy files are loaded fresh each time visualize() is called.
     """
@@ -92,7 +94,7 @@ class CheckpointVisLoader:
         self.frames = []       # list of dicts with loaded static data + path
         self._enabled = False
 
-        vis_yml = getattr(opts, 'vis_frames', None)
+        vis_yml = getattr(opts, 'vis_frames', 'config/vis_frames.yml')
         if not vis_yml or not os.path.exists(vis_yml):
             print(f'[VisLoader] vis_frames not set or not found ({vis_yml}), checkpoint vis disabled.')
             return
@@ -107,14 +109,11 @@ class CheckpointVisLoader:
 
         # Resolve data_basedir (same logic as CBDDataset with data_toggle)
         data_basedir = getattr(opts, 'data_basedir', '/data/sihun')
-        toggle = getattr(opts, 'data_toggle', False)
-        template_basedir = data_basedir if toggle else data_basedir + '/pca'
 
         # Cache: template pkl, faces, seg per dataset (loaded once)
         _template_cache = {}
         _faces_cache = {}
         _seg_cache = {}
-        _std_cache = {}
 
         def _get_static(ds):
             if ds in _template_cache:
@@ -130,11 +129,11 @@ class CheckpointVisLoader:
                 faces_np = None   # will fill from template pkl
 
             if ds in ('mf_SEN', 'mf_ROM'):
-                pkl_path = os.path.join(template_basedir, 'multiface_align', 'mf_templates.pkl')
+                pkl_path = os.path.join(data_basedir, 'multiface_align', 'mf_templates.pkl')
             elif ds == 'voca':
-                pkl_path = os.path.join(template_basedir, 'VOCA-COMA', 'voca_templates.pkl')
+                pkl_path = os.path.join(data_basedir, 'VOCA-COMA', 'voca_templates.pkl')
             elif ds == 'biwi':
-                pkl_path = os.path.join(template_basedir, 'BIWI_align_deci', 'templates_align_deci.pkl')
+                pkl_path = os.path.join(data_basedir, 'BIWI_align_deci', 'templates_align_deci.pkl')
             else:
                 raise ValueError(f'Unknown dataset: {ds}')
 
@@ -152,8 +151,9 @@ class CheckpointVisLoader:
         for entry in raw_entries:
             ds  = entry.get('dataset', '')
             idn = entry.get('id_name', '')
-            exp = entry.get('expression', 'unknown')
-            label = f"{ds}/{idn[:8]}/{exp}"
+            seq = entry.get('sequence', 'unknown')
+            frm = entry.get('frame', 0)
+            label = f"{seq}/f{frm}"
 
             if 'FILL' in idn or 'FILL' in entry.get('sequence', ''):
                 continue   # skip unfilled placeholders
@@ -181,6 +181,7 @@ class CheckpointVisLoader:
                 'npy_path':     npy_path,
                 'template_np':  template_np,
                 'faces':        faces,
+                'faces_np':     faces.numpy().astype(np.int32),
                 'seg':          seg,
                 'mesh_data':    torch.tensor(mesh_data_int),
             })
@@ -198,7 +199,7 @@ class CheckpointVisLoader:
 
         vertices_np = np.load(entry['npy_path']).astype(np.float32)
         template_np = entry['template_np']
-        faces_np = entry['faces'].numpy()
+        faces_np = entry['faces_np']
 
         # Procrustes alignment (same as CBDDataset eval getters)
         try:
@@ -216,6 +217,7 @@ class CheckpointVisLoader:
             'template_normal':   torch.tensor(template_n).float(),
             'vertices_normal':   torch.tensor(vertices_n).float(),
             'faces':             entry['faces'],
+            'faces_np':          faces_np,
             'seg':               entry['seg'],
             'mesh_data':         entry['mesh_data'],
             'label':             entry['label'],
@@ -223,23 +225,32 @@ class CheckpointVisLoader:
 
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def visualize(self, model_lbs, model_disp, epoch, save_dir, use_strain=False,
-                  strain_dim=1, strain_full_grad=False, no_t_mask=False,
-                  smooth_n_iter=0):
+    def visualize(self, model_lbs, model_disp, epoch, save_dir,
+                  mode='stage_disp', stage=1,
+                  strain_mode='norm', smooth_n_iter=16,
+                  no_t_mask=False, use_source_template=False):
         """
-        Run forward on all vis frames and save a grid image.
-        Called only at checkpoint save — loading is done fresh here, no persistent GPU tensors.
+        Run forward on all vis frames and save stitched panel images.
+
+        Args:
+            mode: 'stage_disp' or 'disp_only'
+            stage: 1 or 2 (for stage_disp mode)
+            strain_mode: strain signal mode
+            smooth_n_iter: Taubin smoothing iterations for smooth_GT
         """
         if not self._enabled:
             return
 
-        from utils.mesh_utils import compute_vertex_strain
+        from PIL import Image
 
         os.makedirs(save_dir, exist_ok=True)
+        tmp_dir = os.path.join(save_dir, '_tmp')
+        os.makedirs(tmp_dir, exist_ok=True)
 
-        v_list, f_list, labels = [], [], []
+        model_lbs.eval()
+        model_disp.eval()
 
-        for entry in self.frames:
+        for fi, entry in enumerate(self.frames):
             try:
                 sample = self._load_frame(entry)
             except Exception as e:
@@ -252,53 +263,99 @@ class CheckpointVisLoader:
             vertices_n = sample['vertices_normal'].unsqueeze(0).to(self.device)
             faces      = sample['faces'].to(self.device)
             mesh_data  = sample['mesh_data'].to(self.device)
+            faces_np   = sample['faces_np']
 
-            # ── LBS forward ──────────────────────────────────────────────
+            # Compute smooth_GT via Taubin smoothing on real frame
+            gt_np = sample['vertices'].numpy()
+            smooth_np = taubin_smooth_np(gt_np, faces_np, n_iter=smooth_n_iter)
+            smooth_v = torch.tensor(smooth_np).float().unsqueeze(0).to(self.device)
+
+            # ── LBS forward ──
             pred_lbs, _, _, _, _, t_mask, _, _, _, _ = model_lbs(
                 template_v, vertices_v, template_n, vertices_n,
                 mesh_data, epoch=epoch
             )
 
-            # ── Strain (optional) ─────────────────────────────────────────
-            strain = None
-            if use_strain:
-                lbs_for_strain = pred_lbs.detach() if not strain_full_grad else pred_lbs
-                strain = compute_vertex_strain(
-                    lbs_for_strain, template_v, faces, return_trace=(strain_dim == 2)
-                )
-                if strain_dim == 2:
-                    strain = torch.cat(list(strain), dim=-1)
+            # ── Strain signals ──
+            gt_strain = compute_strain_signal(
+                smooth_v, template_v, faces, mode=strain_mode)
+            pred_strain = compute_strain_signal(
+                pred_lbs, template_v, faces, mode=strain_mode)
+            gt_snorm = gt_strain.norm(dim=-1)[0].cpu().numpy()    # [V]
+            pred_snorm = pred_strain.norm(dim=-1)[0].cpu().numpy()
 
-            # ── LBS normals ───────────────────────────────────────────────
+            # ── DispNet forward ──
             lbs_norm = calc_norm_torch(pred_lbs, faces, at='verts')
-
-            # ── DispNet forward ───────────────────────────────────────────
-            displacement, _ = model_disp(pred_lbs, lbs_norm, strain=strain)
-
-            # ── Composition ───────────────────────────────────────────────
+            displacement, _ = model_disp(
+                pred_lbs, lbs_norm,
+                source_vert=template_v if use_source_template else None,
+                source_norm=template_n if use_source_template else None,
+                strain=pred_strain if mode != 'disp_only' else gt_strain,
+            )
             if not no_t_mask:
                 displacement = displacement * t_mask
             pred_full = pred_lbs + displacement
 
-            faces_cpu = faces.cpu()
-            v_list += [
-                vertices_v[0].cpu(),   # GT
-                pred_lbs[0].cpu(),     # LBS output
-                pred_full[0].cpu(),    # LBS + displacement
-            ]
-            f_list += [faces_cpu, faces_cpu, faces_cpu]
-            labels += [f'{entry["label"]}/GT',
-                       f'{entry["label"]}/LBS',
-                       f'{entry["label"]}/pred']
+            # ── Numpy for visualization ──
+            gt_v_np = gt_np
+            sv_np = smooth_np
+            pl_np = pred_lbs[0].cpu().numpy()
+            pf_np = pred_full[0].cpu().numpy()
+            disp_mag = displacement[0].norm(dim=-1).cpu().numpy()
 
-        if not v_list:
-            return
+            # ── Build panel specs ──
+            if mode == 'disp_only':
+                # GT | smoothGT | smoothGT+GT strain | GT pred | GT pred+disp
+                panel_specs = [
+                    (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
+                    (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
+                    (sv_np,   gt_snorm[:, None],                   'coolwarm', 'sGT+GT_strain'),
+                    (pf_np,   np.zeros(pf_np.shape[0])[:, None],   'YlOrRd', 'GT_pred'),
+                    (pf_np,   disp_mag[:, None],                   'YlOrRd', 'GT_pred+disp'),
+                ]
+            elif stage == 1:
+                # smoothGT | smoothGT+GT strain | pred smoothGT | pred+pred strain
+                panel_specs = [
+                    (sv_np, np.zeros(sv_np.shape[0])[:, None], 'YlOrRd', 'smooth_GT'),
+                    (sv_np, gt_snorm[:, None],                 'coolwarm', 'sGT+GT_strain'),
+                    (pl_np, np.zeros(pl_np.shape[0])[:, None], 'YlOrRd', 'pred_sGT'),
+                    (pl_np, pred_snorm[:, None],               'coolwarm', 'pred+pred_strain'),
+                ]
+            else:
+                # Stage 2: GT | smoothGT | smoothGT+GT strain | pred+pred strain | GT pred | GT pred+disp
+                panel_specs = [
+                    (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
+                    (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
+                    (sv_np,   gt_snorm[:, None],                   'coolwarm', 'sGT+GT_strain'),
+                    (pl_np,   pred_snorm[:, None],                 'coolwarm', 'pred+pred_strain'),
+                    (pf_np,   np.zeros(pf_np.shape[0])[:, None],   'YlOrRd', 'GT_pred'),
+                    (pf_np,   disp_mag[:, None],                   'YlOrRd', 'GT_pred+disp'),
+                ]
 
-        name = f'vis_ckpt_{epoch:03d}'
-        plot_image_array(
-            v_list, f_list,
-            rot_list=[[0, 0, 0]] * len(v_list),
-            size=1, bg_black=False, mode='shade',
-            logdir=save_dir, name=name, save=True
-        )
-        print(f'[VisLoader] Saved checkpoint vis: {save_dir}/{name}.png')
+            # ── Render & stitch ──
+            panels = []
+            for verts, weights, cmap, title in panel_specs:
+                tmp_path = os.path.join(tmp_dir, f'{epoch:03d}_{fi:03d}_{title}.png')
+                vmax = max(float(np.percentile(weights, 95)), 1e-6)
+                vis_mesh_key_weight(
+                    verts, faces_np, weights, cage_idx=0,
+                    cmap=cmap, vmin=0, vmax=vmax,
+                    view_yrots=(0,),
+                    save_path=tmp_path, close=True, title=title,
+                    shade=True,
+                )
+                panels.append(Image.open(tmp_path))
+                os.remove(tmp_path)
+
+            total_w = sum(p.width for p in panels)
+            max_h = max(p.height for p in panels)
+            stitched = Image.new('RGB', (total_w, max_h), (255, 255, 255))
+            x_off = 0
+            for p in panels:
+                stitched.paste(p, (x_off, 0))
+                x_off += p.width
+
+            safe_label = entry['label'].replace('/', '_')
+            stitched.save(os.path.join(save_dir, f"{epoch:03d}_{safe_label}.png"))
+
+        print(f'[VisLoader] Saved {len(self.frames)} eval vis images at epoch {epoch}')

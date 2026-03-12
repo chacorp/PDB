@@ -1,62 +1,47 @@
 # vis_frames.yml
-# Frames visualized at every checkpoint save (eval on raw data, no PCA augmentation).
-# Fill in id_name / sequence / frame after visually inspecting the dataset.
+# Fixed evaluation frames visualized at every eval_iter (real npy, no PCA).
 #
-# Path conventions (resolved from data_basedir in training opts):
-#   mf_SEN  : {data_basedir}/multiface_align/SEN/{split}/vertices_npy/{id_name}/{sequence}/{frame:05d}.npy
-#   mf_ROM  : {data_basedir}/multiface_align/ROM/{split}/vertices_npy/{id_name}/{sequence}/{frame:05d}.npy
-#   biwi    : {data_basedir}/BIWI_align_deci/{split}/vertices_npy/{id_name}_{sequence}/{frame:05d}.npy
-#   voca    : {data_basedir}/VOCA-COMA/VOCASET/{split}/{id_name}/vertices_npy/{sequence}/{frame:05d}.npy
-#
-# Fields:
-#   dataset    : one of [mf_SEN, mf_ROM, biwi, voca]
-#   split      : one of [train, val, test]
-#   id_name    : identity folder name (must match key in template pkl)
-#   expression : human-readable label used in saved image filename
-#   sequence   : sub-directory (sequence/sentence name) under the identity folder
-#   frame      : 0-based frame index within the sequence folder (sorted order)
+# Path convention for mf_ROM:
+#   {data_basedir}/multiface_align/ROM/{split}/vertices_npy/{id_name}/{sequence}/{frame:05d}.npy
 
 frames:
-  # ── MF SEN ──────────────────────────────────────────────────────────────────
-  - dataset: mf_SEN
-    split: train
-    id_name: "FILL_ID_NAME"          # e.g. "002643814"
-    expression: "cheek_puff"
-    sequence: "FILL_SEQUENCE"        # e.g. "E001_Neutral_Eyes_Open"
-    frame: 0
+  # ── EXP_free_face (val) ────────────────────────────────────────────────────
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 160}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 192}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 203}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 224}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 235}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 278}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 321}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 346}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 406}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 439}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 427}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 487}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 496}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 534}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 588}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 667}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 696}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 753}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 785}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 816}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 861}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 898}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 1009}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_free_face", frame: 1022}
 
-  - dataset: mf_SEN
-    split: train
-    id_name: "FILL_ID_NAME"
-    expression: "max_ROM"
-    sequence: "FILL_SEQUENCE"
-    frame: 0
-
-  - dataset: mf_SEN
-    split: train
-    id_name: "FILL_ID_NAME"
-    expression: "cheek_suck"
-    sequence: "FILL_SEQUENCE"
-    frame: 0
-
-  # ── MF ROM ──────────────────────────────────────────────────────────────────
-  - dataset: mf_ROM
-    split: train
-    id_name: "FILL_ID_NAME"
-    expression: "cheek_puff"
-    sequence: "FILL_SEQUENCE"
-    frame: 0
-
-  - dataset: mf_ROM
-    split: train
-    id_name: "FILL_ID_NAME"
-    expression: "max_ROM"
-    sequence: "FILL_SEQUENCE"
-    frame: 0
-
-  - dataset: mf_ROM
-    split: train
-    id_name: "FILL_ID_NAME"
-    expression: "cheek_suck"
-    sequence: "FILL_SEQUENCE"
-    frame: 0
+  # ── EXP_cheek001 (val) ─────────────────────────────────────────────────────
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 172}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 235}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 294}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 383}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 388}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 401}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 407}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 520}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 568}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 594}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 632}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 660}
+  - {dataset: mf_ROM, split: val, id_name: "m--20190529--1300--002421669--GHS", sequence: "EXP_cheek001", frame: 709}

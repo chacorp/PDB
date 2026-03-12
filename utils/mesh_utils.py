@@ -285,6 +285,136 @@ def compute_vertex_strain(deformed_verts, template_verts, faces, return_trace=Fa
     return strain_norm
 
 
+def compute_strain_signal(deformed_verts, template_verts, faces, mode='norm',
+                          neutral_span_inv=None):
+    """
+    Unified strain computation with multiple modes.
+
+    Args:
+        deformed_verts: [B, V, 3]
+        template_verts: [B, V, 3]
+        faces: [F, 3]
+        mode: strain mode string
+            'norm'       — ||E||_F per vertex (dim=1, unsigned magnitude)
+            'norm_trace' — [||E||_F, trace(E)] per vertex (dim=2)
+            'full'       — upper-triangle of symmetric E (dim=6: E_xx,E_yy,E_zz,E_xy,E_xz,E_yz)
+            'principal'  — eigenvalues of E sorted descending (dim=3)
+            'local'      — 1-ring neighbor aggregated: [self_norm, neighbor_mean, neighbor_std] (dim=3)
+        neutral_span_inv: [B, F, 3, 3] or None — precomputed inverse span matrices
+
+    Returns:
+        strain: [B, V, strain_dim]  where strain_dim depends on mode
+    """
+    B, V, _ = deformed_verts.shape
+    num_faces = faces.shape[0]
+    device = deformed_verts.device
+
+    # Common: per-face Green-Lagrange strain tensor E
+    F_grad = get_jacobian_matrix(deformed_verts, faces, template_verts,
+                                  neutral_span_inv=neutral_span_inv)
+    Ft = F_grad.permute(0, 1, 3, 2)
+    FtF = torch.bmm(
+        Ft.reshape(-1, 3, 3),
+        F_grad.reshape(-1, 3, 3)
+    ).reshape(B, num_faces, 3, 3)
+    I_mat = torch.eye(3, device=device).reshape(1, 1, 3, 3)
+    E = 0.5 * (FtF - I_mat)  # [B, F, 3, 3]
+
+    # Common: face→vertex scatter setup
+    idx = faces.reshape(-1).unsqueeze(0).expand(B, -1)  # [B, 3F]
+    ones = torch.ones(B, 3 * num_faces, device=device)
+    count = scatter_add(ones, idx, dim=1, dim_size=V)  # [B, V]
+    count_safe = count + 1e-12
+
+    def _scatter_face_to_vert(face_vals):
+        """face_vals: [B, F] or [B, F, D] → [B, V] or [B, V, D] (averaged)."""
+        if face_vals.dim() == 2:
+            expanded = face_vals.unsqueeze(-1).expand(-1, -1, 3).reshape(B, -1)
+            return scatter_add(expanded, idx, dim=1, dim_size=V) / count_safe
+        else:
+            D = face_vals.shape[-1]
+            # [B, F, D] → [B, 3F, D] by repeating per face vertex
+            expanded = face_vals.unsqueeze(2).expand(-1, -1, 3, -1).reshape(B, -1, D)
+            idx_d = idx.unsqueeze(-1).expand(-1, -1, D)
+            scattered = torch.zeros(B, V, D, device=device)
+            scattered.scatter_add_(1, idx_d, expanded)
+            return scattered / count_safe.unsqueeze(-1)
+
+    if mode == 'norm':
+        strain_face = torch.sqrt((E ** 2).sum(dim=(-2, -1)) + 1e-12)  # [B, F]
+        return _scatter_face_to_vert(strain_face).unsqueeze(-1)  # [B, V, 1]
+
+    elif mode == 'norm_trace':
+        norm_face = torch.sqrt((E ** 2).sum(dim=(-2, -1)) + 1e-12)  # [B, F]
+        trace_face = E.diagonal(dim1=-2, dim2=-1).sum(-1)  # [B, F]
+        norm_v = _scatter_face_to_vert(norm_face)   # [B, V]
+        trace_v = _scatter_face_to_vert(trace_face)  # [B, V]
+        return torch.stack([norm_v, trace_v], dim=-1)  # [B, V, 2]
+
+    elif mode == 'full':
+        # Upper-triangle of symmetric E: [E_xx, E_yy, E_zz, E_xy, E_xz, E_yz]
+        E_xx = E[:, :, 0, 0]  # [B, F]
+        E_yy = E[:, :, 1, 1]
+        E_zz = E[:, :, 2, 2]
+        E_xy = E[:, :, 0, 1]
+        E_xz = E[:, :, 0, 2]
+        E_yz = E[:, :, 1, 2]
+        E_6 = torch.stack([E_xx, E_yy, E_zz, E_xy, E_xz, E_yz], dim=-1)  # [B, F, 6]
+        return _scatter_face_to_vert(E_6)  # [B, V, 6]
+
+    elif mode == 'principal':
+        # Eigenvalues of symmetric E per face, sorted descending → [B, F, 3]
+        E_sym = 0.5 * (E + E.permute(0, 1, 3, 2))  # ensure symmetry
+        eigvals = torch.linalg.eigvalsh(E_sym.reshape(-1, 3, 3))  # [B*F, 3] ascending
+        eigvals = eigvals.flip(-1).reshape(B, num_faces, 3)  # descending [B, F, 3]
+        return _scatter_face_to_vert(eigvals)  # [B, V, 3]
+
+    elif mode == 'local':
+        # Per-vertex: [self_norm, neighbor_mean_norm, neighbor_std_norm]
+        norm_face = torch.sqrt((E ** 2).sum(dim=(-2, -1)) + 1e-12)  # [B, F]
+        self_norm = _scatter_face_to_vert(norm_face)  # [B, V]
+
+        # Build vertex adjacency from faces for 1-ring neighbor aggregation
+        f_np = faces.cpu().numpy() if faces.is_cuda else faces.numpy()
+        edges = set()
+        for f in f_np:
+            edges.add((f[0], f[1]))
+            edges.add((f[1], f[0]))
+            edges.add((f[0], f[2]))
+            edges.add((f[2], f[0]))
+            edges.add((f[1], f[2]))
+            edges.add((f[2], f[1]))
+        edge_src = torch.tensor([e[0] for e in edges], device=device, dtype=torch.long)
+        edge_dst = torch.tensor([e[1] for e in edges], device=device, dtype=torch.long)
+
+        # Gather neighbor norms
+        neigh_norms = self_norm[:, edge_src]  # [B, E]
+        neigh_idx = edge_dst.unsqueeze(0).expand(B, -1)
+        neigh_ones = torch.ones_like(neigh_norms)
+        neigh_sum = torch.zeros(B, V, device=device).scatter_add(1, neigh_idx, neigh_norms)
+        neigh_count = torch.zeros(B, V, device=device).scatter_add(1, neigh_idx, neigh_ones)
+        neigh_mean = neigh_sum / (neigh_count + 1e-12)
+
+        neigh_sq = torch.zeros(B, V, device=device).scatter_add(1, neigh_idx, neigh_norms ** 2)
+        neigh_var = neigh_sq / (neigh_count + 1e-12) - neigh_mean ** 2
+        neigh_std = torch.sqrt(neigh_var.clamp(min=0) + 1e-12)
+
+        return torch.stack([self_norm, neigh_mean, neigh_std], dim=-1)  # [B, V, 3]
+
+    else:
+        raise ValueError(f"Unknown strain mode: {mode}")
+
+
+# Strain mode → output dim mapping
+STRAIN_MODE_DIM = {
+    'norm': 1,
+    'norm_trace': 2,
+    'full': 6,
+    'principal': 3,
+    'local': 3,
+}
+
+
 def laplacian_smooth_np(vertices, faces, n_iter=10, lambda_factor=0.5):
     """
     Naive uniform Laplacian smoothing (shrinks mesh). n_iter rounds of shrink only.

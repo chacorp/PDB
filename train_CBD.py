@@ -53,7 +53,7 @@ from models.NGBC import (
     # NeuralGeneralizedBarycentricCoordinate8,
     # NeuralGeneralizedBarycentricCoordinate55,
 )
-from utils.mesh_utils import compute_vertex_strain
+from utils.mesh_utils import compute_vertex_strain, compute_strain_signal, STRAIN_MODE_DIM
 from utils.vis_loader import CheckpointVisLoader
 
 
@@ -162,7 +162,10 @@ def Options():
     ## strain displacement options ---
     parser.add_argument("--use_strain", dest='use_strain', action='store_true')
     parser.set_defaults(use_strain=False)
-    parser.add_argument("--strain_dim", type=int, default=1, help='1: norm only, 2: norm+trace')
+    parser.add_argument("--strain_dim", type=int, default=1, help='auto-set by strain_mode when use_strain=True')
+    parser.add_argument("--strain_mode", type=str, default='norm',
+                        choices=['norm', 'norm_trace', 'full', 'principal', 'local'],
+                        help='Strain mode: norm(1), norm_trace(2), full(6), principal(3), local(3)')
     parser.add_argument("--strain_full_grad", dest='strain_full_grad', action='store_true')
     parser.set_defaults(strain_full_grad=False)
     parser.add_argument("--use_source_template", dest='use_source_template', action='store_true',
@@ -170,6 +173,8 @@ def Options():
     parser.set_defaults(use_source_template=False)
     parser.add_argument("--smooth_n_iter", type=int, default=0,
                         help='Taubin smoothing iterations for smooth GT decomposition (0=disabled, 8/16/32)')
+    parser.add_argument("--disp_ckpt", type=str, default=None,
+                        help='Path to pre-trained DispNet checkpoint (for v11 stage 2)')
     ## ----------------------
     
     parser.add_argument("--no_t_mask",dest='no_t_mask', action='store_true')
@@ -473,6 +478,8 @@ class Trainer():
                 is_train=True, use_pou=~self.opts.no_pou, device=self.device,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
+            if self.opts.use_strain:
+                self.opts.strain_dim = STRAIN_MODE_DIM[self.opts.strain_mode]
             strain_dim = self.opts.strain_dim if self.opts.use_strain else 0
             self.model_disp = NeuralStrainDisplacement(
                 opts, hid_dim=256, num_layers=4,
