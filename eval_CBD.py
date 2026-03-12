@@ -3652,7 +3652,7 @@ class Trainer():
                 os.makedirs(tmp_dir, exist_ok=True)
                 for verts, weights, cmap, title in panel_specs:
                     tmp_path = os.path.join(tmp_dir, f'{index:04d}_{title}.png')
-                    vmax = max(float(weights.max()), 1e-6)
+                    vmax = max(float(np.percentile(weights, 95)), 1e-6)
                     vis_mesh_key_weight(
                         verts, faces_cpu, weights, cage_idx=0,
                         cmap=cmap, vmin=0, vmax=vmax,
@@ -3833,7 +3833,7 @@ class Trainer():
                 os.makedirs(tmp_dir, exist_ok=True)
                 for verts, weights, cmap, title in panel_specs:
                     tmp_path = os.path.join(tmp_dir, f'{index:04d}_{title}.png')
-                    vmax = max(float(weights.max()), 1e-6)
+                    vmax = max(float(np.percentile(weights, 95)), 1e-6)
                     vis_mesh_key_weight(
                         verts, tgt_faces_np, weights, cage_idx=0,
                         cmap=cmap, vmin=0, vmax=vmax,
@@ -4105,7 +4105,7 @@ class Trainer():
 
                 for verts, weights, cmap, title in panel_specs:
                     tmp_path = os.path.join(tmp_dir, f'{index:04d}_{title}.png')
-                    vmax = max(float(weights.max()), 1e-6)
+                    vmax = max(float(np.percentile(weights, 95)), 1e-6)
                     vis_mesh_key_weight(
                         verts, faces_cpu, weights, cage_idx=0,
                         cmap=cmap, vmin=0, vmax=vmax,
