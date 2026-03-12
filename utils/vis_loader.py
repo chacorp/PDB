@@ -22,6 +22,7 @@ import yaml
 
 from utils.mesh_utils import calc_norm_torch, compute_strain_signal, taubin_smooth_np
 from utils.matplotlib_rnd import vis_mesh_key_weight
+from utils.exp_utils import plateau_hat_points
 
 
 # Dataset label ints used by NGBC forward (matches CBDDataset encoding)
@@ -270,11 +271,16 @@ class CheckpointVisLoader:
             smooth_np = taubin_smooth_np(gt_np, faces_np, n_iter=smooth_n_iter)
             smooth_v = torch.tensor(smooth_np).float().unsqueeze(0).to(self.device)
 
-            # ── LBS forward ──
-            pred_lbs, _, _, _, _, t_mask, _, _, _, _ = model_lbs(
-                template_v, vertices_v, template_n, vertices_n,
-                mesh_data, epoch=epoch
-            )
+            if mode == 'disp_only':
+                # No LBS — use smooth_GT as proxy, t_mask from geometry
+                pred_lbs = smooth_v
+                t_mask = plateau_hat_points(template_v)
+            else:
+                # ── LBS forward ──
+                pred_lbs, _, _, _, _, t_mask, _, _, _, _ = model_lbs(
+                    template_v, vertices_v, template_n, vertices_n,
+                    mesh_data, epoch=epoch
+                )
 
             # ── Strain signals ──
             gt_strain = compute_strain_signal(

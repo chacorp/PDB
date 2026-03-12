@@ -30,16 +30,14 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(__file__))
 from utils.matplotlib_rnd import plot_image_array
 from utils.mesh_utils import calc_norm_torch, compute_strain_signal, STRAIN_MODE_DIM
+from utils.exp_utils import plateau_hat_points
 class Logger:
     def __init__(self, file_path):
         self.file_path = file_path
     def write(self, txt):
         with open(self.file_path, 'a') as f:
             f.write(txt)
-from models.NGBC import (
-    NeuralGeneralizedBarycentricCoordinateLBS,
-    NeuralStrainDisplacement,
-)
+from models.NGBC import NeuralStrainDisplacement
 from dataloader_CBD import CBDDataset, CBDdataSampler, CBD_collate_wrapper
 from utils.vis_loader import CheckpointVisLoader
 
@@ -59,8 +57,10 @@ def Options():
     parser.set_defaults(no_pou=False)
     parser.add_argument("--align_latent", dest='align_latent', action='store_true')
     parser.set_defaults(align_latent=False)
+    parser.add_argument("--use_laplacian", dest='use_laplacian', action='store_true')
+    parser.set_defaults(use_laplacian=False)
 
-    # LBS (needed for model init + t_mask, but weights frozen)
+    # LBS args (kept for dataloader compatibility)
     parser.add_argument("--use_lbs", dest='use_lbs', action='store_true')
     parser.set_defaults(use_lbs=False)
     parser.add_argument("--vis_joint_pos", dest='vis_joint_pos', action='store_true')
@@ -127,7 +127,7 @@ def Options():
 
     # checkpoint
     parser.add_argument("--ckpt", type=str, default=None,
-                        help='LBS checkpoint dir (for t_mask). Frozen, not trained.')
+                        help='(unused, kept for compatibility)')
     parser.add_argument("--disp_ckpt", type=str, default=None,
                         help='Pre-trained DispNet to resume from')
     parser.add_argument("--start_epoch", type=int, default=0)
@@ -160,31 +160,6 @@ class DispOnlyTrainer:
         torch.cuda.manual_seed(opts.seed)
         np.random.seed(opts.seed)
         random.seed(opts.seed)
-
-        # LBS model (frozen, used only for t_mask)
-        last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
-        last_act_list = [opts.last_activation == l for l in last_act_list]
-        self.model_lbs = NeuralGeneralizedBarycentricCoordinateLBS(
-            opts, num_layers=4,
-            num_cage_vertices=opts.num_cage_v,
-            use_exp_recon=False, use_shp_recon=False, use_shp=False,
-            use_relu=last_act_list[0], use_elu=last_act_list[1],
-            use_softmax=last_act_list[2], use_softplus=last_act_list[3],
-            no_activation=last_act_list[4],
-            is_train=False, use_pou=~opts.no_pou, device=self.device,
-            hid_dim=128 if opts.align_latent else 256,
-        )
-        # Load LBS weights if provided
-        if opts.ckpt:
-            lbs_path = sorted(glob.glob(os.path.join(opts.ckpt, "model_lbs_best.pth")))
-            if not lbs_path:
-                lbs_path = sorted(glob.glob(os.path.join(opts.ckpt, "model_lbs_*.pth")))
-            if lbs_path:
-                self.model_lbs.load_state_dict(torch.load(lbs_path[-1]))
-                print(f"Loaded LBS (frozen): {lbs_path[-1]}")
-        for p in self.model_lbs.parameters():
-            p.requires_grad_(False)
-        self.model_lbs.eval()
 
         # DispNet (trainable)
         strain_dim = opts.strain_dim if opts.use_strain else 0
@@ -258,7 +233,7 @@ class DispOnlyTrainer:
             f"  strain_mode : {opts.strain_mode} (dim={opts.strain_dim})\n"
             f"  smooth_n_iter: {opts.smooth_n_iter}\n"
             f"  use_source_template: {opts.use_source_template}\n"
-            f"  LBS ckpt (frozen): {opts.ckpt}\n"
+            f"  no_exp_z: {opts.no_exp_z}\n"
             f"  Input: GT strain({opts.strain_mode}) from GT deformed vs template\n"
             f"  Target: wrinkle = GT - smooth_GT\n"
             f"=========================\n"
@@ -279,7 +254,6 @@ class DispOnlyTrainer:
 
         for epoch in range(opts.start_epoch, epochs + 1):
             # --- Train ---
-            self.model_lbs.eval()
             self.model_disp.train()
             running = {"recon-wrinkle": 0.0, "total": 0.0}
             cnt = 0
@@ -311,11 +285,8 @@ class DispOnlyTrainer:
                     source_norm=tmpl_n if opts.use_source_template else None,
                     strain=strain)
 
-                # t_mask from LBS (no grad)
-                with torch.no_grad():
-                    _, _, _, _, _, t_mask, _, _, _, _ = self.model_lbs(
-                        tmpl_v, gt_v, tmpl_n, batch.vertices_normal,
-                        batch.mesh_data, epoch=epoch)
+                # t_mask from geometry (plateau hat on template)
+                t_mask = plateau_hat_points(tmpl_v)
 
                 if not opts.no_t_mask:
                     displacement = displacement * t_mask
@@ -375,7 +346,7 @@ class DispOnlyTrainer:
             if epoch % opts.eval_iter == 0 and opts.use_strain:
                 eval_vis_dir = f"{opts.log_dir}/img/eval"
                 self.vis_loader.visualize(
-                    self.model_lbs, self.model_disp, epoch, eval_vis_dir,
+                    None, self.model_disp, epoch, eval_vis_dir,
                     mode='disp_only',
                     strain_mode=opts.strain_mode,
                     smooth_n_iter=opts.smooth_n_iter,
@@ -406,10 +377,7 @@ class DispOnlyTrainer:
                         source_vert=batch.template if opts.use_source_template else None,
                         source_norm=batch.template_normal if opts.use_source_template else None,
                         strain=strain)
-                    _, _, _, _, _, t_mask_v, _, _, _, _ = self.model_lbs(
-                        batch.template, batch.vertices,
-                        batch.template_normal, batch.vertices_normal,
-                        batch.mesh_data, epoch=epoch)
+                    t_mask_v = plateau_hat_points(batch.template)
                     if not opts.no_t_mask:
                         displacement = displacement * t_mask_v
                     loss = F.mse_loss(wrinkle_target * t_mask_v, displacement * t_mask_v) if not opts.no_t_mask \
