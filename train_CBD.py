@@ -165,6 +165,9 @@ def Options():
     parser.add_argument("--strain_dim", type=int, default=1, help='1: norm only, 2: norm+trace')
     parser.add_argument("--strain_full_grad", dest='strain_full_grad', action='store_true')
     parser.set_defaults(strain_full_grad=False)
+    parser.add_argument("--use_source_template", dest='use_source_template', action='store_true',
+                        help='Use source template vtx/norm as exp_z input (original v9, 13-dim)')
+    parser.set_defaults(use_source_template=False)
     parser.add_argument("--smooth_n_iter", type=int, default=0,
                         help='Taubin smoothing iterations for smooth GT decomposition (0=disabled, 8/16/32)')
     ## ----------------------
@@ -474,6 +477,7 @@ class Trainer():
             self.model_disp = NeuralStrainDisplacement(
                 opts, hid_dim=256, num_layers=4,
                 strain_dim=strain_dim, device=self.device,
+                use_source_template=self.opts.use_source_template,
             )
         else:
             raise NotImplementedError('No matching model version')
@@ -4756,6 +4760,7 @@ class Trainer():
             text+= f"[         use_strain        ]: {opts.use_strain}\n"
             text+= f"[         strain_dim        ]: {opts.strain_dim}\n"
             text+= f"[      strain_full_grad     ]: {opts.strain_full_grad}\n"
+            text+= f"[   use_source_template     ]: {opts.use_source_template}\n"
             text+= f"[       smooth_n_iter       ]: {opts.smooth_n_iter}\n"
             text+= f"========== Regularizers ==========\n"
             text+= f"[         use_lbs_ent       ]: {opts.use_lbs_ent}\n"
@@ -5009,6 +5014,8 @@ class Trainer():
                 ## 4. DispNet forward ---------------------------------------------------------------
                 displacement, exp_z_disp = self.model_disp(
                     pred_lbs, lbs_norm,
+                    source_vert=batch_template_v if self.opts.use_source_template else None,
+                    source_norm=batch_template_n if self.opts.use_source_template else None,
                     strain=strain
                 )
 
@@ -5268,6 +5275,8 @@ class Trainer():
                     lbs_norm = calc_norm_torch(pred_lbs, batch.faces, at='verts')
                     displacement, _ = self.model_disp(
                         pred_lbs, lbs_norm,
+                        source_vert=batch.template if self.opts.use_source_template else None,
+                        source_norm=batch.template_normal if self.opts.use_source_template else None,
                         strain=strain
                     )
 

@@ -2318,16 +2318,19 @@ class NeuralStrainDisplacement(nn.Module):
     Strain-conditioned per-vertex displacement network.
     Replaces CBD. Output = per-vertex delta displacement.
 
-    Experiment 1 (strain_dim=0): DispNet(lbs_deformed) → delta
-    Experiment 2 (strain_dim=1): DispNet(lbs_deformed, strain) → delta
-
-    Input uses LBS output directly (no source template) for cross-retargeting compatibility.
+    use_source_template=True  (original v9, exp_z input dim=13):
+        exp_z_model input: lbs_delta(3) + lbs_norm(3) + src_vtx(3) + src_norm(3) + strain
+        disp_model input:  lbs_pos(3) + lbs_norm(3) + strain
+    use_source_template=False (v10, exp_z input dim=7):
+        exp_z_model input: lbs_pos(3) + lbs_norm(3) + strain
+        disp_model input:  same
     """
     def __init__(self, opts=None, hid_dim=256, num_layers=4,
-                 strain_dim=1, device='cpu'):
+                 strain_dim=1, device='cpu', use_source_template=False):
         super().__init__()
         self.opts = opts
         self.strain_dim = strain_dim  # 0: no strain, 1: ||E||_F, 2: [||E||_F, trace(E)]
+        self.use_source_template = use_source_template
 
         # in_type=1: pos(3) + norm(3) = 6
         self.in_type = opts.in_type if opts else 1
@@ -2336,8 +2339,12 @@ class NeuralStrainDisplacement(nn.Module):
         # DispNet input: lbs_pos(3) [+ lbs_norm(3)] [+ strain(strain_dim)]
         disp_in_dim = base_dim + strain_dim  # 7 (with strain) or 6 (without)
 
-        # Expression encoder input: same as disp input (no source template)
-        exp_in_dim = disp_in_dim
+        # Expression encoder input
+        if use_source_template:
+            # [lbs_delta(3) + lbs_norm(3) + template_pos(3) + template_norm(3) + strain]
+            exp_in_dim = base_dim + base_dim + strain_dim  # 13 or 12
+        else:
+            exp_in_dim = disp_in_dim
 
         L = hid_dim
 
@@ -2359,16 +2366,20 @@ class NeuralStrainDisplacement(nn.Module):
         text = "===========[Strain Disp config]===========\n"
         text += f"[     in_type     ]: {self.in_type}\n"
         text += f"[    strain_dim   ]: {self.strain_dim}\n"
+        text += f"[ use_src_template]: {self.use_source_template}\n"
         text += f"[   exp_z in_dim  ]: {self.exp_z_model.layer_in.in_features}\n"
         text += f"[   disp  in_dim  ]: {self.disp_model.layer_in.in_features}\n"
         text += "==========================================\n"
         return text
 
-    def forward(self, lbs_deformed, lbs_deformed_norm, strain=None):
+    def forward(self, lbs_deformed, lbs_deformed_norm,
+                source_vert=None, source_norm=None, strain=None):
         """
         Args:
             lbs_deformed:      [B, N, 3] LBS output (coarse deformation)
             lbs_deformed_norm: [B, N, 3] LBS output vertex normals
+            source_vert:       [B, N, 3] template (neutral) vertices (only when use_source_template=True)
+            source_norm:       [B, N, 3] template vertex normals     (only when use_source_template=True)
             strain:            [B, N, strain_dim] or None
 
         Returns:
@@ -2377,21 +2388,39 @@ class NeuralStrainDisplacement(nn.Module):
         """
         B, N, _ = lbs_deformed.shape
 
-        # Build network input from LBS output
+        # Build disp_in from LBS output
         if self.in_type >= 1:
-            net_in = torch.cat([lbs_deformed, lbs_deformed_norm], dim=-1)  # [B,N,6]
+            source_in = torch.cat([lbs_deformed, lbs_deformed_norm], dim=-1)  # [B,N,6]
         else:
-            net_in = lbs_deformed  # [B,N,3]
+            source_in = lbs_deformed  # [B,N,3]
 
-        # Optionally concat strain
+        # DispNet input: optionally concat strain
         if strain is not None and self.strain_dim > 0:
-            net_in = torch.cat([net_in, strain], dim=-1)  # [B,N,7]
+            disp_in = torch.cat([source_in, strain], dim=-1)  # [B,N,7]
+        else:
+            disp_in = source_in  # [B,N,6]
+
+        # Expression encoder input
+        if self.use_source_template:
+            # [lbs_delta, lbs_norm, template_pos, template_norm, (strain)]
+            lbs_delta = lbs_deformed - source_vert  # [B,N,3]
+            if self.in_type >= 1:
+                template_in = torch.cat([source_vert, source_norm], dim=-1)  # [B,N,6]
+                exp_in = torch.cat([lbs_delta, lbs_deformed_norm], dim=-1)  # [B,N,6]
+            else:
+                template_in = source_vert
+                exp_in = lbs_delta
+            exp_in = torch.cat([exp_in, template_in], dim=-1)  # [B,N,12]
+            if strain is not None and self.strain_dim > 0:
+                exp_in = torch.cat([exp_in, strain], dim=-1)  # [B,N,13]
+        else:
+            exp_in = disp_in
 
         # Global expression code
-        exp_z = self.exp_z_model(net_in)  # [B, 1, L]
+        exp_z = self.exp_z_model(exp_in)  # [B, 1, L]
 
         # Per-vertex displacement (conditioned on exp_z via AdaIN)
-        displacement = self.disp_model(net_in, id_in=exp_z)  # [B, N, 3]
+        displacement = self.disp_model(disp_in, id_in=exp_z)  # [B, N, 3]
 
         return displacement, exp_z
 

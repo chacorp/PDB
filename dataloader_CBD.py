@@ -1319,7 +1319,12 @@ class CBDDataset(data.Dataset):
         if False:
             return (*datas, mesh_data)
         else:
-            (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, smooth_deformed) = datas
+            # Some datasets (mf_SEN, mf_ROM) return neutral_span_inv as 10th element
+            if len(datas) == 10:
+                (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, smooth_deformed, neutral_span_inv) = datas
+            else:
+                (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, smooth_deformed) = datas
+                neutral_span_inv = None
 
             ## Random Augmentation (apply same trans/scale to all)
             trans, scale = 0.0, 1.0
@@ -1332,7 +1337,10 @@ class CBDDataset(data.Dataset):
             deformed = deformed * scale + trans
             smooth_deformed = smooth_deformed * scale + trans
 
-            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed)
+            result = (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed)
+            if neutral_span_inv is not None:
+                result = result + (neutral_span_inv,)
+            return result
     
     def get_slice_idx(self, F_idx, WS):
         """
