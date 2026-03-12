@@ -169,6 +169,10 @@ def Options():
     parser.set_defaults(strain_full_grad=False)
     parser.add_argument("--eval_use_strain_disp", dest="eval_use_strain_disp", action="store_true")
     parser.set_defaults(eval_use_strain_disp=False)
+    parser.add_argument("--use_source_template", dest='use_source_template', action='store_true',
+                        help='Use source template vtx/norm as exp_z input (original v9, 13-dim)')
+    parser.set_defaults(use_source_template=False)
+    parser.add_argument("--smooth_n_iter", type=int, default=0)
 
     ## ---- eval lbs --------
 
@@ -376,6 +380,7 @@ class Trainer():
             self.model_disp = NeuralStrainDisplacement(
                 opts, hid_dim=256, num_layers=4,
                 strain_dim=strain_dim, device=self.device,
+                use_source_template=self.opts.use_source_template,
             )
 
         else:
@@ -3567,6 +3572,8 @@ class Trainer():
                 lbs_norm = calc_norm_torch(pred_lbs, faces_for_norm, at='verts')
                 displacement, _ = self.model_disp(
                     pred_lbs, lbs_norm,
+                    source_vert=batch.template if self.opts.use_source_template else None,
+                    source_norm=batch.template_normal if self.opts.use_source_template else None,
                     strain=strain
                 )
 
@@ -3777,6 +3784,8 @@ class Trainer():
                 lbs_norm = calc_norm_torch(pred_lbs, tgt_faces, at='verts')
                 displacement, _ = self.model_disp(
                     pred_lbs, lbs_norm,
+                    source_vert=tgt_template if self.opts.use_source_template else None,
+                    source_norm=tgt_neu_norm.expand(B_cur, -1, -1) if self.opts.use_source_template else None,
                     strain=strain
                 )
 
