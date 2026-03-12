@@ -248,7 +248,8 @@ class CheckpointVisLoader:
         tmp_dir = os.path.join(save_dir, '_tmp')
         os.makedirs(tmp_dir, exist_ok=True)
 
-        model_lbs.eval()
+        if model_lbs is not None:
+            model_lbs.eval()
         model_disp.eval()
 
         for fi, entry in enumerate(self.frames):
