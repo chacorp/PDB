@@ -135,6 +135,9 @@ def Options():
     parser.set_defaults(strain_full_grad=False)
     parser.add_argument("--use_source_template", dest='use_source_template', action='store_true')
     parser.set_defaults(use_source_template=False)
+    parser.add_argument("--no_exp_z", dest='no_exp_z', action='store_true',
+                        help='DispNet without exp_z encoder (plain pointwise MLP)')
+    parser.set_defaults(no_exp_z=False)
     parser.add_argument("--smooth_n_iter", type=int, required=True)
     parser.add_argument("--use_strain_match", dest='use_strain_match', action='store_true',
                         help='Add strain matching loss: strain(smooth_GT,tmpl) vs strain(pred_LBS,tmpl)')
@@ -228,6 +231,7 @@ class StageDispTrainer:
             opts, hid_dim=256, num_layers=4,
             strain_dim=strain_dim, device=self.device,
             use_source_template=opts.use_source_template,
+            no_exp_z=opts.no_exp_z,
         )
 
         # Load checkpoints
@@ -413,6 +417,7 @@ class StageDispTrainer:
         len_train = len(train_loader)
         len_valid = len(valid_loader)
         interv = max(1, round(len_train / 10))
+        interv_val = max(1, round(len_valid / 4))
 
         for epoch in range(opts.start_epoch, epochs + 1):
             # Stage transition
@@ -687,6 +692,33 @@ class StageDispTrainer:
 
                 running_val["total"] += loss
                 pbar.set_description(f"{val_prefix} | loss: {loss:.5e}")
+
+                # Per-iter valid mesh visualization (same layout as train/mesh)
+                if idx % interv_val == 0:
+                    BS = batch.vertices.shape[0]
+                    HB = BS // 2
+                    faces_cpu = batch.faces.cpu()
+                    v_list = [
+                        batch.vertices[0].cpu(), batch.vertices[min(1,BS-1)].cpu(),
+                        batch.vertices[min(HB,BS-1)].cpu(), batch.vertices[BS-1].cpu(),
+                        batch.smooth_vertices[0].cpu(), batch.smooth_vertices[min(1,BS-1)].cpu(),
+                        batch.smooth_vertices[min(HB,BS-1)].cpu(), batch.smooth_vertices[BS-1].cpu(),
+                        pred_lbs[0].cpu().detach(), pred_lbs[min(1,BS-1)].cpu().detach(),
+                        pred_lbs[min(HB,BS-1)].cpu().detach(), pred_lbs[BS-1].cpu().detach(),
+                    ]
+                    if stage == 2:
+                        v_list += [
+                            pred_vertices[0].cpu().detach(), pred_vertices[min(1,BS-1)].cpu().detach(),
+                            pred_vertices[min(HB,BS-1)].cpu().detach(), pred_vertices[BS-1].cpu().detach(),
+                        ]
+                    f_list = [faces_cpu] * len(v_list)
+                    plot_image_array(
+                        v_list, f_list,
+                        rot_list=[[0,0,0]] * len(v_list),
+                        size=1, bg_black=False, mode='shade',
+                        logdir=f"{opts.log_dir}/img/valid/mesh",
+                        name=f"{epoch:03d}_{idx:04d}", save=True)
+
                 if opts.debug:
                     break
 

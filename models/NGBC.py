@@ -2318,6 +2318,9 @@ class NeuralStrainDisplacement(nn.Module):
     Strain-conditioned per-vertex displacement network.
     Replaces CBD. Output = per-vertex delta displacement.
 
+    no_exp_z=False (default): exp_z_model extracts global code, disp_model uses AdaIN conditioning.
+    no_exp_z=True:  No exp_z_model. disp_model is plain MLP (no AdaIN). Pointwise: f(pos, norm, strain) -> disp.
+
     use_source_template=True  (original v9, exp_z input dim=13):
         exp_z_model input: lbs_delta(3) + lbs_norm(3) + src_vtx(3) + src_norm(3) + strain
         disp_model input:  lbs_pos(3) + lbs_norm(3) + strain
@@ -2326,11 +2329,13 @@ class NeuralStrainDisplacement(nn.Module):
         disp_model input:  same
     """
     def __init__(self, opts=None, hid_dim=256, num_layers=4,
-                 strain_dim=1, device='cpu', use_source_template=False):
+                 strain_dim=1, device='cpu', use_source_template=False,
+                 no_exp_z=False):
         super().__init__()
         self.opts = opts
         self.strain_dim = strain_dim  # 0: no strain, 1: ||E||_F, 2: [||E||_F, trace(E)]
         self.use_source_template = use_source_template
+        self.no_exp_z = no_exp_z
 
         # in_type=1: pos(3) + norm(3) = 6
         self.in_type = opts.in_type if opts else 1
@@ -2339,36 +2344,49 @@ class NeuralStrainDisplacement(nn.Module):
         # DispNet input: lbs_pos(3) [+ lbs_norm(3)] [+ strain(strain_dim)]
         disp_in_dim = base_dim + strain_dim  # 7 (with strain) or 6 (without)
 
-        # Expression encoder input
-        if use_source_template:
-            # [lbs_delta(3) + lbs_norm(3) + template_pos(3) + template_norm(3) + strain]
-            exp_in_dim = base_dim + base_dim + strain_dim  # 13 or 12
-        else:
-            exp_in_dim = disp_in_dim
-
         L = hid_dim
 
-        # Expression encoder (global feature from LBS output)
-        self.exp_z_model = LinearEncoder(
-            in_dim=exp_in_dim, out_dim=L,
-            num_layers=num_layers, out_type='global',
-        ).to(device)
+        if no_exp_z:
+            # Plain pointwise MLP — no global encoder, no AdaIN
+            self.exp_z_model = None
+            layers = [nn.Linear(disp_in_dim, L), nn.LeakyReLU(0.2)]
+            for _ in range(num_layers - 1):
+                layers += [nn.Linear(L, L), nn.LeakyReLU(0.2)]
+            layers.append(nn.Linear(L, 3))
+            self.disp_model = nn.Sequential(*layers).to(device)
+        else:
+            # Expression encoder input
+            if use_source_template:
+                # [lbs_delta(3) + lbs_norm(3) + template_pos(3) + template_norm(3) + strain]
+                exp_in_dim = base_dim + base_dim + strain_dim  # 13 or 12
+            else:
+                exp_in_dim = disp_in_dim
 
-        # Per-vertex displacement decoder (conditioned by exp_z via AdaIN)
-        # hid_dim=L so AdaIN layers match exp_z dimension
-        self.disp_model = LinearEncoder(
-            in_dim=disp_in_dim, out_dim=3, hid_dim=L,
-            num_layers=num_layers, out_type='vertices',
-            no_activation=True,
-        ).to(device)
+            # Expression encoder (global feature from LBS output)
+            self.exp_z_model = LinearEncoder(
+                in_dim=exp_in_dim, out_dim=L,
+                num_layers=num_layers, out_type='global',
+            ).to(device)
+
+            # Per-vertex displacement decoder (conditioned by exp_z via AdaIN)
+            self.disp_model = LinearEncoder(
+                in_dim=disp_in_dim, out_dim=3, hid_dim=L,
+                num_layers=num_layers, out_type='vertices',
+                no_activation=True,
+            ).to(device)
 
     def get_model_config(self):
         text = "===========[Strain Disp config]===========\n"
         text += f"[     in_type     ]: {self.in_type}\n"
         text += f"[    strain_dim   ]: {self.strain_dim}\n"
+        text += f"[    no_exp_z     ]: {self.no_exp_z}\n"
         text += f"[ use_src_template]: {self.use_source_template}\n"
-        text += f"[   exp_z in_dim  ]: {self.exp_z_model.layer_in.in_features}\n"
-        text += f"[   disp  in_dim  ]: {self.disp_model.layer_in.in_features}\n"
+        if self.exp_z_model is not None:
+            text += f"[   exp_z in_dim  ]: {self.exp_z_model.layer_in.in_features}\n"
+        if self.no_exp_z:
+            text += f"[   disp  in_dim  ]: {self.disp_model[0].in_features}\n"
+        else:
+            text += f"[   disp  in_dim  ]: {self.disp_model.layer_in.in_features}\n"
         text += "==========================================\n"
         return text
 
@@ -2384,7 +2402,7 @@ class NeuralStrainDisplacement(nn.Module):
 
         Returns:
             displacement: [B, N, 3] per-vertex delta displacement
-            exp_z: [B, 1, L] global expression code
+            exp_z: [B, 1, L] global expression code (None if no_exp_z)
         """
         B, N, _ = lbs_deformed.shape
 
@@ -2399,6 +2417,11 @@ class NeuralStrainDisplacement(nn.Module):
             disp_in = torch.cat([source_in, strain], dim=-1)  # [B,N,7]
         else:
             disp_in = source_in  # [B,N,6]
+
+        if self.no_exp_z:
+            # Plain pointwise MLP — no global context
+            displacement = self.disp_model(disp_in)  # [B, N, 3]
+            return displacement, None
 
         # Expression encoder input
         if self.use_source_template:

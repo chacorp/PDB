@@ -89,6 +89,9 @@ def Options():
     parser.set_defaults(strain_full_grad=False)
     parser.add_argument("--use_source_template", dest='use_source_template', action='store_true')
     parser.set_defaults(use_source_template=False)
+    parser.add_argument("--no_exp_z", dest='no_exp_z', action='store_true',
+                        help='DispNet without exp_z encoder (plain pointwise MLP)')
+    parser.set_defaults(no_exp_z=False)
     parser.add_argument("--smooth_n_iter", type=int, required=True,
                         help='Taubin smoothing iters (must be >0, e.g. 8/16/32)')
 
@@ -189,6 +192,7 @@ class DispOnlyTrainer:
             opts, hid_dim=256, num_layers=4,
             strain_dim=strain_dim, device=self.device,
             use_source_template=opts.use_source_template,
+            no_exp_z=opts.no_exp_z,
         )
         if opts.disp_ckpt and os.path.exists(opts.disp_ckpt):
             self.model_disp.load_state_dict(torch.load(opts.disp_ckpt))

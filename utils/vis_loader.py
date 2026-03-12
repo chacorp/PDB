@@ -314,8 +314,9 @@ class CheckpointVisLoader:
                     (pf_np,   disp_mag[:, None],                   'YlOrRd', 'GT_pred+disp'),
                 ]
             elif stage == 1:
-                # smoothGT | smoothGT+GT strain | pred smoothGT | pred+pred strain
+                # GT | smoothGT | smoothGT+GT strain | pred smoothGT | pred+pred strain
                 panel_specs = [
+                    (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
                     (sv_np, np.zeros(sv_np.shape[0])[:, None], 'YlOrRd', 'smooth_GT'),
                     (sv_np, gt_snorm[:, None],                 'coolwarm', 'sGT+GT_strain'),
                     (pl_np, np.zeros(pl_np.shape[0])[:, None], 'YlOrRd', 'pred_sGT'),
