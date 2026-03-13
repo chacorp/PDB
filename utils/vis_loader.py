@@ -301,8 +301,8 @@ class CheckpointVisLoader:
             gt_strain_np = gt_strain[0].cpu().numpy()       # [V, D]
             pred_strain_np = pred_strain[0].cpu().numpy()   # [V, D]
 
-            # ── DispNet forward (skip in stage 1: DispNet is frozen/untrained) ──
-            if stage == 1:
+            # ── DispNet forward (skip in stage 1 of stage_disp: DispNet is frozen/untrained) ──
+            if stage == 1 and mode != 'disp_only':
                 pf_np = None
                 disp_mag = None
             else:
