@@ -376,7 +376,9 @@ class StageDispTrainer:
         if resume_mode:
             opts.log_dir = opts.ckpt
         else:
-            tag = f"-StageDisp-{opts.strain_mode}-s{opts.smooth_n_iter}"
+            sm_tag = f"-sm{opts.strain_match_mode}" if opts.strain_match_mode != opts.strain_mode else ""
+            edd_tag = "-trueEDD" if opts.use_true_edd else ""
+            tag = f"-StageDisp-{opts.strain_mode}{sm_tag}-s{opts.smooth_n_iter}{edd_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
