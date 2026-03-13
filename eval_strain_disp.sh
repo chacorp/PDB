@@ -5,7 +5,7 @@
 set -e
 
 CKPT="./ckpts_CBD/2026-03-10-19-07-09-NGBC++v9"
-EPOCH=50
+EPOCH=100
 
 ## Cross-retargeting target neutral mesh (FILL IN after locating a test identity)
 ##   TGT_VERT_PATH : .npy  [V, 3] target neutral vertex positions

@@ -55,7 +55,16 @@ CMD_NORM_S8="python train_disp_only.py $COMMON_ARGS --strain_mode norm --smooth_
 CMD_NORM_S32="python train_disp_only.py $COMMON_ARGS --strain_mode norm --smooth_n_iter 32"
 
 ########################################
+## v2: principal strain + true EDD + t_mask
+########################################
+CMD_PRINCIPAL_V2="python train_disp_only.py $COMMON_ARGS \
+    --strain_mode principal --use_true_edd --use_t_mask"
+
+CMD_NORM_TRACE_V2="python train_disp_only.py $COMMON_ARGS \
+    --strain_mode norm_trace --use_true_edd --use_t_mask"
+
+########################################
 ## Run: change CMD variable below
 ########################################
-echo "Running: $CMD_NORM"
-eval $CMD_NORM
+echo "Running: $CMD_PRINCIPAL_V2"
+eval $CMD_PRINCIPAL_V2

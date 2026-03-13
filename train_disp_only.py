@@ -29,7 +29,7 @@ from tqdm import tqdm
 # project imports
 sys.path.insert(0, os.path.dirname(__file__))
 from utils.matplotlib_rnd import plot_image_array
-from utils.mesh_utils import calc_norm_torch, compute_strain_signal, STRAIN_MODE_DIM
+from utils.mesh_utils import calc_norm_torch, compute_strain_signal, STRAIN_MODE_DIM, taubin_smooth_np
 from utils.exp_utils import plateau_hat_points
 class Logger:
     def __init__(self, file_path):
@@ -94,6 +94,9 @@ def Options():
     parser.set_defaults(no_exp_z=False)
     parser.add_argument("--smooth_n_iter", type=int, required=True,
                         help='Taubin smoothing iters (must be >0, e.g. 8/16/32)')
+    parser.add_argument("--use_true_edd", dest='use_true_edd', action='store_true',
+                        help='true EDD target: (GT-sGT)-(T-sT) instead of GT-sGT')
+    parser.set_defaults(use_true_edd=False)
 
     # training
     parser.add_argument("--batch_size", type=int, default=16)
@@ -175,6 +178,17 @@ class DispOnlyTrainer:
 
         self.vis_loader = CheckpointVisLoader(opts, device=self.device)
 
+    def _get_neutral_detail(self, batch):
+        """Compute and cache neutral_detail = template - smooth(template) per identity."""
+        id_name = batch.id_name
+        if id_name not in self._neutral_detail_cache:
+            tmpl_np = batch.template[0].cpu().numpy()
+            faces_np = batch.faces.cpu().numpy()
+            smooth_tmpl_np = taubin_smooth_np(tmpl_np, faces_np, n_iter=self.opts.smooth_n_iter)
+            nd = tmpl_np - smooth_tmpl_np  # [V, 3]
+            self._neutral_detail_cache[id_name] = torch.tensor(nd).float().to(self.device)
+        return self._neutral_detail_cache[id_name]  # [V, 3]
+
     def train(self, epochs):
         opts = self.opts
         BS = opts.batch_size
@@ -234,14 +248,18 @@ class DispOnlyTrainer:
             f"  smooth_n_iter: {opts.smooth_n_iter}\n"
             f"  use_source_template: {opts.use_source_template}\n"
             f"  no_exp_z: {opts.no_exp_z}\n"
+            f"  use_true_edd: {opts.use_true_edd}\n"
             f"  Input: GT strain({opts.strain_mode}) from GT deformed vs template\n"
-            f"  Target: wrinkle = GT - smooth_GT\n"
+            f"  Target: {'true EDD = (GT-sGT)-(T-sT)' if opts.use_true_edd else 'wrinkle = GT-sGT'}\n"
             f"=========================\n"
         )
         print(config_text)
         logger.write(config_text)
         logger.write(train_ds.get_data_config())
         logger.write(str(self.model_disp) + "\n")
+
+        # neutral_detail cache for true EDD: {id_name: tensor [V, 3]}
+        self._neutral_detail_cache = {}
 
         # training loop
         BEST_LOSS = 1e8
@@ -251,6 +269,7 @@ class DispOnlyTrainer:
         len_train = len(train_loader)
         len_valid = len(valid_loader)
         interv = max(1, round(len_train / 10))
+        interv_val = max(1, round(len_valid / 3))
 
         for epoch in range(opts.start_epoch, epochs + 1):
             # --- Train ---
@@ -270,6 +289,9 @@ class DispOnlyTrainer:
                 smooth_v = batch.smooth_vertices
 
                 wrinkle_target = gt_v - smooth_v
+                if opts.use_true_edd:
+                    neutral_detail = self._get_neutral_detail(batch)  # [V, 3]
+                    wrinkle_target = wrinkle_target - neutral_detail.unsqueeze(0)
 
                 # GT strain: from GT deformed vs template
                 _nsi = getattr(batch, 'neutral_span_inv', None)
@@ -367,6 +389,9 @@ class DispOnlyTrainer:
                 with torch.no_grad():
                     smooth_v = batch.smooth_vertices
                     wrinkle_target = batch.vertices - smooth_v
+                    if opts.use_true_edd:
+                        neutral_detail = self._get_neutral_detail(batch)
+                        wrinkle_target = wrinkle_target - neutral_detail.unsqueeze(0)
                     _nsi = getattr(batch, 'neutral_span_inv', None)
                     strain = compute_strain_signal(
                         batch.vertices, batch.template, batch.faces,
@@ -386,6 +411,29 @@ class DispOnlyTrainer:
                     running_val["recon-wrinkle"] += weighted
                     running_val["total"] += weighted
                 pbar.set_description(f"[{epoch:03d}] val wrinkle: {loss:.5e}")
+
+                # Per-iter val mesh visualization
+                if idx % interv_val == 0:
+                    with torch.no_grad():
+                        BS_v = batch.vertices.shape[0]
+                        HB_v = BS_v // 2
+                        pred_full = smooth_v + displacement
+                        v_list = [
+                            batch.vertices[0].cpu(), batch.vertices[min(1,BS_v-1)].cpu(),
+                            batch.vertices[min(HB_v,BS_v-1)].cpu(), batch.vertices[BS_v-1].cpu(),
+                            smooth_v[0].cpu(), smooth_v[min(1,BS_v-1)].cpu(),
+                            smooth_v[min(HB_v,BS_v-1)].cpu(), smooth_v[BS_v-1].cpu(),
+                            pred_full[0].cpu(), pred_full[min(1,BS_v-1)].cpu(),
+                            pred_full[min(HB_v,BS_v-1)].cpu(), pred_full[BS_v-1].cpu(),
+                        ]
+                        f_list = [batch.faces.cpu()] * len(v_list)
+                        plot_image_array(
+                            v_list, f_list,
+                            rot_list=[[0,0,0]] * len(v_list),
+                            size=1, bg_black=False, mode='shade',
+                            logdir=f"{opts.log_dir}/img/valid/mesh",
+                            name=f"{epoch:03d}_{idx:04d}", save=True)
+
                 if opts.debug:
                     break
 

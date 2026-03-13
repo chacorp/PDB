@@ -45,7 +45,7 @@ from tqdm import tqdm
 # project imports
 sys.path.insert(0, os.path.dirname(__file__))
 from utils.matplotlib_rnd import plot_image_array
-from utils.mesh_utils import calc_norm_torch, compute_strain_signal, STRAIN_MODE_DIM
+from utils.mesh_utils import calc_norm_torch, compute_strain_signal, STRAIN_MODE_DIM, taubin_smooth_np
 class Logger:
     def __init__(self, file_path):
         self.file_path = file_path
@@ -146,6 +146,12 @@ def Options():
     parser.add_argument("--strain_match_loss_type", type=str, default='mse',
                         choices=['mse', 'l1', 'smooth_l1'],
                         help='Loss function for strain matching')
+    parser.add_argument("--strain_match_mode", type=str, default=None,
+                        choices=['norm', 'norm_trace', 'full', 'principal', 'local'],
+                        help='Strain mode for matching loss (default: same as --strain_mode)')
+    parser.add_argument("--use_true_edd", dest='use_true_edd', action='store_true',
+                        help='true EDD target: (GT-sGT)-(T-sT) instead of GT-sGT')
+    parser.set_defaults(use_true_edd=False)
 
     # training
     parser.add_argument("--batch_size", type=int, default=16)
@@ -205,6 +211,9 @@ class StageDispTrainer:
 
         if opts.use_strain:
             opts.strain_dim = STRAIN_MODE_DIM[opts.strain_mode]
+        # Default strain_match_mode to strain_mode if not specified
+        if opts.strain_match_mode is None:
+            opts.strain_match_mode = opts.strain_mode
 
         torch.manual_seed(opts.seed)
         torch.cuda.manual_seed(opts.seed)
@@ -251,6 +260,20 @@ class StageDispTrainer:
             print(f"Loaded pre-trained DispNet: {opts.disp_ckpt}")
 
         self.vis_loader = CheckpointVisLoader(opts, device=self.device)
+
+        # neutral_detail cache for true EDD: {id_name: tensor [V, 3]}
+        self._neutral_detail_cache = {}
+
+    def _get_neutral_detail(self, batch):
+        """Compute and cache neutral_detail = template - smooth(template) per identity."""
+        id_name = batch.id_name
+        if id_name not in self._neutral_detail_cache:
+            tmpl_np = batch.template[0].cpu().numpy()
+            faces_np = batch.faces.cpu().numpy()
+            smooth_tmpl_np = taubin_smooth_np(tmpl_np, faces_np, n_iter=self.opts.smooth_n_iter)
+            nd = tmpl_np - smooth_tmpl_np  # [V, 3]
+            self._neutral_detail_cache[id_name] = torch.tensor(nd).float().to(self.device)
+        return self._neutral_detail_cache[id_name]  # [V, 3]
 
     def _load_weight(self, model, name, ckpt_dir, epoch):
         if epoch > 0:
@@ -487,10 +510,10 @@ class StageDispTrainer:
                     _nsi = getattr(batch, 'neutral_span_inv', None)
                     gt_strain = compute_strain_signal(
                         smooth_v, tmpl_v, batch.faces,
-                        mode=opts.strain_mode, neutral_span_inv=_nsi)
+                        mode=opts.strain_match_mode, neutral_span_inv=_nsi)
                     pred_strain = compute_strain_signal(
                         pred_lbs, tmpl_v, batch.faces,
-                        mode=opts.strain_mode, neutral_span_inv=_nsi)
+                        mode=opts.strain_match_mode, neutral_span_inv=_nsi)
                     _sm_fn = {'mse': F.mse_loss, 'l1': F.l1_loss, 'smooth_l1': F.smooth_l1_loss}[opts.strain_match_loss_type]
                     if opts.no_t_mask:
                         loss_dict['strain-match'] = _sm_fn(gt_strain, pred_strain)
@@ -518,8 +541,11 @@ class StageDispTrainer:
                         displacement = displacement * t_mask
                     pred_vertices = pred_lbs + displacement
 
-                    # Wrinkle loss
+                    # Wrinkle loss (true EDD subtracts neutral detail)
                     wrinkle_target = gt_v - smooth_v
+                    if opts.use_true_edd:
+                        neutral_detail = self._get_neutral_detail(batch)
+                        wrinkle_target = wrinkle_target - neutral_detail.unsqueeze(0)
                     if opts.no_t_mask:
                         loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
                     else:
@@ -673,6 +699,9 @@ class StageDispTrainer:
                             displacement = displacement * t_mask_v
                         pred_vertices = pred_lbs + displacement
                         wrinkle_target = batch.vertices - batch.smooth_vertices
+                        if opts.use_true_edd:
+                            neutral_detail = self._get_neutral_detail(batch)
+                            wrinkle_target = wrinkle_target - neutral_detail.unsqueeze(0)
                         loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
                         loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices)
                     else:
