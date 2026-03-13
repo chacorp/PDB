@@ -649,10 +649,12 @@ class StageDispTrainer:
             # Eval-iter visualization (real frames via vis_loader)
             if epoch % opts.eval_iter == 0 and opts.use_strain:
                 eval_vis_dir = f"{opts.log_dir}/img/eval"
+                # Stage 1: show strain_match_mode (LBS target), Stage 2: show strain_mode (DispNet input)
+                vis_strain = opts.strain_match_mode if stage == 1 else opts.strain_mode
                 self.vis_loader.visualize(
                     self.model, self.model_disp, epoch, eval_vis_dir,
                     mode='stage_disp', stage=stage,
-                    strain_mode=opts.strain_mode,
+                    strain_mode=vis_strain,
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
                     use_source_template=opts.use_source_template,
@@ -704,13 +706,21 @@ class StageDispTrainer:
                         if opts.use_true_edd:
                             neutral_detail = self._get_neutral_detail(batch)
                             wrinkle_target = wrinkle_target - neutral_detail.unsqueeze(0)
-                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
-                        loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices)
+                        if opts.no_t_mask:
+                            loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
+                            loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices)
+                        else:
+                            loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target * t_mask_v, displacement * t_mask_v)
+                            loss_dict['recon-def'] = F.mse_loss(batch.vertices * t_mask_v, pred_vertices * t_mask_v)
+                            loss_dict['recon-def'] += F.mse_loss(batch.template * (1 - t_mask_v), pred_vertices * (1 - t_mask_v))
                     else:
                         loss_dict['recon-def'] = loss_dict['recon-lbs'].clone()
 
                     if self.model.use_full_vertex:
-                        loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source)
+                        if opts.no_t_mask:
+                            loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source)
+                        else:
+                            loss_dict['recon-neu'] = F.mse_loss(batch.template * t_mask_v, pred_source * t_mask_v)
 
                     loss = 0
                     for k, v in loss_dict.items():

@@ -24,6 +24,14 @@ from utils.mesh_utils import calc_norm_torch, compute_strain_signal, taubin_smoo
 from utils.matplotlib_rnd import vis_mesh_key_weight
 from utils.exp_utils import plateau_hat_points
 
+_STRAIN_CHANNELS = {
+    'norm':       ['||E||_F'],
+    'norm_trace': ['||E||_F', 'trace(E)'],
+    'full':       ['E_xx', 'E_yy', 'E_zz', 'E_xy', 'E_xz', 'E_yz'],
+    'principal':  ['lam1', 'lam2', 'lam3'],
+    'local':      ['self_norm', 'neigh_mean', 'neigh_std'],
+}
+
 
 # Dataset label ints used by NGBC forward (matches CBDDataset encoding)
 _MESH_DATA_INT = {
@@ -290,64 +298,87 @@ class CheckpointVisLoader:
                 pred_lbs, template_v, faces, mode=strain_mode)
             gt_snorm = gt_strain.norm(dim=-1)[0].cpu().numpy()    # [V]
             pred_snorm = pred_strain.norm(dim=-1)[0].cpu().numpy()
+            gt_strain_np = gt_strain[0].cpu().numpy()       # [V, D]
+            pred_strain_np = pred_strain[0].cpu().numpy()   # [V, D]
 
-            # ── DispNet forward ──
-            lbs_norm = calc_norm_torch(pred_lbs, faces, at='verts')
-            displacement, _ = model_disp(
-                pred_lbs, lbs_norm,
-                source_vert=template_v if use_source_template else None,
-                source_norm=template_n if use_source_template else None,
-                strain=pred_strain if mode != 'disp_only' else gt_strain,
-            )
-            if not no_t_mask:
-                displacement = displacement * t_mask
-            pred_full = pred_lbs + displacement
+            # ── DispNet forward (skip in stage 1: DispNet is frozen/untrained) ──
+            if stage == 1:
+                pf_np = None
+                disp_mag = None
+            else:
+                lbs_norm = calc_norm_torch(pred_lbs, faces, at='verts')
+                displacement, _ = model_disp(
+                    pred_lbs, lbs_norm,
+                    source_vert=template_v if use_source_template else None,
+                    source_norm=template_n if use_source_template else None,
+                    strain=pred_strain if mode != 'disp_only' else gt_strain,
+                )
+                if not no_t_mask:
+                    displacement = displacement * t_mask
+                pred_full = pred_lbs + displacement
+                pf_np = pred_full[0].cpu().numpy()
+                disp_mag = displacement[0].norm(dim=-1).cpu().numpy()
 
             # ── Numpy for visualization ──
             gt_v_np = gt_np
             sv_np = smooth_np
             pl_np = pred_lbs[0].cpu().numpy()
-            pf_np = pred_full[0].cpu().numpy()
-            disp_mag = displacement[0].norm(dim=-1).cpu().numpy()
 
             # ── Build panel specs ──
+            # Per-channel strain panels (appended after base panels)
+            ch_names = _STRAIN_CHANNELS.get(strain_mode, ['||E||_F'])
+
+            def _strain_ch_panels(verts, strain_np, prefix):
+                """Generate per-channel strain panels."""
+                panels = []
+                for ci, ch_name in enumerate(ch_names):
+                    vals = strain_np[:, ci]
+                    has_neg = vals.min() < -1e-8
+                    cmap = 'coolwarm' if has_neg else 'YlOrRd'
+                    panels.append((verts, vals[:, None], cmap, f'{prefix}:{ch_name}'))
+                return panels
+
             if mode == 'disp_only':
-                # GT | smoothGT | smoothGT+GT strain | GT pred | GT pred+disp
+                # GT | smoothGT | GT_pred | GT_pred+disp | sGT+strain_ch0 | ...
                 panel_specs = [
                     (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
                     (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
-                    (sv_np,   gt_snorm[:, None],                   'coolwarm', 'sGT+GT_strain'),
                     (pf_np,   np.zeros(pf_np.shape[0])[:, None],   'YlOrRd', 'GT_pred'),
-                    (pf_np,   disp_mag[:, None],                   'YlOrRd', 'GT_pred+disp'),
-                ]
+                    (pf_np,   disp_mag[:, None],                   'YlOrRd', 'pred+disp'),
+                ] + _strain_ch_panels(sv_np, gt_strain_np, 'GT_strain')
             elif stage == 1:
-                # GT | smoothGT | smoothGT+GT strain | pred smoothGT | pred+pred strain
-                panel_specs = [
-                    (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
-                    (sv_np, np.zeros(sv_np.shape[0])[:, None], 'YlOrRd', 'smooth_GT'),
-                    (sv_np, gt_snorm[:, None],                 'coolwarm', 'sGT+GT_strain'),
-                    (pl_np, np.zeros(pl_np.shape[0])[:, None], 'YlOrRd', 'pred_sGT'),
-                    (pl_np, pred_snorm[:, None],               'coolwarm', 'pred+pred_strain'),
-                ]
-            else:
-                # Stage 2: GT | smoothGT | smoothGT+GT strain | pred+pred strain | GT pred | GT pred+disp
+                # GT | smoothGT | pred_sGT | GT_strain_ch0..N | pred_strain_ch0..N
                 panel_specs = [
                     (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
                     (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
-                    (sv_np,   gt_snorm[:, None],                   'coolwarm', 'sGT+GT_strain'),
-                    (pl_np,   pred_snorm[:, None],                 'coolwarm', 'pred+pred_strain'),
+                    (pl_np,   np.zeros(pl_np.shape[0])[:, None],   'YlOrRd', 'pred_sGT'),
+                ] + _strain_ch_panels(sv_np, gt_strain_np, 'GT_s') \
+                  + _strain_ch_panels(pl_np, pred_strain_np, 'pred_s')
+            else:
+                # Stage 2: GT | smoothGT | pred_sGT | GT_pred | pred+disp | GT_strain_ch.. | pred_strain_ch..
+                panel_specs = [
+                    (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
+                    (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
+                    (pl_np,   np.zeros(pl_np.shape[0])[:, None],   'YlOrRd', 'pred_sGT'),
                     (pf_np,   np.zeros(pf_np.shape[0])[:, None],   'YlOrRd', 'GT_pred'),
-                    (pf_np,   disp_mag[:, None],                   'YlOrRd', 'GT_pred+disp'),
-                ]
+                    (pf_np,   disp_mag[:, None],                   'YlOrRd', 'pred+disp'),
+                ] + _strain_ch_panels(sv_np, gt_strain_np, 'GT_s') \
+                  + _strain_ch_panels(pl_np, pred_strain_np, 'pred_s')
 
             # ── Render & stitch ──
             panels = []
             for verts, weights, cmap, title in panel_specs:
                 tmp_path = os.path.join(tmp_dir, f'{epoch:03d}_{fi:03d}_{title}.png')
-                vmax = max(float(np.percentile(weights, 95)), 1e-6)
+                has_neg = float(weights.min()) < -1e-8
+                if has_neg:
+                    vmax = max(abs(float(weights.max())), abs(float(weights.min())), 1e-6)
+                    vmin = -vmax
+                else:
+                    vmax = max(float(np.percentile(weights, 95)), 1e-6)
+                    vmin = 0
                 vis_mesh_key_weight(
                     verts, faces_np, weights, cage_idx=0,
-                    cmap=cmap, vmin=0, vmax=vmax,
+                    cmap=cmap, vmin=vmin, vmax=vmax,
                     view_yrots=(0,),
                     save_path=tmp_path, close=True, title=title,
                     shade=True,
