@@ -237,7 +237,8 @@ class CheckpointVisLoader:
     def visualize(self, model_lbs, model_disp, epoch, save_dir,
                   mode='stage_disp', stage=1,
                   strain_mode='norm', smooth_n_iter=16,
-                  no_t_mask=False, use_source_template=False):
+                  no_t_mask=False, use_source_template=False,
+                  norm_stats=None):
         """
         Run forward on all vis frames and save stitched panel images.
 
@@ -246,6 +247,7 @@ class CheckpointVisLoader:
             stage: 1 or 2 (for stage_disp mode)
             strain_mode: strain signal mode
             smooth_n_iter: Taubin smoothing iterations for smooth_GT
+            norm_stats: dict with strain_mean/std, disp_mean/std tensors (or None)
         """
         if not self._enabled:
             return
@@ -306,18 +308,27 @@ class CheckpointVisLoader:
                 pf_np = None
                 disp_mag = None
             else:
+                # Normalize strain for DispNet input
+                disp_strain = pred_strain if mode != 'disp_only' else gt_strain
+                if norm_stats is not None:
+                    disp_strain = (disp_strain - norm_stats['strain_mean']) / norm_stats['strain_std']
                 lbs_norm = calc_norm_torch(pred_lbs, faces, at='verts')
                 displacement, _ = model_disp(
                     pred_lbs, lbs_norm,
                     source_vert=template_v if use_source_template else None,
                     source_norm=template_n if use_source_template else None,
-                    strain=pred_strain if mode != 'disp_only' else gt_strain,
+                    strain=disp_strain,
                 )
                 if not no_t_mask:
                     displacement = displacement * t_mask
-                pred_full = pred_lbs + displacement
+                # Denormalize displacement output
+                if norm_stats is not None:
+                    displacement_real = displacement * norm_stats['disp_std'] + norm_stats['disp_mean']
+                else:
+                    displacement_real = displacement
+                pred_full = pred_lbs + displacement_real
                 pf_np = pred_full[0].cpu().numpy()
-                disp_mag = displacement[0].norm(dim=-1).cpu().numpy()
+                disp_mag = displacement_real[0].norm(dim=-1).cpu().numpy()
 
             # ── Numpy for visualization ──
             gt_v_np = gt_np

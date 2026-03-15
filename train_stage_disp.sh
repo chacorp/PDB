@@ -67,7 +67,25 @@ CMD_S16_V2_PRETRAINED="python train_stage_disp.py $COMMON_ARGS --smooth_n_iter 1
     --disp_ckpt ./ckpts_CBD/DISP_CKPT_DIR/model_disp_best.pth"
 
 ########################################
+## v3: v2 + z-score normalization
+########################################
+NORM_STATS_S16="norm_stats/norm_stats_principal_s16_trueedd_masked.npz"
+
+CMD_S16_V3="python train_stage_disp.py $COMMON_ARGS --smooth_n_iter 16 \
+    --strain_mode principal --strain_match_mode norm_trace \
+    --use_strain_match --lambda_strain_match 0.1 --strain_match_loss_type mse \
+    --use_true_edd --use_t_mask \
+    --norm_stats_file $NORM_STATS_S16"
+
+CMD_S16_V3_PRETRAINED="python train_stage_disp.py $COMMON_ARGS --smooth_n_iter 16 \
+    --strain_mode principal --strain_match_mode norm_trace \
+    --use_strain_match --lambda_strain_match 0.1 --strain_match_loss_type mse \
+    --use_true_edd --use_t_mask \
+    --norm_stats_file $NORM_STATS_S16 \
+    --disp_ckpt ./ckpts_CBD/DISP_CKPT_DIR/model_disp_best.pth"
+
+########################################
 ## Run: change CMD variable below
 ########################################
-echo "Running: $CMD_S16_V2"
-eval $CMD_S16_V2
+echo "Running: $CMD_S16_V3"
+eval $CMD_S16_V3

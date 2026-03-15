@@ -64,7 +64,14 @@ CMD_NORM_TRACE_V2="python train_disp_only.py $COMMON_ARGS \
     --strain_mode norm_trace --use_true_edd --use_t_mask"
 
 ########################################
+## v3: v2 + z-score normalization
+########################################
+CMD_PRINCIPAL_V3="python train_disp_only.py $COMMON_ARGS \
+    --strain_mode principal --use_true_edd --use_t_mask \
+    --norm_stats_file norm_stats/norm_stats_principal_s16_trueedd_masked.npz"
+
+########################################
 ## Run: change CMD variable below
 ########################################
-echo "Running: $CMD_PRINCIPAL_V2"
-eval $CMD_PRINCIPAL_V2
+echo "Running: $CMD_PRINCIPAL_V3"
+eval $CMD_PRINCIPAL_V3

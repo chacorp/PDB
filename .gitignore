@@ -15,6 +15,7 @@ ict_face_pt
 # .npy
 # *.npy
 *.npz
+!norm_stats/*.npz
 *.dae
 
 *.tar

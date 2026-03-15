@@ -97,6 +97,8 @@ def Options():
     parser.add_argument("--use_true_edd", dest='use_true_edd', action='store_true',
                         help='true EDD target: (GT-sGT)-(T-sT) instead of GT-sGT')
     parser.set_defaults(use_true_edd=False)
+    parser.add_argument("--norm_stats_file", type=str, default=None,
+                        help='Path to .npz with strain/disp z-score stats (from precompute_norm_stats.py)')
 
     # training
     parser.add_argument("--batch_size", type=int, default=16)
@@ -178,6 +180,38 @@ class DispOnlyTrainer:
 
         self.vis_loader = CheckpointVisLoader(opts, device=self.device)
 
+        # Z-score normalization stats
+        self.norm_stats = None
+        if opts.norm_stats_file and os.path.exists(opts.norm_stats_file):
+            data = np.load(opts.norm_stats_file)
+            self.norm_stats = {
+                'strain_mean': torch.tensor(data['strain_mean']).float().to(self.device),
+                'strain_std':  torch.tensor(data['strain_std']).float().to(self.device),
+                'disp_mean':   torch.tensor(data['disp_mean']).float().to(self.device),
+                'disp_std':    torch.tensor(data['disp_std']).float().to(self.device),
+            }
+            print(f"[NormStats] Loaded: {opts.norm_stats_file}")
+            print(f"  strain μ={self.norm_stats['strain_mean'].cpu().numpy()}, σ={self.norm_stats['strain_std'].cpu().numpy()}")
+            print(f"  disp   μ={self.norm_stats['disp_mean'].cpu().numpy()}, σ={self.norm_stats['disp_std'].cpu().numpy()}")
+
+    def _normalize_strain(self, strain):
+        """Z-score normalize strain: (strain - μ) / σ"""
+        if self.norm_stats is None:
+            return strain
+        return (strain - self.norm_stats['strain_mean']) / self.norm_stats['strain_std']
+
+    def _normalize_disp_target(self, disp):
+        """Z-score normalize displacement target: (disp - μ) / σ"""
+        if self.norm_stats is None:
+            return disp
+        return (disp - self.norm_stats['disp_mean']) / self.norm_stats['disp_std']
+
+    def _denormalize_disp(self, disp_pred):
+        """Reverse z-score on DispNet output: pred * σ + μ"""
+        if self.norm_stats is None:
+            return disp_pred
+        return disp_pred * self.norm_stats['disp_std'] + self.norm_stats['disp_mean']
+
     def _get_neutral_detail(self, batch):
         """Compute and cache neutral_detail = template - smooth(template) per identity."""
         id_name = batch.id_name
@@ -249,6 +283,7 @@ class DispOnlyTrainer:
             f"  use_source_template: {opts.use_source_template}\n"
             f"  no_exp_z: {opts.no_exp_z}\n"
             f"  use_true_edd: {opts.use_true_edd}\n"
+            f"  norm_stats_file: {opts.norm_stats_file}\n"
             f"  Input: GT strain({opts.strain_mode}) from GT deformed vs template\n"
             f"  Target: {'true EDD = (GT-sGT)-(T-sT)' if opts.use_true_edd else 'wrinkle = GT-sGT'}\n"
             f"=========================\n"
@@ -298,6 +333,7 @@ class DispOnlyTrainer:
                 strain = compute_strain_signal(
                     gt_v, tmpl_v, batch.faces,
                     mode=opts.strain_mode, neutral_span_inv=_nsi)
+                strain = self._normalize_strain(strain)
 
                 # DispNet input: use smooth_GT as proxy for "LBS output"
                 smooth_norm = calc_norm_torch(smooth_v, batch.faces, at='verts')
@@ -313,11 +349,14 @@ class DispOnlyTrainer:
                 if not opts.no_t_mask:
                     displacement = displacement * t_mask
 
-                # loss
+                # Normalize wrinkle target for loss (z-score)
+                wrinkle_target_norm = self._normalize_disp_target(wrinkle_target)
+
+                # loss (in normalized space)
                 if opts.no_t_mask:
-                    loss = F.mse_loss(wrinkle_target, displacement)
+                    loss = F.mse_loss(wrinkle_target_norm, displacement)
                 else:
-                    loss = F.mse_loss(wrinkle_target * t_mask, displacement * t_mask)
+                    loss = F.mse_loss(wrinkle_target_norm * t_mask, displacement * t_mask)
 
                 weighted = loss * loss_lambda["recon-wrinkle"]
                 weighted.backward()
@@ -334,7 +373,7 @@ class DispOnlyTrainer:
                     logger.write(log_text + "\n")
 
                     HB = BS // 2
-                    pred_full = smooth_v + displacement
+                    pred_full = smooth_v + self._denormalize_disp(displacement)
                     v_list = [
                         gt_v[0].cpu().detach(), gt_v[min(1,BS-1)].cpu().detach(),
                         gt_v[min(HB,BS-1)].cpu().detach(), gt_v[BS-1].cpu().detach(),
@@ -374,6 +413,7 @@ class DispOnlyTrainer:
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
                     use_source_template=opts.use_source_template,
+                    norm_stats=self.norm_stats,
                 )
 
             # --- Valid ---
@@ -396,6 +436,7 @@ class DispOnlyTrainer:
                     strain = compute_strain_signal(
                         batch.vertices, batch.template, batch.faces,
                         mode=opts.strain_mode, neutral_span_inv=_nsi)
+                    strain = self._normalize_strain(strain)
                     smooth_norm = calc_norm_torch(smooth_v, batch.faces, at='verts')
                     displacement, _ = self.model_disp(
                         smooth_v, smooth_norm,
@@ -405,8 +446,9 @@ class DispOnlyTrainer:
                     t_mask_v = plateau_hat_points(batch.template)
                     if not opts.no_t_mask:
                         displacement = displacement * t_mask_v
-                    loss = F.mse_loss(wrinkle_target * t_mask_v, displacement * t_mask_v) if not opts.no_t_mask \
-                        else F.mse_loss(wrinkle_target, displacement)
+                    wrinkle_target_norm = self._normalize_disp_target(wrinkle_target)
+                    loss = F.mse_loss(wrinkle_target_norm * t_mask_v, displacement * t_mask_v) if not opts.no_t_mask \
+                        else F.mse_loss(wrinkle_target_norm, displacement)
                     weighted = loss.item() * loss_lambda["recon-wrinkle"]
                     running_val["recon-wrinkle"] += weighted
                     running_val["total"] += weighted
@@ -417,7 +459,7 @@ class DispOnlyTrainer:
                     with torch.no_grad():
                         BS_v = batch.vertices.shape[0]
                         HB_v = BS_v // 2
-                        pred_full = smooth_v + displacement
+                        pred_full = smooth_v + self._denormalize_disp(displacement)
                         v_list = [
                             batch.vertices[0].cpu(), batch.vertices[min(1,BS_v-1)].cpu(),
                             batch.vertices[min(HB_v,BS_v-1)].cpu(), batch.vertices[BS_v-1].cpu(),

@@ -152,6 +152,8 @@ def Options():
     parser.add_argument("--use_true_edd", dest='use_true_edd', action='store_true',
                         help='true EDD target: (GT-sGT)-(T-sT) instead of GT-sGT')
     parser.set_defaults(use_true_edd=False)
+    parser.add_argument("--norm_stats_file", type=str, default=None,
+                        help='Path to .npz with strain/disp z-score stats (from precompute_norm_stats.py)')
 
     # training
     parser.add_argument("--batch_size", type=int, default=16)
@@ -261,8 +263,35 @@ class StageDispTrainer:
 
         self.vis_loader = CheckpointVisLoader(opts, device=self.device)
 
+        # Z-score normalization stats
+        self.norm_stats = None
+        if opts.norm_stats_file and os.path.exists(opts.norm_stats_file):
+            data = np.load(opts.norm_stats_file)
+            self.norm_stats = {
+                'strain_mean': torch.tensor(data['strain_mean']).float().to(self.device),
+                'strain_std':  torch.tensor(data['strain_std']).float().to(self.device),
+                'disp_mean':   torch.tensor(data['disp_mean']).float().to(self.device),
+                'disp_std':    torch.tensor(data['disp_std']).float().to(self.device),
+            }
+            print(f"[NormStats] Loaded: {opts.norm_stats_file}")
+
         # neutral_detail cache for true EDD: {id_name: tensor [V, 3]}
         self._neutral_detail_cache = {}
+
+    def _normalize_strain(self, strain):
+        if self.norm_stats is None:
+            return strain
+        return (strain - self.norm_stats['strain_mean']) / self.norm_stats['strain_std']
+
+    def _normalize_disp_target(self, disp):
+        if self.norm_stats is None:
+            return disp
+        return (disp - self.norm_stats['disp_mean']) / self.norm_stats['disp_std']
+
+    def _denormalize_disp(self, disp_pred):
+        if self.norm_stats is None:
+            return disp_pred
+        return disp_pred * self.norm_stats['disp_std'] + self.norm_stats['disp_mean']
 
     def _get_neutral_detail(self, batch):
         """Compute and cache neutral_detail = template - smooth(template) per identity."""
@@ -531,6 +560,7 @@ class StageDispTrainer:
                         strain = compute_strain_signal(
                             lbs_for_strain, tmpl_v, batch.faces,
                             mode=opts.strain_mode, neutral_span_inv=_nsi)
+                        strain = self._normalize_strain(strain)
 
                     # 3. DispNet
                     lbs_norm = calc_norm_torch(pred_lbs, batch.faces, at='verts')
@@ -541,19 +571,23 @@ class StageDispTrainer:
                         strain=strain)
                     if not opts.no_t_mask:
                         displacement = displacement * t_mask
-                    pred_vertices = pred_lbs + displacement
 
-                    # Wrinkle loss (true EDD subtracts neutral detail)
+                    # Denormalize displacement for end-to-end recon
+                    displacement_real = self._denormalize_disp(displacement)
+                    pred_vertices = pred_lbs + displacement_real
+
+                    # Wrinkle loss (in normalized space)
                     wrinkle_target = gt_v - smooth_v
                     if opts.use_true_edd:
                         neutral_detail = self._get_neutral_detail(batch)
                         wrinkle_target = wrinkle_target - neutral_detail.unsqueeze(0)
+                    wrinkle_target_norm = self._normalize_disp_target(wrinkle_target)
                     if opts.no_t_mask:
-                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
+                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target_norm, displacement)
                     else:
-                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target * t_mask, displacement * t_mask)
+                        loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target_norm * t_mask, displacement * t_mask)
 
-                    # End-to-end recon
+                    # End-to-end recon (in real space)
                     if opts.no_t_mask:
                         loss_dict['recon-def'] = F.mse_loss(gt_v, pred_vertices)
                     else:
@@ -658,6 +692,7 @@ class StageDispTrainer:
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
                     use_source_template=opts.use_source_template,
+                    norm_stats=self.norm_stats,
                 )
 
             # --- Valid ---
@@ -693,6 +728,8 @@ class StageDispTrainer:
                         strain = compute_strain_signal(
                             pred_lbs, batch.template, batch.faces,
                             mode=opts.strain_mode, neutral_span_inv=_nsi) if opts.use_strain else None
+                        if strain is not None:
+                            strain = self._normalize_strain(strain)
                         lbs_norm = calc_norm_torch(pred_lbs, batch.faces, at='verts')
                         displacement, _ = self.model_disp(
                             pred_lbs, lbs_norm,
@@ -701,16 +738,18 @@ class StageDispTrainer:
                             strain=strain)
                         if not opts.no_t_mask:
                             displacement = displacement * t_mask_v
-                        pred_vertices = pred_lbs + displacement
+                        displacement_real = self._denormalize_disp(displacement)
+                        pred_vertices = pred_lbs + displacement_real
                         wrinkle_target = batch.vertices - batch.smooth_vertices
                         if opts.use_true_edd:
                             neutral_detail = self._get_neutral_detail(batch)
                             wrinkle_target = wrinkle_target - neutral_detail.unsqueeze(0)
+                        wrinkle_target_norm = self._normalize_disp_target(wrinkle_target)
                         if opts.no_t_mask:
-                            loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target, displacement)
+                            loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target_norm, displacement)
                             loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices)
                         else:
-                            loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target * t_mask_v, displacement * t_mask_v)
+                            loss_dict['recon-wrinkle'] = F.mse_loss(wrinkle_target_norm * t_mask_v, displacement * t_mask_v)
                             loss_dict['recon-def'] = F.mse_loss(batch.vertices * t_mask_v, pred_vertices * t_mask_v)
                             loss_dict['recon-def'] += F.mse_loss(batch.template * (1 - t_mask_v), pred_vertices * (1 - t_mask_v))
                     else:
