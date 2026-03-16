@@ -416,6 +416,8 @@ class StageDispTrainer:
 
         with open(os.path.join(opts.log_dir, "opts.json"), 'w') as f:
             json.dump(vars(opts), f, indent=4)
+        with open(os.path.join(opts.log_dir, "train_opts.yml"), 'w') as f:
+            yaml.dump(vars(opts), f, sort_keys=False)
 
         if opts.tb:
             writer_train = SummaryWriter(log_dir=os.path.join(opts.log_dir, "train"))
