@@ -1006,10 +1006,17 @@ class Trainer():
                             batch.template_normal, batch.vertices_normal,
                             batch.mesh_data, epoch=0
                         )
+                    elif self.opts.version == 9:
+                        # v9: LBS returns 10 values
+                        pred_vertices, _, _, _, _, _, _, _, _, _ = self.model(
+                            batch.template, batch.vertices,
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=0
+                        )
                     else:
                         # Ours
                         pred_vertices, _, _, _, _, _, _ = self.model(
-                            batch.template, batch.vertices, 
+                            batch.template, batch.vertices,
                             batch.template_normal, batch.vertices_normal,
                             mesh_data=batch.mesh_data, epoch=0
                         )
@@ -1669,10 +1676,15 @@ class Trainer():
                             pred_vertices, _ = trainer.model.retarget(
                                 batch.template, batch.vertices, batch.template
                             )
+                        elif self.opts.version == 9:
+                            pred_vertices, _, _, _, _, _, _, _, _, _ = self.model(
+                                batch.template, batch.vertices,
+                                batch.template_normal, batch.vertices_normal,
+                                batch.mesh_data, epoch=0
+                            )
                         else:
-                            #pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
                             pred_vertices, _, _, _, _, _, _ = self.model(
-                                batch.template, batch.vertices, 
+                                batch.template, batch.vertices,
                                 batch.template_normal, batch.vertices_normal,
                                 mesh_data=batch.mesh_data, epoch=0
                             )
