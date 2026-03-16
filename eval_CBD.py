@@ -2300,7 +2300,7 @@ class Trainer():
         """
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
-        assert opts.version == 6, "evaluateLBS3 is for version 6 only"
+        assert opts.version in (6, 9), "evaluateLBS3 is for version 6 or 9"
         print("Running LBS-only evaluation on EvalDataset (real test set)")
         BS = self.opts.batch_size
         HB = BS // 2
@@ -2567,7 +2567,7 @@ class Trainer():
         """
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
-        assert opts.version == 6, "evaluateLBS3 is for version 6 only"
+        assert opts.version in (6, 9), "evaluateLBS3 is for version 6 or 9"
         print("Running LBS-only cross-retargeting evaluation on EvalDataset(real test set)")
         BS = self.opts.batch_size
         HB = BS // 2
@@ -4284,7 +4284,7 @@ if __name__ == "__main__":
         else:
             if opts.eval_cross_retarget:
                 if opts.eval_use_lbs:
-                    if opts.version == 6:
+                    if opts.version in (6, 9):
                         trainer.evaluateLBS3Cross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path)
                 elif opts.eval_use_strain_disp:
                     trainer.evaluateStrainDispCross(opts.tgt_vert_path, opts.tgt_norm_path, opts.tgt_obj_path)
