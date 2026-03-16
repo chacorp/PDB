@@ -401,7 +401,8 @@ class Trainer():
 
         elif opts.version == 9: # LBS + Strain Displacement joint training
             self._load_weight(self.model, name="lbs", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
-            self._load_weight(self.model_disp, name="disp", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
+            if getattr(opts, 'eval_use_strain_disp', False):
+                self._load_weight(self.model_disp, name="disp", ckpt_dir=self.opts.ckpt, epoch=self.opts.start_epoch)
             self.lbs_epoch = self.opts.start_epoch
 
         elif opts.version == 3: # corresponds to version 5 in train_CBD.py
