@@ -94,6 +94,9 @@ def Options():
     parser.set_defaults(no_exp_z=False)
     parser.add_argument("--smooth_n_iter", type=int, required=True,
                         help='Taubin smoothing iters (must be >0, e.g. 8/16/32)')
+    parser.add_argument("--disp_loss_type", type=str, default='mse',
+                        choices=['mse', 'l1', 'smooth_l1'],
+                        help='Loss function for displacement/wrinkle target')
     parser.add_argument("--use_true_edd", dest='use_true_edd', action='store_true',
                         help='true EDD target: (GT-sGT)-(T-sT) instead of GT-sGT')
     parser.set_defaults(use_true_edd=False)
@@ -257,7 +260,8 @@ class DispOnlyTrainer:
         if resume_mode and opts.log_dir and os.path.isdir(opts.log_dir):
             pass  # keep existing log_dir
         else:
-            tag = f"-DispOnly-{opts.strain_mode}-s{opts.smooth_n_iter}"
+            _loss_tag = f"-{opts.disp_loss_type}" if opts.disp_loss_type != 'mse' else ""
+            tag = f"-DispOnly-{opts.strain_mode}-s{opts.smooth_n_iter}{_loss_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
@@ -282,6 +286,7 @@ class DispOnlyTrainer:
             f"  smooth_n_iter: {opts.smooth_n_iter}\n"
             f"  use_source_template: {opts.use_source_template}\n"
             f"  no_exp_z: {opts.no_exp_z}\n"
+            f"  disp_loss_type: {opts.disp_loss_type}\n"
             f"  use_true_edd: {opts.use_true_edd}\n"
             f"  norm_stats_file: {opts.norm_stats_file}\n"
             f"  Input: GT strain({opts.strain_mode}) from GT deformed vs template\n"
@@ -300,6 +305,7 @@ class DispOnlyTrainer:
         BEST_LOSS = 1e8
         BEST_EPOCH = 0
         loss_lambda = {"recon-wrinkle": opts.lambda_vert}
+        _disp_loss_fn = {'mse': F.mse_loss, 'l1': F.l1_loss, 'smooth_l1': F.smooth_l1_loss}[opts.disp_loss_type]
 
         len_train = len(train_loader)
         len_valid = len(valid_loader)
@@ -354,9 +360,9 @@ class DispOnlyTrainer:
 
                 # loss (in normalized space)
                 if opts.no_t_mask:
-                    loss = F.mse_loss(wrinkle_target_norm, displacement)
+                    loss = _disp_loss_fn(wrinkle_target_norm, displacement)
                 else:
-                    loss = F.mse_loss(wrinkle_target_norm * t_mask, displacement * t_mask)
+                    loss = _disp_loss_fn(wrinkle_target_norm * t_mask, displacement * t_mask)
 
                 weighted = loss * loss_lambda["recon-wrinkle"]
                 weighted.backward()
@@ -447,8 +453,8 @@ class DispOnlyTrainer:
                     if not opts.no_t_mask:
                         displacement = displacement * t_mask_v
                     wrinkle_target_norm = self._normalize_disp_target(wrinkle_target)
-                    loss = F.mse_loss(wrinkle_target_norm * t_mask_v, displacement * t_mask_v) if not opts.no_t_mask \
-                        else F.mse_loss(wrinkle_target_norm, displacement)
+                    loss = _disp_loss_fn(wrinkle_target_norm * t_mask_v, displacement * t_mask_v) if not opts.no_t_mask \
+                        else _disp_loss_fn(wrinkle_target_norm, displacement)
                     weighted = loss.item() * loss_lambda["recon-wrinkle"]
                     running_val["recon-wrinkle"] += weighted
                     running_val["total"] += weighted
