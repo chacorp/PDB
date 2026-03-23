@@ -41,7 +41,9 @@ type: project
 | ICT (face only) | 9,409 | (same file, different index range) |
 
 - MF template obj: /source/inyup/NeuralFacialAnimation/utils/mf/mf_aligned_mean.obj (5223v, 10278f)
-- MF has 13 identity-specific templates in pkl, plus shared face indices
+  - Mean-like template of 13 training identities (small diff ~0.004 from exact arithmetic mean, possibly different generation method)
+- MF pkl has 13 per-identity neutral templates (5223,3) + shared face indices (10278,3)
+- 13 MF training identities: 002757580, 002539136, 6674443, 6795937, 8870559, 2183941, 002643814, 5372021, 7889059, 002914589, 5067077, 002421669, 002645310
 
 ### Maya Rig Setup
 - Script: `maya_rig/create_face_rig.py` — creates 84 joints from ASM Table 8
