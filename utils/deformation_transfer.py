@@ -61,10 +61,14 @@ class Transfer:
             self.ATareaA = (self.A.T @ self.area @ self.A).tocsc()
             eps_eye = sparse.diags((eps*torch.ones(self.ATareaA.shape[0])).tolist())
             regularized_ATareaA = self.ATareaA + eps_eye
-            self.lu = sparse_lu(regularized_ATareaA)
-            #self.lu = sparse_lu(self.ATareaA)
-            
-            self.solver = cupy_SuperLU(self.lu)
+            self.lu = sparse_lu(regularized_ATareaA)  # kept for CPU fallback / reference
+
+            # Build GPU solver via cupy's own splu (cupy_SuperLU wrapping scipy LU doesn't work)
+            from cupyx.scipy.sparse import csc_matrix as cupy_csc_matrix
+            from cupyx.scipy.sparse.linalg import splu as cupy_splu
+            with cupy.cuda.Device(self.device):
+                cupy_reg = cupy_csc_matrix(regularized_ATareaA.astype(np.float32))
+                self.solver = cupy_splu(cupy_reg)
 
 
             self.ATarea = (self.A.T @ self.area).T # Later transpose back
@@ -205,12 +209,13 @@ class deformation_gradient(torch.autograd.Function):
         ctx.vals = vals
         ctx.shape = shape
         ctx.set_materialize_grads(False)
-        # ctx.grad = from_dlpack(ctx.solver.solve(ctx.rhs.toarray()).toDlpack())
-        # cupy_input = cupy.from_dlpack(to_dlpack(input))
-        b = spmm(idxs, vals, m=shape[0], n=shape[1], matrix=input)
-        b = cupy.from_dlpack(to_dlpack(b))
+        ctx.batch_size = batch_size
+        # rhs = ATarea.T @ S: ATarea stored as (3F×V), need (V×3F) @ (3F×3B) → (V×3B)
+        t_idxs, t_vals = transpose(idxs, vals, m=shape[0], n=shape[1])
+        b = spmm(t_idxs, t_vals, m=shape[1], n=shape[0], matrix=input)
+        b = cupy.from_dlpack(b).astype(cupy.float32)  # torch → cupy, ensure float32
         cupy_output = ctx.solver.solve(b)
-        output = from_dlpack(cupy_output.toDlpack())
+        output = torch.from_dlpack(cupy_output)   # cupy → torch (new DLPack protocol)
         output = output.reshape(-1, batch_size, 3)
         output = output.transpose(0, 1)
         # print(f'forward time: {time.time() - t:.4f}s')
@@ -224,19 +229,19 @@ class deformation_gradient(torch.autograd.Function):
 
     
         grad_output = grad_output.permute(1, 0, 2).reshape(grad_output.shape[1], -1)
-        grad = from_dlpack(ctx.solver.solve(cupy.from_dlpack(to_dlpack(grad_output))).toDlpack())
+        grad = torch.from_dlpack(ctx.solver.solve(cupy.from_dlpack(grad_output).astype(cupy.float32)))
         if grad.isnan().any():
             print(grad)
             raise ValueError('Nan found after solving for gradient!')
         # raise ValueError
-        ctx.idxs, ctx.vals = transpose(ctx.idxs, ctx.vals, m=ctx.shape[0], n=ctx.shape[1])
-        grad = spmm(ctx.idxs, ctx.vals, m=ctx.shape[1], n=ctx.shape[0], matrix=grad)
+        # dL/d_input = ATarea (3F×V) @ grad_rhs (V×3B) → (3F×3B)
+        grad = spmm(ctx.idxs, ctx.vals, m=ctx.shape[0], n=ctx.shape[1], matrix=grad)
         if grad.isnan().any():
             print(grad)
             raise ValueError('Nan found after spmm with rhs!')
-        grad = grad.reshape(grad.shape[0], -1, 3)
-        grad = grad.transpose(0, 1)
-        grad = grad.reshape(grad.shape[0], -1, 3, 3)
+        grad = grad.reshape(grad.shape[0], ctx.batch_size, 3)   # [3F, B, 3]
+        grad = grad.transpose(0, 1)                              # [B, 3F, 3]
+        grad = grad.reshape(grad.shape[0], -1, 9)               # [B, F, 9]
         
         # Some clean up
         mempool = cupy.get_default_memory_pool()

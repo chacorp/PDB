@@ -4951,6 +4951,9 @@ class Trainer():
         if self.opts.smooth_n_iter > 0:
             self.loss_lambda['recon-lbs'] = self.opts.lambda_vert
             self.loss_lambda['recon-wrinkle'] = self.opts.lambda_vert
+        if hasattr(self.model, 'reg_loss'):
+            self.loss_lambda['lbs-W-reg'] = getattr(self.opts, 'lambda_W_reg', 1e-4)
+            self.loss_lambda['lbs-t-reg'] = getattr(self.opts, 'lambda_t_reg', 1e-4)
 
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
@@ -5394,6 +5397,298 @@ class Trainer():
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
 
 
+    def train_vFacialAnim(self, epochs):
+        """
+        v10 trainer for FacialAnimationModel (HierarchicalLBS + DiffusionNetEDD).
+
+        opts.train_mode controls which components are trained each epoch:
+
+          'hlbs_only'   : HLBS only, EDD frozen, always (stage 1)
+          'edd_only'    : EDD only, HLBS frozen, always (stage 2) — needs HLBS checkpoint
+          'joint'       : Both HLBS+EDD from start (stage 3)
+          'curriculum'  : HLBS-only for epochs 1..stage2_start, then EDD-only (stage 2, HLBS frozen)
+          'curriculum_j': HLBS-only for epochs 1..stage2_start, then joint fine-tune (stage 3)
+          'alternating' : Alternate every alternating_interval epochs:
+                          odd blocks  → HLBS (stage 1)
+                          even blocks → EDD  (stage 2)
+
+        Supporting opts:
+          train_mode           str   (default 'curriculum')
+          stage2_start_epoch   int   used by 'curriculum'/'curriculum_j'  (default 50)
+          alternating_interval int   used by 'alternating'                (default 10)
+          lambda_W_reg         float L2 reg on delta_W embeddings         (default 1e-4)
+          lambda_t_reg         float L2 reg on delta_t embeddings         (default 1e-4)
+        """
+        from models.facial_animation import FacialAnimationModel
+
+        assert isinstance(self.model, FacialAnimationModel), (
+            "train_vFacialAnim requires self.model to be a FacialAnimationModel instance."
+        )
+
+        train_mode   = getattr(self.opts, 'train_mode', 'curriculum')
+        stage2_start = getattr(self.opts, 'stage2_start_epoch', 50)
+        alt_interval = getattr(self.opts, 'alternating_interval', 10)
+
+        def _active_component(epoch: int) -> str:
+            """Return which component trains this epoch: 'hlbs', 'edd', or 'both'."""
+            if train_mode == 'hlbs_only':
+                return 'hlbs'
+            elif train_mode == 'edd_only':
+                return 'edd'
+            elif train_mode == 'joint':
+                return 'both'
+            elif train_mode == 'curriculum':
+                return 'hlbs' if epoch <= stage2_start else 'edd'
+            elif train_mode == 'curriculum_j':
+                return 'hlbs' if epoch <= stage2_start else 'both'
+            elif train_mode == 'alternating':
+                block = (epoch - 1) // alt_interval
+                return 'hlbs' if block % 2 == 0 else 'edd'
+            else:
+                raise ValueError(f"Unknown train_mode: '{train_mode}'")
+
+        # Map component → forward stage
+        _COMPONENT_TO_STAGE = {'hlbs': 1, 'edd': 2, 'both': 3}
+
+        def _rebuild_optimizer(component: str):
+            """Freeze/unfreeze params and rebuild optimizer for the given component."""
+            for p in self.model.parameters():
+                p.requires_grad_(True)
+
+            if component == 'hlbs':
+                for p in self.model.edd.parameters():
+                    p.requires_grad_(False)
+                params = list(self.model.hlbs.parameters())
+            elif component == 'edd':
+                for p in self.model.hlbs.parameters():
+                    p.requires_grad_(False)
+                params = list(self.model.edd.parameters())
+            else:  # 'both'
+                params = list(self.model.parameters())
+
+            self.optimizer = torch.optim.AdamW(params, lr=self.opts.lr, betas=(0.9, 0.999))
+            self.scheduler = torch.optim.lr_scheduler.StepLR(
+                self.optimizer,
+                step_size=getattr(self.opts, 'sc_step', 1_000_000),
+                gamma=self.opts.sc_gamma,
+            )
+
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+        # ── Dataset ──────────────────────────────────────────────────────────
+        BS = self.opts.batch_size
+
+        self.train_dataset = CBDDataset(self.opts, is_train=True,  toggle=self.opts.data_toggle)
+        self.valid_dataset = CBDDataset(self.opts, is_valid=True,  toggle=self.opts.data_toggle)
+
+        _num_workers = getattr(self.opts, 'num_workers', 0)
+        train_sampler = CBDdataSampler(
+            self.train_dataset.len_list, BS, shuffle=True, balance=False, is_train=True
+        )
+        self.train_dataloader = torch.utils.data.DataLoader(
+            self.train_dataset,
+            batch_sampler=train_sampler,
+            collate_fn=partial(CBD_collate_wrapper, device='cpu'),
+            num_workers=_num_workers,
+            persistent_workers=(_num_workers > 0),
+        )
+
+        valid_sampler = CBDdataSampler(
+            self.valid_dataset.len_list, BS, shuffle=True, balance=False, is_valid=True
+        )
+        self.valid_dataloader = torch.utils.data.DataLoader(
+            self.valid_dataset,
+            batch_sampler=valid_sampler,
+            collate_fn=partial(CBD_collate_wrapper, device='cpu'),
+            num_workers=0,
+        )
+
+        # ── Logging ──────────────────────────────────────────────────────────
+        import datetime
+        now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
+        resume_mode = (self.opts.ckpt is not None) and self.opts.continue_ckpt
+        if resume_mode:
+            self.opts.log_dir = self.opts.ckpt
+        else:
+            tag = f"-FacialAnim-v{self.opts.version}"
+            self.opts.log_dir = os.path.join(self.opts.log_dir, now + tag)
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
+
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), self.opts)
+
+        if self.opts.tb:
+            self.writer_train = SummaryWriter(log_dir=os.path.join(self.opts.log_dir, "train"))
+            self.writer_valid = SummaryWriter(log_dir=os.path.join(self.opts.log_dir, "valid"))
+
+        self.logger = Logger(os.path.join(self.opts.log_dir, "log.txt"))
+        print(f"Saving log at: {self.logger.file_path}")
+        print(self.train_dataset.get_data_config())
+        print(self.valid_dataset.get_data_config())
+
+        # ── Loss lambdas ─────────────────────────────────────────────────────
+        self.loss_lambda = {
+            "recon-lbs": self.opts.lambda_vert,   # stage-1: LBS vs smooth GT
+            "recon-edd": self.opts.lambda_vert,   # stage-2: LBS+EDD vs GT
+            "lbs-W-reg": getattr(self.opts, 'lambda_W_reg', 1e-4),
+            "lbs-t-reg": getattr(self.opts, 'lambda_t_reg', 1e-4),
+        }
+
+        # ── Training loop ────────────────────────────────────────────────────
+        global_step    = 0
+        BEST_LOSS      = 1e9
+        BEST_EPOCH     = 0
+        start_epoch    = self.opts.start_epoch
+        active_component = ''  # track so we only rebuild optimizer on switch
+
+        len_train_data = len(self.train_dataloader)
+        len_valid_data = len(self.valid_dataloader)
+        interv_train   = round(len_train_data / 10)
+
+        for epoch in range(start_epoch, epochs + 1):
+            # ── Component / optimizer switch ──────────────────────────────────
+            component = _active_component(epoch)
+            stage     = _COMPONENT_TO_STAGE[component]
+            if component != active_component:
+                _rebuild_optimizer(component)
+                active_component = component
+                msg = f"[Epoch {epoch:03d}] >>> Training component: {component} (stage={stage}) <<<"
+                print(msg)
+                self.logger.write(msg + "\n")
+
+            print(f"[{epoch:03d}/{epochs:03d}][Train] stage={stage}")
+            running_losses = {"recon-lbs": 0.0, "recon-edd": 0.0,
+                              "lbs-W-reg": 0.0, "lbs-t-reg": 0.0, "total": 0.0}
+
+            self.model.train()
+            train_counter = 0
+            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, ncols=100)
+            for index, batch in pbar:
+                batch = batch.to(self.device)
+                self.optimizer.zero_grad()
+
+                src_v  = batch.template
+                src_n  = batch.template_normal
+                tgt_v  = batch.vertices
+                tgt_n  = batch.vertices_normal
+                id_idx = batch.id_idx  # [B] long
+
+                # Forward
+                pred_v, rigid_v, _ = self.model(
+                    src_v, tgt_v, src_n, tgt_n, id_idx, stage=stage
+                )
+
+                # Losses
+                loss_dict = {}
+
+                if stage == 1:
+                    loss_dict['recon-lbs'] = F.mse_loss(tgt_v, rigid_v)
+                else:
+                    loss_dict['recon-lbs'] = F.mse_loss(tgt_v, rigid_v)
+                    loss_dict['recon-edd'] = F.mse_loss(tgt_v, pred_v)
+
+                regs = self.model.reg_loss()
+                loss_dict['lbs-W-reg'] = regs['L_W_reg']
+                loss_dict['lbs-t-reg'] = regs['L_t_reg']
+
+                # Aggregate
+                loss = 0
+                for key, value in loss_dict.items():
+                    tmp = value * self.loss_lambda[key]
+                    loss += tmp
+                    running_losses[key] += tmp.item()
+                loss_dict['total'] = loss
+
+                loss.backward()
+                self.optimizer.step()
+
+                running_losses['total'] += loss.item()
+                pbar.set_description(f"loss: {loss:.4e} stage={stage}")
+                global_step  += 1
+                train_counter += 1
+
+                if index % interv_train == 1:
+                    __idx__ = 1 / train_counter
+                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
+                    for key, value in running_losses.items():
+                        log_text += f"{key}: {value*__idx__:.5e} "
+                    self.logger.write(log_text + "\n")
+
+                if self.opts.debug:
+                    break
+
+            # Scheduler
+            if epoch != 0:
+                self.scheduler.step()
+
+            if self.opts.tb:
+                self.log_loss(self.writer_train, running_losses, epoch, train_counter)
+
+            if epoch % self.opts.save_interval == 0:
+                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+
+            # ── Validation ───────────────────────────────────────────────────
+            print(f"[{epoch:03d}/{epochs:03d}][Valid] stage={stage}")
+            running_losses_val = {"recon-lbs": 0.0, "recon-edd": 0.0,
+                                  "lbs-W-reg": 0.0, "lbs-t-reg": 0.0, "total": 0.0}
+            counter = 0
+            pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
+            for index, batch in pbar:
+                batch = batch.to(self.device)
+                counter += 1
+
+                with torch.no_grad():
+                    src_v  = batch.template
+                    src_n  = batch.template_normal
+                    tgt_v  = batch.vertices
+                    tgt_n  = batch.vertices_normal
+                    id_idx = batch.id_idx
+
+                    pred_v, rigid_v, _ = self.model(
+                        src_v, tgt_v, src_n, tgt_n, id_idx, stage=stage
+                    )
+
+                    loss_dict = {}
+                    loss_dict['recon-lbs'] = F.mse_loss(tgt_v, rigid_v)
+                    if stage == 2:
+                        loss_dict['recon-edd'] = F.mse_loss(tgt_v, pred_v)
+                    # reg losses not computed in val (set to 0 for logging consistency)
+                    loss_dict['lbs-W-reg'] = torch.tensor(0.0, device=self.device)
+                    loss_dict['lbs-t-reg'] = torch.tensor(0.0, device=self.device)
+
+                    loss = 0
+                    for key, value in loss_dict.items():
+                        tmp = value.item() * self.loss_lambda[key]
+                        loss += tmp
+                        running_losses_val[key] += tmp
+                    loss_dict['total'] = loss
+
+                running_losses_val['total'] += loss
+                pbar.set_description(f"val loss: {loss:.4e}")
+
+                if self.opts.debug:
+                    break
+
+            if self.opts.tb:
+                self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
+
+            val_loss = running_losses_val['total'] / counter
+            if val_loss < BEST_LOSS:
+                BEST_LOSS  = val_loss
+                BEST_EPOCH = epoch
+                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
+                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
+            else:
+                msg = f"[{epoch:03d}/{epochs:03d}] Curr: {val_loss:.6e}  Best: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}]\n"
+                print(msg)
+                self.logger.write(msg)
+
     @staticmethod
     def log_loss(writer, loss_dict, step, counter=None):
         if counter:
@@ -5492,6 +5787,8 @@ if __name__ == "__main__":
         trainer.train_vLBSHybrid3(epochs=opts.max_epoch)
     elif opts.version==9: # train LBS + Strain Displacement jointly
         trainer.train_vStrainDisp(epochs=opts.max_epoch)
+    elif opts.version==10: # train FacialAnimationModel (HierarchicalLBS + DiffusionNetEDD)
+        trainer.train_vFacialAnim(epochs=opts.max_epoch)
     else:
         raise NotImplementedError('no matching version!') 
     

@@ -441,6 +441,80 @@ def compute_jacobian_det(deformed_verts, template_verts, faces, neutral_span_inv
     return det_vert.unsqueeze(-1)  # [B, V, 1]
 
 
+def compute_jacobian_features(deformed_verts, template_verts, faces, neutral_span_inv=None):
+    """Per-vertex Jacobian features via polar decomposition F = R @ U.
+
+    Discards rotation R (irrelevant for EDD — head rotation != skin deformation).
+    Returns stretch tensor U features:
+        [det(U) - 1,  U_upper_tri(6)]  →  7-dim per vertex
+
+    det(U) - 1: area/volume change signal
+        > 0  → local expansion  (puffing)
+        = 0  → isometric        (no deformation)
+        < 0  → local compression (suction / wrinkles)
+
+    U upper-tri [U00, U11, U22, U01, U02, U12]: stretch magnitude and direction.
+        Combined with det, gives DiffusionNetEDD full deformation state signal.
+
+    Args:
+        deformed_verts   : [B, V, 3]
+        template_verts   : [B, V, 3]
+        faces            : [F, 3]
+        neutral_span_inv : [F, 3, 3] precomputed, optional
+
+    Returns:
+        jac_feat : [B, V, 7]  (det(U)-1 + U upper-tri), face-to-vertex scattered
+    """
+    B, V, _ = deformed_verts.shape
+    num_faces = faces.shape[0]
+    device = deformed_verts.device
+
+    # Per-face deformation gradient F [B, F, 3, 3]
+    F_grad = get_jacobian_matrix(deformed_verts, faces, template_verts,
+                                  neutral_span_inv=neutral_span_inv)
+    F_flat = F_grad.reshape(-1, 3, 3)   # [B*F, 3, 3]
+
+    # Polar decomposition: F = R @ U  (U = symmetric stretch tensor)
+    # torch.linalg.svd: F = U_svd @ S @ Vh  →  R = U_svd @ Vh,  U = Vh.T @ diag(S) @ Vh
+    U_svd, S, Vh = torch.linalg.svd(F_flat)                    # [BF,3,3], [BF,3], [BF,3,3]
+    U_stretch = torch.bmm(Vh.mT, torch.bmm(torch.diag_embed(S), Vh))  # [BF, 3, 3]
+
+    # det(U): product of singular values (all positive by construction)
+    det_U = S.prod(dim=-1) - 1.0          # [BF]  (subtract 1: 0 at rest)
+
+    # Upper-triangular 6 entries of (U - I): deviation from identity stretch
+    # Subtracting I so that neutral pose → all zeros (better conditioning for network)
+    u00 = U_stretch[:, 0, 0] - 1.0;  u11 = U_stretch[:, 1, 1] - 1.0;  u22 = U_stretch[:, 2, 2] - 1.0
+    u01 = U_stretch[:, 0, 1];        u02 = U_stretch[:, 0, 2];         u12 = U_stretch[:, 1, 2]
+    face_feat = torch.stack([det_U, u00, u11, u22, u01, u02, u12], dim=-1)  # [BF, 7]
+    face_feat = face_feat.reshape(B, num_faces, 7)                           # [B, F, 7]
+
+    # Scatter face features → vertex features (area-weighted average)
+    # Use face area as weight: area ∝ ||(v1-v0) × (v2-v0)||
+    fv = deformed_verts[:, faces]                                   # [B, F, 3, 3]
+    edge1 = fv[:, :, 1, :] - fv[:, :, 0, :]
+    edge2 = fv[:, :, 2, :] - fv[:, :, 0, :]
+    areas = torch.cross(edge1, edge2, dim=-1).norm(dim=-1)          # [B, F]
+
+    idx = faces.reshape(-1).unsqueeze(0).expand(B, -1)              # [B, 3F]
+
+    # Weight numerator: sum of (area * feat) per vertex
+    # feat expanded to 3 vertices per face, then scatter_add
+    feat_exp  = face_feat.unsqueeze(2).expand(-1, -1, 3, -1)        # [B, F, 3, 7]
+    area_exp  = areas.unsqueeze(2).unsqueeze(3).expand(-1, -1, 3, 7) # [B, F, 3, 7]
+    weighted  = (feat_exp * area_exp).reshape(B, -1, 7)             # [B, 3F, 7]
+    area_flat = area_exp[..., 0].reshape(B, -1)                     # [B, 3F]
+
+    feat_sum  = torch.zeros(B, V, 7, device=device)
+    area_sum  = torch.zeros(B, V,    device=device)
+    idx7      = idx.unsqueeze(-1).expand(-1, -1, 7)                 # [B, 3F, 7]
+    feat_sum.scatter_add_(1, idx7, weighted)
+    area_sum.scatter_add_(1, idx, area_flat)
+
+    jac_feat = feat_sum / (area_sum.unsqueeze(-1) + 1e-12)          # [B, V, 7]
+    return jac_feat
+
+
 # Strain mode → output dim mapping
 STRAIN_MODE_DIM = {
     'norm': 1,

@@ -1328,7 +1328,8 @@ class CBDDataset(data.Dataset):
             deformed = deformed * scale + trans
             smooth_deformed = smooth_deformed * scale + trans
 
-            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed)
+            id_idx = torch.tensor(id_mesh, dtype=torch.long)
+            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed, id_idx)
     
     def get_slice_idx(self, F_idx, WS):
         """
@@ -1547,11 +1548,16 @@ class CBDDataBatch:
 
             self.exp_coeff = torch.stack(transposed_data[6], 0) # [B, V, 24]
             self.id_name = transposed_data[7][0] # string
-            # smooth_vertices at index 9, neutral_span_inv at index 10
+            # smooth_vertices at index 9, id_idx at index 10
             if len(transposed_data) > 9:
                 self.smooth_vertices = torch.stack(transposed_data[9], 0) # [B, V, 3]
             else:
                 self.smooth_vertices = self.vertices  # fallback
+            # id_idx: per-sample within-dataset identity index (int64, for HierarchicalLBS delta_W/delta_t)
+            if len(transposed_data) > 10:
+                self.id_idx = torch.stack(transposed_data[10], 0)  # [B]
+            else:
+                self.id_idx = None
             # neutral_span_inv precompute disabled (swap pressure)
             self.neutral_span_inv = None
     

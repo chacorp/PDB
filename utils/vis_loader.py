@@ -244,7 +244,7 @@ class CheckpointVisLoader:
         Run forward on all vis frames and save stitched panel images.
 
         Args:
-            mode:             'stage_disp' or 'disp_only'
+            mode:             'stage_disp', 'disp_only', or 'hlbs'
             stage:            1 or 2 (for stage_disp mode)
             strain_mode:      strain signal mode (None to skip strain panels)
             vis_jacobian_det: if True, append det(F)-1 panels (coolwarm, puffing/compression map)
@@ -262,7 +262,8 @@ class CheckpointVisLoader:
 
         if model_lbs is not None:
             model_lbs.eval()
-        model_disp.eval()
+        if model_disp is not None:
+            model_disp.eval()
 
         for fi, entry in enumerate(self.frames):
             try:
@@ -288,8 +289,15 @@ class CheckpointVisLoader:
                 # No LBS — use smooth_GT as proxy, t_mask from geometry
                 pred_lbs = smooth_v
                 t_mask = plateau_hat_points(template_v)
+            elif mode == 'hlbs':
+                # HierarchicalLBS forward: geometry-driven, no id_idx needed
+                delta     = vertices_v - template_v
+                src_in    = torch.cat([template_v, template_n], dim=-1)
+                deform_in = torch.cat([delta, vertices_n, src_in], dim=-1)
+                pred_lbs  = model_lbs(template_v, deform_in)              # [1, N, 3]
+                t_mask    = plateau_hat_points(template_v)
             else:
-                # ── LBS forward ──
+                # ── LBS forward (stage_disp: old NGBC interface) ──
                 pred_lbs, _, _, _, _, t_mask, _, _, _, _ = model_lbs(
                     template_v, vertices_v, template_n, vertices_n,
                     mesh_data, epoch=epoch
@@ -357,7 +365,14 @@ class CheckpointVisLoader:
                     panels.append((verts, vals[:, None], cmap, f'{prefix}:{ch_name}'))
                 return panels
 
-            if mode == 'disp_only':
+            if mode == 'hlbs':
+                panel_specs = [
+                    (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
+                    (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
+                    (pl_np,   np.zeros(pl_np.shape[0])[:, None],   'YlOrRd', 'pred_LBS'),
+                ]
+
+            elif mode == 'disp_only':
                 panel_specs = [
                     (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
                     (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
