@@ -41,7 +41,9 @@ type: project
 | ICT (face only) | 9,409 | (same file, different index range) |
 
 - MF template obj: /source/inyup/NeuralFacialAnimation/utils/mf/mf_aligned_mean.obj (5223v, 10278f)
-  - Mean-like template of 13 training identities (small diff ~0.004 from exact arithmetic mean, possibly different generation method)
+  - Mean template of 13 training identities, full head (뒷통수 포함)
+  - Standardized from NFR: 원본 7,306 → 5,223 verts (안구/구강 등 non-visible 내부 vertex 제거)
+  - `utils/mf/standardization.npy`: v_idx (5223,) + new_f (10278,3), 모든 dataset에 동일 방식 적용
 - MF pkl has 13 per-identity neutral templates (5223,3) + shared face indices (10278,3)
 - 13 MF training identities: 002757580, 002539136, 6674443, 6795937, 8870559, 2183941, 002643814, 5372021, 7889059, 002914589, 5067077, 002421669, 002645310
 
