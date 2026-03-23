@@ -75,3 +75,4 @@ smooth_sanity_output/
 scripts/fit_pca_mf.py
 scripts/vis_smooth_sanity.py
 strain_option_vis/
+jacobian_strain_vis/

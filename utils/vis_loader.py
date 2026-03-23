@@ -20,7 +20,7 @@ import torch
 import igl
 import yaml
 
-from utils.mesh_utils import calc_norm_torch, compute_strain_signal, taubin_smooth_np
+from utils.mesh_utils import calc_norm_torch, compute_strain_signal, compute_jacobian_det, taubin_smooth_np
 from utils.matplotlib_rnd import vis_mesh_key_weight
 from utils.exp_utils import plateau_hat_points
 
@@ -236,18 +236,20 @@ class CheckpointVisLoader:
     @torch.no_grad()
     def visualize(self, model_lbs, model_disp, epoch, save_dir,
                   mode='stage_disp', stage=1,
-                  strain_mode='norm', smooth_n_iter=16,
+                  strain_mode='norm', vis_jacobian_det=False,
+                  smooth_n_iter=16,
                   no_t_mask=False, use_source_template=False,
                   norm_stats=None):
         """
         Run forward on all vis frames and save stitched panel images.
 
         Args:
-            mode: 'stage_disp' or 'disp_only'
-            stage: 1 or 2 (for stage_disp mode)
-            strain_mode: strain signal mode
-            smooth_n_iter: Taubin smoothing iterations for smooth_GT
-            norm_stats: dict with strain_mean/std, disp_mean/std tensors (or None)
+            mode:             'stage_disp' or 'disp_only'
+            stage:            1 or 2 (for stage_disp mode)
+            strain_mode:      strain signal mode (None to skip strain panels)
+            vis_jacobian_det: if True, append det(F)-1 panels (coolwarm, puffing/compression map)
+            smooth_n_iter:    Taubin smoothing iterations for smooth_GT
+            norm_stats:       dict with strain_mean/std, disp_mean/std tensors (or None)
         """
         if not self._enabled:
             return
@@ -293,25 +295,32 @@ class CheckpointVisLoader:
                     mesh_data, epoch=epoch
                 )
 
-            # ── Strain signals ──
-            gt_strain = compute_strain_signal(
-                smooth_v, template_v, faces, mode=strain_mode)
-            pred_strain = compute_strain_signal(
-                pred_lbs, template_v, faces, mode=strain_mode)
-            gt_snorm = gt_strain.norm(dim=-1)[0].cpu().numpy()    # [V]
-            pred_snorm = pred_strain.norm(dim=-1)[0].cpu().numpy()
-            gt_strain_np = gt_strain[0].cpu().numpy()       # [V, D]
-            pred_strain_np = pred_strain[0].cpu().numpy()   # [V, D]
+            # ── Strain signals (optional) ──
+            gt_strain = pred_strain = None
+            gt_strain_np = pred_strain_np = None
+            if strain_mode:
+                gt_strain   = compute_strain_signal(smooth_v, template_v, faces, mode=strain_mode)
+                pred_strain = compute_strain_signal(pred_lbs, template_v, faces, mode=strain_mode)
+                gt_strain_np   = gt_strain[0].cpu().numpy()    # [V, D]
+                pred_strain_np = pred_strain[0].cpu().numpy()  # [V, D]
+
+            # ── Jacobian det(F)-1 signals (optional) ──
+            gt_jdet_np = pred_jdet_np = None
+            if vis_jacobian_det:
+                gt_jdet_np   = compute_jacobian_det(smooth_v, template_v, faces)[0].cpu().numpy()  # [V, 1]
+                pred_jdet_np = compute_jacobian_det(pred_lbs, template_v, faces)[0].cpu().numpy()  # [V, 1]
 
             # ── DispNet forward (skip in stage 1 of stage_disp: DispNet is frozen/untrained) ──
             if stage == 1 and mode != 'disp_only':
                 pf_np = None
                 disp_mag = None
             else:
-                # Normalize strain for DispNet input
-                disp_strain = pred_strain if mode != 'disp_only' else gt_strain
-                if norm_stats is not None:
-                    disp_strain = (disp_strain - norm_stats['strain_mean']) / norm_stats['strain_std']
+                # Normalize strain for DispNet input (None when strain_mode is not set)
+                disp_strain = None
+                if strain_mode:
+                    disp_strain = pred_strain if mode != 'disp_only' else gt_strain
+                    if norm_stats is not None:
+                        disp_strain = (disp_strain - norm_stats['strain_mean']) / norm_stats['strain_std']
                 lbs_norm = calc_norm_torch(pred_lbs, faces, at='verts')
                 displacement, _ = model_disp(
                     pred_lbs, lbs_norm,
@@ -336,11 +345,10 @@ class CheckpointVisLoader:
             pl_np = pred_lbs[0].cpu().numpy()
 
             # ── Build panel specs ──
-            # Per-channel strain panels (appended after base panels)
-            ch_names = _STRAIN_CHANNELS.get(strain_mode, ['||E||_F'])
+            ch_names = _STRAIN_CHANNELS.get(strain_mode, []) if strain_mode else []
 
             def _strain_ch_panels(verts, strain_np, prefix):
-                """Generate per-channel strain panels."""
+                """Per-channel strain panels — only called when strain_mode is set."""
                 panels = []
                 for ci, ch_name in enumerate(ch_names):
                     vals = strain_np[:, ci]
@@ -350,31 +358,44 @@ class CheckpointVisLoader:
                 return panels
 
             if mode == 'disp_only':
-                # GT | smoothGT | GT_pred | GT_pred+disp | sGT+strain_ch0 | ...
                 panel_specs = [
                     (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
                     (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
                     (pf_np,   np.zeros(pf_np.shape[0])[:, None],   'YlOrRd', 'GT_pred'),
                     (pf_np,   disp_mag[:, None],                   'YlOrRd', 'pred+disp'),
-                ] + _strain_ch_panels(sv_np, gt_strain_np, 'GT_strain')
+                ]
+                if strain_mode:
+                    panel_specs += _strain_ch_panels(sv_np, gt_strain_np, 'GT_strain')
+                if vis_jacobian_det:
+                    panel_specs += [(sv_np, gt_jdet_np, 'coolwarm', 'GT_strain:det(F)-1')]
+
             elif stage == 1:
-                # GT | smoothGT | pred_sGT | GT_strain_ch0..N | pred_strain_ch0..N
                 panel_specs = [
                     (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
                     (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
                     (pl_np,   np.zeros(pl_np.shape[0])[:, None],   'YlOrRd', 'pred_sGT'),
-                ] + _strain_ch_panels(sv_np, gt_strain_np, 'GT_s') \
-                  + _strain_ch_panels(pl_np, pred_strain_np, 'pred_s')
-            else:
-                # Stage 2: GT | smoothGT | pred_sGT | GT_pred | pred+disp | GT_strain_ch.. | pred_strain_ch..
+                ]
+                if strain_mode:
+                    panel_specs += _strain_ch_panels(sv_np, gt_strain_np,   'GT_s')
+                    panel_specs += _strain_ch_panels(pl_np, pred_strain_np, 'pred_s')
+                if vis_jacobian_det:
+                    panel_specs += [(sv_np, gt_jdet_np,   'coolwarm', 'GT_s:det(F)-1')]
+                    panel_specs += [(pl_np, pred_jdet_np, 'coolwarm', 'pred_s:det(F)-1')]
+
+            else:  # stage 2
                 panel_specs = [
                     (gt_v_np, np.zeros(gt_v_np.shape[0])[:, None], 'YlOrRd', 'GT'),
                     (sv_np,   np.zeros(sv_np.shape[0])[:, None],   'YlOrRd', 'smooth_GT'),
                     (pl_np,   np.zeros(pl_np.shape[0])[:, None],   'YlOrRd', 'pred_sGT'),
                     (pf_np,   np.zeros(pf_np.shape[0])[:, None],   'YlOrRd', 'GT_pred'),
                     (pf_np,   disp_mag[:, None],                   'YlOrRd', 'pred+disp'),
-                ] + _strain_ch_panels(sv_np, gt_strain_np, 'GT_s') \
-                  + _strain_ch_panels(pl_np, pred_strain_np, 'pred_s')
+                ]
+                if strain_mode:
+                    panel_specs += _strain_ch_panels(sv_np, gt_strain_np,   'GT_s')
+                    panel_specs += _strain_ch_panels(pl_np, pred_strain_np, 'pred_s')
+                if vis_jacobian_det:
+                    panel_specs += [(sv_np, gt_jdet_np,   'coolwarm', 'GT_s:det(F)-1')]
+                    panel_specs += [(pl_np, pred_jdet_np, 'coolwarm', 'pred_s:det(F)-1')]
 
             # ── Render & stitch ──
             panels = []
@@ -382,7 +403,7 @@ class CheckpointVisLoader:
                 tmp_path = os.path.join(tmp_dir, f'{epoch:03d}_{fi:03d}_{title}.png')
                 has_neg = float(weights.min()) < -1e-8
                 if has_neg:
-                    vmax = max(abs(float(weights.max())), abs(float(weights.min())), 1e-6)
+                    vmax = max(float(np.percentile(np.abs(weights), 95)), 1e-6)
                     vmin = -vmax
                 else:
                     vmax = max(float(np.percentile(weights, 95)), 1e-6)

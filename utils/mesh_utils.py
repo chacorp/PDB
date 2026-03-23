@@ -405,6 +405,42 @@ def compute_strain_signal(deformed_verts, template_verts, faces, mode='norm',
         raise ValueError(f"Unknown strain mode: {mode}")
 
 
+def compute_jacobian_det(deformed_verts, template_verts, faces, neutral_span_inv=None):
+    """Per-vertex det(F) - 1, scattered from per-face deformation gradients.
+
+    det(F) > 1  → local expansion  (puffing)
+    det(F) = 1  → isometric        (no volume change)
+    det(F) < 1  → local compression (wrinkle / suction)
+
+    Returning det(F) - 1 so the neutral pose maps to 0 (cleaner colormap centering).
+
+    Args:
+        deformed_verts:    [B, V, 3]
+        template_verts:    [B, V, 3]
+        faces:             [F, 3]
+        neutral_span_inv:  [B, F, 3, 3] or None
+
+    Returns:
+        [B, V, 1]  per-vertex det(F) - 1
+    """
+    B, V, _ = deformed_verts.shape
+    num_faces = faces.shape[0]
+    device = deformed_verts.device
+
+    F_grad = get_jacobian_matrix(deformed_verts, faces, template_verts,
+                                  neutral_span_inv=neutral_span_inv)  # [B, F, 3, 3]
+    det_face = torch.det(F_grad.reshape(-1, 3, 3)).reshape(B, num_faces) - 1.0  # [B, F]
+
+    # Scatter face → vertex (average adjacent faces)
+    idx = faces.reshape(-1).unsqueeze(0).expand(B, -1)           # [B, 3F]
+    ones = torch.ones(B, 3 * num_faces, device=device)
+    count = scatter_add(ones, idx, dim=1, dim_size=V) + 1e-12     # [B, V]
+    expanded = det_face.unsqueeze(-1).expand(-1, -1, 3).reshape(B, -1)  # [B, 3F]
+    det_vert = scatter_add(expanded, idx, dim=1, dim_size=V) / count     # [B, V]
+
+    return det_vert.unsqueeze(-1)  # [B, V, 1]
+
+
 # Strain mode → output dim mapping
 STRAIN_MODE_DIM = {
     'norm': 1,
