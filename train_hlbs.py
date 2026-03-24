@@ -321,7 +321,8 @@ class HLBSTrainer:
                 # ── Regularization + smoothness ───────────────────────────
                 # Lazily build mesh edges for smoothness loss
                 if opts.lambda_W_smooth > 0 and self._edges is None:
-                    f_np = batch.faces[0].cpu().numpy()
+                    f_raw = batch.faces.cpu()
+                    f_np = f_raw[0].numpy() if f_raw.dim() == 3 else f_raw.numpy()
                     e = np.concatenate([f_np[:, [0,1]], f_np[:, [1,2]], f_np[:, [0,2]]], axis=0)
                     e = np.sort(e, axis=1)
                     e = np.unique(e, axis=0)
