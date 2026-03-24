@@ -206,7 +206,7 @@ class CheckpointVisLoader:
         """Load one raw .npy frame, apply procrustes alignment, compute normals."""
         from utils.remesh_utils import procrustes_LDM
 
-        vertices_np = np.load(entry['npy_path']).astype(np.float32)
+        vertices_np = np.load(entry['npy_path'], allow_pickle=True).astype(np.float32)
         template_np = entry['template_np']
         faces_np = entry['faces_np']
 
