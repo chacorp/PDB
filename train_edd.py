@@ -236,6 +236,25 @@ class EDDTrainer:
 
         self.vis_loader = CheckpointVisLoader(opts, device=self.device)
 
+        # Wrapper: adapts DiffusionNetEDD to the DispNet vis interface
+        # vis_loader calls model_disp(pred_lbs, lbs_norm, source_vert=..., ...)
+        _edd   = self.model_edd
+        _faces = self.faces_t
+        _hdim  = opts.hid_dim
+        _dev   = self.device
+
+        class _EDDVisWrapper:
+            def __call__(self_, pred_lbs, lbs_norm, source_vert=None, source_norm=None, strain=None):
+                src      = source_vert if source_vert is not None else pred_lbs
+                jac_feat = compute_jacobian_features(pred_lbs, src, _faces)
+                z_exp    = torch.zeros(pred_lbs.shape[0], _hdim, device=_dev)
+                disp     = _edd(jac_feat, z_exp)
+                return disp, None
+            def eval(self_):  _edd.eval();  return self_
+            def train(self_): _edd.train(); return self_
+
+        self._edd_vis_wrapper = _EDDVisWrapper()
+
     def train(self, epochs):
         opts = self.opts
         BS = opts.batch_size
@@ -409,10 +428,11 @@ class EDDTrainer:
                 torch.save(self.model_edd.state_dict(),
                            f'{opts.log_dir}/model_edd_{epoch:03d}.pth')
 
-            if epoch % opts.eval_iter == 0:
+            if epoch % opts.eval_iter == 0 or epoch == opts.start_epoch:
                 vis_mode = 'disp_only' if self.standalone else 'stage_disp'
+                vis_disp = self._edd_vis_wrapper if self.standalone else self.model_edd
                 self.vis_loader.visualize(
-                    self.model_hlbs, self.model_edd, epoch,
+                    self.model_hlbs, vis_disp, epoch,
                     save_dir=f'{opts.log_dir}/img/eval',
                     mode=vis_mode,
                     stage=2,

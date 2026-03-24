@@ -57,9 +57,14 @@ def Options():
 
     # regularization
     parser.add_argument("--lambda_W_reg", type=float, default=1e-4,
-                        help='L2 reg on delta_W identity embeddings')
+                        help='L2 reg on delta_W')
     parser.add_argument("--lambda_t_reg", type=float, default=1e-4,
-                        help='L2 reg on delta_t identity embeddings')
+                        help='L2 reg on delta_t')
+    parser.add_argument("--lambda_neu", type=float, default=1.0,
+                        help='Neutral reconstruction loss: forward(src, delta=0) == src')
+    parser.add_argument("--lambda_W_smooth", type=float, default=0.0,
+                        help='Dirichlet smoothness on W: mean ||W_i - W_j||^2 over edges. '
+                             '0 = disabled (default)')
 
     # target
     parser.add_argument("--target", type=str, default='gt',
@@ -172,6 +177,7 @@ class HLBSTrainer:
                 print(f"Resumed HLBS from: {paths[0]}")
 
         self.vis_loader = CheckpointVisLoader(opts, device=self.device)
+        self._edges = None   # lazily computed from first batch faces
 
     def train(self, epochs):
         opts = self.opts
@@ -236,6 +242,8 @@ class HLBSTrainer:
             f"{smooth_line}"
             f"  lambda_W_reg  : {opts.lambda_W_reg}\n"
             f"  lambda_t_reg  : {opts.lambda_t_reg}\n"
+            f"  lambda_neu    : {opts.lambda_neu}\n"
+            f"  lambda_W_smooth: {opts.lambda_W_smooth}\n"
             f"=====================\n"
         )
         print(config_text)
@@ -243,9 +251,11 @@ class HLBSTrainer:
         logger.write(train_ds.get_data_config())
 
         loss_lambda = {
-            "recon-lbs": opts.lambda_vert,
-            "lbs-W-reg": opts.lambda_W_reg,
-            "lbs-t-reg": opts.lambda_t_reg,
+            "recon-lbs":   opts.lambda_vert,
+            "recon-neu":   opts.lambda_neu,
+            "lbs-W-reg":   opts.lambda_W_reg,
+            "lbs-t-reg":   opts.lambda_t_reg,
+            "lbs-W-smooth": opts.lambda_W_smooth,
         }
 
         BEST_LOSS  = 1e8
@@ -258,7 +268,7 @@ class HLBSTrainer:
         for epoch in range(opts.start_epoch, epochs + 1):
             # ── Train ────────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "lbs-W-reg": 0.0, "lbs-t-reg": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "lbs-W-reg": 0.0, "lbs-t-reg": 0.0, "lbs-W-smooth": 0.0, "total": 0.0}
             cnt = 0
 
             pbar = tqdm(enumerate(train_loader), total=len_train, ncols=120,
@@ -294,9 +304,35 @@ class HLBSTrainer:
                         )
                     }
 
-                regs = self.model.reg_loss(src_v)
-                loss_dict["lbs-W-reg"] = regs["L_W_reg"]
-                loss_dict["lbs-t-reg"] = regs["L_t_reg"]
+                # ── Neutral reconstruction loss ───────────────────────────
+                # When delta=0 (no deformation), pred_lbs should equal src_v
+                if opts.lambda_neu > 0:
+                    delta_zero   = torch.zeros_like(src_v)
+                    neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
+                    pred_neutral = self.model(src_v, neu_deform_in)
+                    if opts.no_t_mask:
+                        loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
+                    else:
+                        loss_dict["recon-neu"] = (
+                            F.mse_loss(src_v * t_mask,    pred_neutral * t_mask)
+                            + F.mse_loss(src_v * inv_mask, pred_neutral * inv_mask)
+                        )
+
+                # ── Regularization + smoothness ───────────────────────────
+                # Lazily build mesh edges for smoothness loss
+                if opts.lambda_W_smooth > 0 and self._edges is None:
+                    f_np = batch.faces[0].cpu().numpy()
+                    e = np.concatenate([f_np[:, [0,1]], f_np[:, [1,2]], f_np[:, [0,2]]], axis=0)
+                    e = np.sort(e, axis=1)
+                    e = np.unique(e, axis=0)
+                    self._edges = torch.tensor(e, dtype=torch.long, device=self.device)
+
+                edges = self._edges if opts.lambda_W_smooth > 0 else None
+                regs = self.model.reg_loss(src_v, edges=edges)
+                loss_dict["lbs-W-reg"]    = regs["L_W_reg"]
+                loss_dict["lbs-t-reg"]    = regs["L_t_reg"]
+                if opts.lambda_W_smooth > 0:
+                    loss_dict["lbs-W-smooth"] = regs["L_W_smooth"]
 
                 loss = sum(loss_dict[k] * loss_lambda[k] for k in loss_dict)
                 loss.backward()

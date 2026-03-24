@@ -272,24 +272,35 @@ class HierarchicalLBS(nn.Module):
 
     # ── Regularization ────────────────────────────────────────────────────
 
-    def reg_loss(self, source_vert: torch.Tensor) -> dict:
+    def reg_loss(self, source_vert: torch.Tensor, edges=None) -> dict:
         """
-        Compute output-space regularization losses on delta_W and delta_t.
+        Compute regularization losses on delta_W, delta_t, and optionally W smoothness.
 
         Args:
-            source_vert : [B, N, 3]  template vertices (same batch as training)
+            source_vert : [B, N, 3]  template vertices
+            edges       : [E, 2] long tensor of mesh edges (optional).
+                          Smoothness = mean over edges of ||W_i - W_j||^2
+                          (Dirichlet energy: penalizes adjacent vertices with different weights)
         Returns:
-            dict with 'L_W_reg' and 'L_t_reg'
+            dict with 'L_W_reg', 'L_t_reg', 'L_W_smooth'
         """
         B, _, _ = source_vert.shape
         J = self.num_joints
 
-        _, delta_W = self._get_skinning_weights(source_vert)           # [B, N, J]
+        W, delta_W = self._get_skinning_weights(source_vert)           # [B, N, J]
         delta_t = self.bind_pose_net(source_vert).squeeze(1).reshape(B, J, 3)
 
-        L_W_reg = (delta_W ** 2).mean()
-        L_t_reg = (delta_t ** 2).mean()
-        return {'L_W_reg': L_W_reg, 'L_t_reg': L_t_reg}
+        L_W_reg    = (delta_W ** 2).mean()
+        L_t_reg    = (delta_t ** 2).mean()
+
+        if edges is not None:
+            W_i = W[:, edges[:, 0], :]          # [B, E, J]
+            W_j = W[:, edges[:, 1], :]          # [B, E, J]
+            L_W_smooth = ((W_i - W_j) ** 2).mean()
+        else:
+            L_W_smooth = source_vert.new_zeros(())
+
+        return {'L_W_reg': L_W_reg, 'L_t_reg': L_t_reg, 'L_W_smooth': L_W_smooth}
 
 
 # ── Quick sanity check ────────────────────────────────────────────────────
