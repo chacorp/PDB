@@ -188,6 +188,10 @@ class HLBSTrainer:
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=opts.sc_step, gamma=opts.sc_gamma)
 
+        # When target is GT, smooth data is not needed — override to skip loading
+        if opts.target == 'gt':
+            opts.smooth_n_iter = 0
+
         train_ds = CBDDataset(opts, is_train=True, toggle=opts.data_toggle)
         valid_ds = CBDDataset(opts, is_valid=True, toggle=opts.data_toggle)
         train_sampler = CBDdataSampler(train_ds.len_list, BS, shuffle=True,  balance=False, is_train=True)
@@ -393,7 +397,7 @@ class HLBSTrainer:
 
             # ── Valid ────────────────────────────────────────────────────────
             self.model.eval()
-            running_val = {"recon-lbs": 0.0, "total": 0.0}
+            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "total": 0.0}
             vcnt = 0
 
             pbar = tqdm(enumerate(valid_loader), total=len_valid, ncols=120,
@@ -417,6 +421,15 @@ class HLBSTrainer:
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * loss_lambda["recon-lbs"]
                     running_val["recon-lbs"] += val_loss
                     running_val["total"]     += val_loss
+
+                    # Neutral reconstruction loss (val)
+                    if opts.lambda_neu > 0:
+                        delta_zero    = torch.zeros_like(src_v)
+                        neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
+                        pred_neutral  = self.model(src_v, neu_deform_in)
+                        val_neu = F.mse_loss(src_v, pred_neutral).item() * loss_lambda["recon-neu"]
+                        running_val["recon-neu"] += val_neu
+                        running_val["total"]     += val_neu
 
                 pbar.set_description(f"[{epoch:03d}] val lbs: {val_loss:.5e}")
 
