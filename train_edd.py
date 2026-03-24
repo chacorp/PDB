@@ -410,10 +410,11 @@ class EDDTrainer:
                            f'{opts.log_dir}/model_edd_{epoch:03d}.pth')
 
             if epoch % opts.eval_iter == 0:
+                vis_mode = 'disp_only' if self.standalone else 'stage_disp'
                 self.vis_loader.visualize(
                     self.model_hlbs, self.model_edd, epoch,
                     save_dir=f'{opts.log_dir}/img/eval',
-                    mode='stage_disp',
+                    mode=vis_mode,
                     stage=2,
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
