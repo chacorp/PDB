@@ -592,7 +592,8 @@ class ICT_face_model():
         self.ict_deci = np.load(f'{base_dir}/utils/ict/ICT_decimate.npz')
         
         ## mesh faces
-        quad_Faces = torch.load(f'{base_dir}/ict_face_pt/quad_faces.pt')[:quad_f_idx] #, map_location='cuda:0')
+        self.quad_Faces = torch.load(f'{base_dir}/ict_face_pt/quad_faces.pt')
+        quad_Faces = self.quad_Faces[:quad_f_idx] #, map_location='cuda:0')
         self.faces = quad_Faces[:, [[0, 1, 2],[0, 2, 3]] ].permute(1, 0, 2).reshape(-1, 3).numpy()
         self.f_num = self.faces.shape[0]
         self.v_num = v_idx
@@ -691,12 +692,13 @@ class ICT_face_model():
             exp_coeffs (np.ndarray): [T, 53] ICT-facekit expression coeff
             mesh_v_idx (np.ndarray): <int> array of std mesh vertex indices
         """
+        v_idx, quad_f_idx = self.region[region]
         # id vertices
         id_disps = self.get_id_disp(id_coeff, region=region)
         
         # exp vertices
         exp_disp = self.get_exp_disp(exp_coeffs, region=region)
-        id_verts = self.neutral_verts + id_disps
+        id_verts = self.neutral_verts[None, :v_idx] + id_disps
         id_exp_verts = id_verts + exp_disp
         
         # apply std
