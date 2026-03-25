@@ -1385,7 +1385,7 @@ if __name__ == "__main__":
     
     # base configs (yaml)
     if opts.version==0:
-        opts.config='config/train.yml'
+        opts.config='config/train_NFS.yml'
         opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
     else:
         config = f'{opts.ckpt}/train_opts.yml'
