@@ -47,7 +47,7 @@ class NFS(nn.Module):
     def __init__(self, 
                  opts, 
                  mesh_dfn_info=None, 
-                 print_param=True, 
+                 print_param=False, 
                  is_train=False,
                  design="nfr",
                 ):
@@ -58,7 +58,7 @@ class NFS(nn.Module):
         """
         self.opts = opts
         self.device = self.opts.device if opts is not None else 'cpu'
-        self.is_train = self.opts.is_train if opts is not None else False
+        self.is_train = self.opts.is_train if opts is not None else False        
         self.ict_face_only = self.opts.ict_face_only if opts is not None else True
         self.opts.design = self.opts.design if opts is not None else design
         self.scale_exp = 1.0
@@ -133,7 +133,7 @@ class NFS(nn.Module):
         #---------------------------------------------------------------------------------
         # print all layer params number
         if print_param:
-            self.print_parameter_num()
+            print(self.log_parameter_num())
         
         self.criterion = nn.MSELoss()
         self.calc_norm_torch = calc_norm_torch
@@ -145,27 +145,29 @@ class NFS(nn.Module):
         self.ict_face_model = ICT_face_model(face_only=False, device=self.device, use_decimate=self.use_decimate)
         # self.ict_face_model_fo = ICT_face_model(face_only=True, device=self.device, use_decimate=self.use_decimate)
         
-        self.ict_neutral = torch.from_numpy(self.ict_face_model.neutral_verts).float().to(self.device)
-        self.ict_faces = torch.from_numpy(self.ict_face_model.faces).long().to(self.device)
-        #---------------------------------------------------------------------------------
+#         self.ict_neutral = torch.from_numpy(self.ict_face_model.neutral_verts).float().to(self.device)
+#         self.ict_faces = torch.from_numpy(self.ict_face_model.faces).long().to(self.device)
+#         #---------------------------------------------------------------------------------
         
         
-        #---------------------------------------------------------------------------------
-        if self.opts.seg_dim == 20:
-            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot.npy'
-        elif self.opts.seg_dim == 24:
-            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_24.npy'
-        elif self.opts.seg_dim == 14:
-            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_14.npy'
-        elif self.opts.seg_dim == 6:
-            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_06.npy'
-        else:
-            raise NotImplementedError(f"no segment map for seg_dim: {self.opts.seg_dim}")
+#         #---------------------------------------------------------------------------------
+#         if self.opts.seg_dim == 20:
+#             seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot.npy'
+#         elif self.opts.seg_dim == 24:
+#             seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_24.npy'
+#         elif self.opts.seg_dim == 14:
+#             seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_14.npy'
+#         elif self.opts.seg_dim == 6:
+#             seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_06.npy'
+#         else:
+#             raise NotImplementedError(f"no segment map for seg_dim: {self.opts.seg_dim}")
         
-        self.ict_vert_segment = torch.from_numpy(np.load(seg_npy)).to(self.device)
-        self.ict_vert_segment = self.ict_vert_segment.argmax(-1).long()
-        # self.ict_vert_segment_fo = self.ict_vert_segment[:self.ict_face_model_fo.v_num]
-        self.set_neutral_ict("/data/sihun/ICT-audio2face")
+#         ict_vert_segment = torch.from_numpy(np.load(seg_npy)).to(self.device)
+#         self.ict_vert_segment = ict_vert_segment.argmax(-1).long()
+#         # self.ict_vert_segment_fo = self.ict_vert_segment[:self.ict_face_model_fo.v_num]
+        
+        if self.is_train:
+            self.set_neutral_ict(ict_basedir="/data/sihun/ICT-audio2face")
         #---------------------------------------------------------------------------------
         
         
@@ -183,53 +185,51 @@ class NFS(nn.Module):
 
         
         #---------------------------------------------------------------------------------
-        if 'mk2' in self.opts.design:
-            self.ict_canon = self.ict_neutral.clone()
-            self.ict_canon_f = self.ict_faces.clone()
-            
-            if self.opts.norm_canon:
-                self.ict_canon = self.ict_canon / torch.linalg.norm(self.ict_canon, axis=-1, keepdims=True)
-                
-            def load_from_obj_trimesh(file_path):
-                obj_file = trimesh.load(file_path, process=False, maintain_order=True)
-                vertices = torch.tensor(obj_file.vertices).float().to(self.device)
-                if self.opts.norm_canon:
-                    vertices = vertices / torch.linalg.norm(vertices, axis=-1, keepdims=True)
-                faces = torch.tensor(obj_file.faces).long().to(self.device)
-                return vertices, faces
-                
-            self.biwi_to_canon, self.biwi_to_canon_f = load_from_obj_trimesh("utils/canon/wrap_biwi_to_ict_full.obj")
-            # self.biwi_to_canon = load_obj_mesh("utils/canon/wrap_biwi_to_ict_full.obj",to_torch=True, device=self.device)
+        # if 'mk2' in self.opts.design:
+        #     self.ict_canon = self.ict_neutral.clone()
+        #     self.ict_canon_f = self.ict_faces.clone()
 
-            self.mf_to_canon, self.mf_to_canon_f = load_from_obj_trimesh("utils/canon/wrap_MF_mean_std_to_ict_full.obj")
-            # self.mf_to_canon = load_obj_mesh("utils/canon/wrap_MF_mean_std_to_ict_full.obj",to_torch=True, device=self.device)
+        #     if self.opts.norm_canon:
+        #         self.ict_canon = self.ict_canon / torch.linalg.norm(self.ict_canon, axis=-1, keepdims=True)
 
-            self.voca_to_canon, self.voca_to_canon_f = load_from_obj_trimesh("utils/canon/wrap_voca_mean_std_to_ict_full.obj")
-            # self.voca_to_canon = load_obj_mesh("utils/canon/wrap_voca_mean_std_to_ict_full.obj",to_torch=True, device=self.device)
-            
-                
-            # Laplacian
-            # ict_mesh_p3d = Meshes(verts=[self.ict_canon]*self.opts.batch_size, faces=[self.ict_canon_f]*self.opts.batch_size)
-            # ict_L_p3d = ict_mesh_p3d.laplacian_packed()
-            # self.ict_Delta_p3d = ict_L_p3d.mm(ict_mesh_p3d.verts_packed())
+        #     def load_from_obj_trimesh(file_path):
+        #         obj_file = trimesh.load(file_path, process=False, maintain_order=True)
+        #         vertices = torch.tensor(obj_file.vertices).float().to(self.device)
+        #         if self.opts.norm_canon:
+        #             vertices = vertices / torch.linalg.norm(vertices, axis=-1, keepdims=True)
+        #         faces = torch.tensor(obj_file.faces).long().to(self.device)
+        #         return vertices, faces
+
+        #     self.biwi_to_canon, self.biwi_to_canon_f = load_from_obj_trimesh("utils/canon/wrap_biwi_to_ict_full.obj")
+        #     # self.biwi_to_canon = load_obj_mesh("utils/canon/wrap_biwi_to_ict_full.obj",to_torch=True, device=self.device)
+
+        #     self.mf_to_canon, self.mf_to_canon_f = load_from_obj_trimesh("utils/canon/wrap_MF_mean_std_to_ict_full.obj")
+        #     # self.mf_to_canon = load_obj_mesh("utils/canon/wrap_MF_mean_std_to_ict_full.obj",to_torch=True, device=self.device)
+
+        #     self.voca_to_canon, self.voca_to_canon_f = load_from_obj_trimesh("utils/canon/wrap_voca_mean_std_to_ict_full.obj")
+        #     # self.voca_to_canon = load_obj_mesh("utils/canon/wrap_voca_mean_std_to_ict_full.obj",to_torch=True, device=self.device)
+
+
+        #     # Laplacian
+        #     # ict_mesh_p3d = Meshes(verts=[self.ict_canon]*self.opts.batch_size, faces=[self.ict_canon_f]*self.opts.batch_size)
+        #     # ict_L_p3d = ict_mesh_p3d.laplacian_packed()
+        #     # self.ict_Delta_p3d = ict_L_p3d.mm(ict_mesh_p3d.verts_packed())
         #---------------------------------------------------------------------------------
 
-    def print_parameter_num(self):
-        """Prints parameters
-        """
-        print("===========< NFS >===========")
-        if self.opts.design=='nfr':
-            print(f"[img_encoder]: \t{self.count_parameters(self.img_encoder)}")
-            print(f"[img_fc]: \t{self.count_parameters(self.img_fc)}")
-        print(f"[mesh_decoder]: \t{self.count_parameters(self.mesh_decoder)}")
-    
-        print(f"[mesh_id_encoder]: \t{self.count_parameters(self.mesh_id_encoder)}")
-        print(f"[mesh_exp_encoder]: \t{self.count_parameters(self.mesh_exp_encoder)}")
+    def log_parameter_num(self):
+        """Prints parameters"""        
+        log_txt ="============< NFS >============\n"
+        log_txt+=f"[img_encoder]: \t{self.count_parameters(self.img_encoder)}\n"
+        log_txt+=f"[img_fc]: \t{self.count_parameters(self.img_fc)}\n"            
+        log_txt+=f"[mesh_decoder]: \t{self.count_parameters(self.mesh_decoder)}\n"    
+        log_txt+=f"[mesh_id_encoder]: \t{self.count_parameters(self.mesh_id_encoder)}\n"
+        log_txt+=f"[mesh_exp_encoder]: \t{self.count_parameters(self.mesh_exp_encoder)}\n"        
         if 'new2' in self.opts.design:
-            print(f"[mesh_seg_encoder]: \t{self.count_parameters(self.mesh_seg_encoder)}")
-        print("-------------------------------")
-        print(f"[total]: \t{self.count_parameters(self)}")
-        print("===============================") 
+            log_txt+=f"[mesh_seg_encoder]: \t{self.count_parameters(self.mesh_seg_encoder)}\n"            
+        log_txt+="-------------------------------\n"
+        log_txt+=f"[total]: \t{self.count_parameters(self)}\n"
+        log_txt+="===============================\n"
+        return log_txt
         
     def count_parameters(self, model):
         try:
@@ -238,39 +238,52 @@ class NFS(nn.Module):
             return sum(p.numel() for p in model.parameters() if p.requires_grad)
     
     def set_neutral_ict(self, ict_basedir):
+        
+        self.ict_neutral = torch.from_numpy(self.ict_face_model.neutral_verts).float().to(self.device)
+        self.ict_faces = torch.from_numpy(self.ict_face_model.faces).long().to(self.device)
+        
+        if self.opts.seg_dim == 20:
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot.npy'
+        elif self.opts.seg_dim == 24:
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_24.npy'
+        elif self.opts.seg_dim == 14:
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_14.npy'
+        elif self.opts.seg_dim == 6:
+            seg_npy = f'{__abs_path__}/utils/ict/ICT_segment_onehot_06.npy'
+        else:
+            raise ValueError(f"no segment map for seg_dim: {self.opts.seg_dim}")
+        
+        ict_vert_segment = torch.from_numpy(np.load(seg_npy)).to(self.device)
+        self.ict_vert_segment = ict_vert_segment.argmax(-1).long()
+        # self.ict_vert_segment_fo = self.ict_vert_segment[:self.ict_face_model_fo.v_num]
+
         self.ict_basedir = ict_basedir
         self.ict_precompute = f'{self.ict_basedir}/precompute-synth-fullhead'
         self.ict_precompute_fo = f'{self.ict_basedir}/precompute-synth-face_only'
         self.ict_precompute_nf = f'{self.ict_basedir}/precompute-synth-narrow_face'
         
         if self.use_decimate:
-        # if True:
             v_idx = torch.from_numpy(self.ict_face_model.ict_deci["v_idx"])
             self.ict_vert_segment = self.ict_vert_segment[v_idx]
             self.ict_neutral = self.ict_neutral[v_idx]
             self.ict_faces = torch.from_numpy(self.ict_face_model.ict_deci["new_f"]).long().to(self.device)
             
             self.neu_dfn_info = pickle.load(open(os.path.join(self.ict_precompute, f"100_dfn_info-deci.pkl"), 'rb'))
-            neu_operators = os.path.join(self.ict_precompute, f"100_operators-deci.pkl")
-            self.neu_operators = pickle.load(open(neu_operators, mode='rb'))
+            self.neu_operators = pickle.load(open(os.path.join(self.ict_precompute, f"100_operators-deci.pkl"), mode='rb'))
             self.neu_img = torch.from_numpy(np.load(os.path.join(self.ict_precompute, f"100_img.npy"))).to(self.device).float()
         else:
             self.neu_dfn_info  = pickle.load(open(os.path.join(self.ict_precompute, f"100_dfn_info.pkl"), 'rb'))
-            neu_operators = os.path.join(self.ict_precompute, f"100_operators.pkl")
-            self.neu_operators = pickle.load(open(neu_operators, mode='rb'))
+            self.neu_operators = pickle.load(open(os.path.join(self.ict_precompute, f"100_operators.pkl"), mode='rb'))
             self.neu_img = torch.from_numpy(np.load(os.path.join(self.ict_precompute, f"100_img.npy"))).to(self.device).float()
             
             self.neu_fo_dfn_info  = pickle.load(open(os.path.join(self.ict_precompute_fo, f"100_dfn_info.pkl"), 'rb'))
-            neu_operators = os.path.join(self.ict_precompute_fo, f"100_operators.pkl")
-            self.neu_fo_operators = pickle.load(open(neu_operators, mode='rb'))
+            self.neu_fo_operators = pickle.load(open(os.path.join(self.ict_precompute_fo, f"100_operators.pkl"), mode='rb'))
             self.neu_fo_img = torch.from_numpy(np.load(os.path.join(self.ict_precompute_fo, f"100_img.npy"))).to(self.device).float()
             
             self.neu_nf_dfn_info  = pickle.load(open(os.path.join(self.ict_precompute_nf, f"100_dfn_info.pkl"), 'rb'))
-            neu_operators = os.path.join(self.ict_precompute_nf, f"100_operators.pkl")
-            self.neu_nf_operators = pickle.load(open(neu_operators, mode='rb'))
+            self.neu_nf_operators = pickle.load(open(os.path.join(self.ict_precompute_nf, f"100_operators.pkl"), mode='rb'))
             self.neu_nf_img = torch.from_numpy(np.load(os.path.join(self.ict_precompute_nf, f"100_img.npy"))).to(self.device).float()
             
-        self.local_feat_ict=None
             
     def get_mesh_decoder_parameters(self):
         return self.mesh_decoder.parameters()
@@ -294,17 +307,6 @@ class NFS(nn.Module):
                 *self.mesh_exp_encoder.parameters(),
                 *self.mesh_seg_encoder.parameters(),
             ]
-        else:
-            raise NotImplementedError("no corresponding version!")
-        return param_list
-
-    def get_mesh_autoencoder_parameters_mk2(self):
-        """no audio encoder"""
-        if 'new2' in self.opts.design:
-            param_list= [
-                    *self.mesh_decoder.parameters(), 
-                    *self.mesh_seg_encoder.parameters(),
-                ]
         else:
             raise NotImplementedError("no corresponding version!")
         return param_list
@@ -389,8 +391,16 @@ class NFS(nn.Module):
         Returns:
             loss
         """
-        
-        loss = torch.where(pred < 0, -pred, torch.where(pred > 1, pred - 1, torch.zeros_like(pred))).mean()
+        pred_facs, pred_ext = pred[:,:53], pred[:,53:]
+        loss = torch.where(
+            pred_facs < 0, 
+            -pred_facs, 
+            torch.where(
+                pred_facs > 1, 
+                pred_facs - 1, 
+                torch.zeros_like(pred_facs)
+            )
+        ).mean() + self.criterion(pred_ext, torch.zeros_like(pred_ext))
         return loss
         
     def label_smoothing(self, one_hot, smoothing=0.2):
@@ -500,10 +510,7 @@ class NFS(nn.Module):
             return None
         
         self.mesh_seg_encoder.update_precomputes(dfn_info)        
-        if 'mk2' in self.opts.design:
-            seg_code = self.mesh_seg_encoder(vert_feat, id_in=id_in) # [1, ID]
-        else:
-            seg_code = self.mesh_seg_encoder(vert_feat) # [1, ID]
+        seg_code = self.mesh_seg_encoder(vert_feat) # [1, ID]
         return seg_code
     
     def get_inputs_ict(self, pred_exp_coeff, region=0, v_num=None, faces_ict=None, epoch=0):
@@ -535,19 +542,21 @@ class NFS(nn.Module):
             operators_ict = self.neu_nf_operators
             dfn_info_ict = self.neu_nf_dfn_info
             
-        # will return None if design == nfr
-        img_feat_ict = self.get_img_feat(neu_img) # [B, 1, 128]
-        
-        local_feat_ict = self.get_local_feature(template_ict, faces_ict, img_feat_ict)
-        B = pred_exp_coeff.shape[0]
-        
-        with torch.no_grad(): ## no need to pass it to id encoder
+            
+        with torch.no_grad(): ## no need to pass it to encoders    
+            # will return None if design == nfr
+            img_feat_ict = self.get_img_feat(neu_img) # [B, 1, 128]
+
+            local_feat_ict = self.get_local_feature(template_ict, faces_ict, img_feat_ict)
+            B = pred_exp_coeff.shape[0]
+            
             pred_id_coeff_ict = self.encode_id(local_feat_ict, dfn_info_ict)# [1, ID]
+
+            if 'nfr' in self.opts.design:
+                pred_seg_coeff_ict = None
+            else:
+                pred_seg_coeff_ict = self.encode_seg(local_feat_ict, dfn_info_ict)# [1, V, Seg]
         
-        if 'nfr' in self.opts.design:
-            pred_seg_coeff_ict = None
-        else:
-            pred_seg_coeff_ict = self.encode_seg(local_feat_ict, dfn_info_ict)# [1, V, Seg]
         
         if self.opts.dec_type=='jacob':
             local_feat_ict = self.get_local_feature(template_ict, faces_ict, img_feat_ict, at='faces')
@@ -591,10 +600,7 @@ class NFS(nn.Module):
             pred_id_coeff = self.encode_id(vert_feat, tgt_dfn_info)
 
             if 'new2' in self.opts.design:
-                if 'mk2' in self.opts.design:
-                    pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info, id_in=pred_id_coeff)# [1, V, Seg]
-                else:
-                    pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info)# [1, V, Seg]
+                pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info)# [1, V, Seg]
             else:
                 pred_seg_coeff = None
         
@@ -638,27 +644,9 @@ class NFS(nn.Module):
         pred_seg_coeff = None
         pred_id_coeff = self.encode_id(vert_feat, dfn_info) # [1, ID]
         pred_exp_coeff = self.encode_exp(vert_feat_exp, dfn_info) # [W, Rig]
-        
-        if self.opts.design != 'nfr':
-            if 'mk2' in self.opts.design:
-                pred_seg_coeff = self.encode_seg(vert_feat, dfn_info, id_in=pred_id_coeff)# [1, V, Seg]
-            else:
-                pred_seg_coeff = self.encode_seg(vert_feat, dfn_info) # [1, V, Seg]
                 
-        return pred_id_coeff, pred_exp_coeff, pred_seg_coeff
-
-    def encode_mesh_grad_mk2(self, vert_feat, vert_feat_exp, dfn_info):
-        pred_seg_coeff = None
-        
-        with torch.no_grad():
-            pred_id_coeff = self.encode_id(vert_feat, dfn_info) # [1, ID]
-            pred_exp_coeff = self.encode_exp(vert_feat_exp, dfn_info) # [W, Rig]
-        
         if self.opts.design != 'nfr':
-            if 'mk2' in self.opts.design:
-                pred_seg_coeff = self.encode_seg(vert_feat, dfn_info, id_in=pred_id_coeff)# [1, V, Seg]
-            else:
-                pred_seg_coeff = self.encode_seg(vert_feat, dfn_info) # [1, V, Seg]
+            pred_seg_coeff = self.encode_seg(vert_feat, dfn_info) # [1, V, Seg]
                 
         return pred_id_coeff, pred_exp_coeff, pred_seg_coeff
     
@@ -740,10 +728,6 @@ class NFS(nn.Module):
                     
                 pred_outputs.append(tmp_vertices)
             pred_outputs = torch.vstack(pred_outputs)  #-------------------- [W, V, 3]
-
-        # if 'mk' in self.opts.design:
-        #     # only displacement
-        #     pred_outputs = pred_outputs - pred_seg_coeff
             
         if self.opts.dec_type=='jacob':
             pred_jacobians = self.normalizer.inv_normalize(pred_outputs)
@@ -900,13 +884,22 @@ class NFS(nn.Module):
         
         ## Encoding --------------------------------------------------------------------
         ## source & target mesh image feature (not used if design 'new1')
+        dummy=trimesh.Trimesh(
+            vertices=batch.template[0].detach().cpu().numpy(),
+            faces=batch.faces.detach().cpu().numpy()
+        )
+        img = self.renderer.render_img(dummy).float().repeat(batch.vertices.shape[0], 1,1,1)
         img_feat = self.get_img_feat(img)# [1, 1, 128]
+        # import pdb;pdb.set_trace()
+        
         # source expression face
         vert_feat_exp = self.get_local_feature(gt_vertices, faces, img_feat)  # [W, V, 6]
         # target neutral face
         vert_feat = self.get_local_feature(template, faces, img_feat) # [1, V, 6]
         
-        pred_id_coeff, pred_exp_coeff, pred_seg_coeff = self.encode_mesh_grad(vert_feat, vert_feat_exp, dfn_info)        
+        pred_id_coeff, pred_exp_coeff, pred_seg_coeff = self.encode_mesh_grad(
+            vert_feat, vert_feat_exp, dfn_info
+        )
         ##------------------------------------------------------------------------------
         
         
@@ -915,7 +908,7 @@ class NFS(nn.Module):
         local_feat = vert_feat # [1, V, 3+3+128]
         
         # target inputs
-        if epoch < 100 and mesh_data == 'ict' and self.opts.warmup:
+        if epoch < 100 and self.opts.warmup:
             pred_exp_coeff_ = gt_rig_params
         else:
             pred_exp_coeff_ = pred_exp_coeff
@@ -990,7 +983,7 @@ class NFS(nn.Module):
                     loss["nll_vSeg"] += F.nll_loss(pred_s_l, ict_seg)
                 loss["nll_vSeg"] = loss["nll_vSeg"] / pred_seg_log.shape[0]
         else:
-            loss["vert_rIEnc"] = self.non_ict_loss(pred_id_coeff)
+            # loss["vert_rIEnc"] = self.non_ict_loss(pred_id_coeff)
             loss["vert_rEEnc"] = self.non_ict_loss(pred_exp_coeff)
         
         if return_all:
@@ -1235,12 +1228,6 @@ class NFS(nn.Module):
         Return:
             pred_outputs: [batch_size, W, V, 3]
         """
-        if bs_coeff.shape[1] <= 53:
-            bs_coeff = torch.cat([
-                bs_coeff, torch.zeros((bs_coeff.shape[0], 75)).to(bs_coeff.device)
-            ],dim=1).to(self.device)
-        else:
-            bs_coeff = bs_coeff.to(self.device)
 
         if verbose:
             import time
@@ -1272,24 +1259,27 @@ class NFS(nn.Module):
         ## target mesh local feature
         with torch.no_grad():
             pred_id_coeff = self.encode_id(vert_feat, tgt_dfn_info)
+            pred_exp_coeff_ = self.encode_exp(vert_feat, tgt_dfn_info)# [1, Rig]
 
             if 'new2' in self.opts.design:
                 pred_seg_coeff = self.encode_seg(vert_feat, tgt_dfn_info)# [1, V, Seg]
             else:
                 pred_seg_coeff = None
-        #pred_id_coeff = pred_id_coeff.unsqueeze(1) # ----------------------- [1, 1, ID]
+        # pred_id_coeff = pred_id_coeff.unsqueeze(1) # ----------------------- [1, 1, ID]
+        
+        
+        bs_coeff = bs_coeff.to(self.device)
+        if bs_coeff.shape[1] <= 53:
+            bs_coeff = torch.cat([bs_coeff, pred_exp_coeff_[:, 53:]], dim=1).to(self.device)
+        else:
+            bs_coeff = bs_coeff.to(self.device)
+            
+        pred_exp_coeff = bs_coeff
         ##------------------------------------------------------------------------------
         
         
         if verbose:
             print(f"[Infer] precomputation time: {time.time() - st}")
-        
-        
-        ##------------------------------------------------------------------------------
-        pred_exp_coeff = bs_coeff
-        if self.opts.design == 'nfr':
-            pred_exp_coeff = pred_exp_coeff.squeeze()
-        ##------------------------------------------------------------------------------
         
         
         ##------------------------------------------------------------------------------
