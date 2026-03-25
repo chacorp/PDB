@@ -38,13 +38,6 @@ from utils.remesh_utils import calc_norm_torch
 # from utils.exp_utils import Model_mk1, Model_mk3_1
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
 
-from models.baseline import CageNet
-from models.NGBC import (
-#     NeuralGeneralizedBarycentricCoordinate, 
-    NeuralGeneralizedBarycentricCoordinate5,
-#     NeuralGeneralizedBarycentricCoordinate8,
-#     NeuralGeneralizedBarycentricCoordinate55
-)
 from utils.remesh_utils import ICT_face_model
 import torch.multiprocessing as mp
 
@@ -141,107 +134,6 @@ class Pipeline():
         self.opts = opts
         self.set_seed(self.opts)
         self.device = opts.device
-        
-#         if opts.version>=5:
-#             last_act_list = ["relu", "elu", "softmax", "softplus", "none"]
-#             last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
-            
-#         if opts.version==0:
-#             from models.NFS import NFS
-#             from utils.nfr_utils import get_dfn_info
-#             self.get_dfn_info = get_dfn_info
-#             self.model = NFS(self.opts, None, print_param=True).to(self.device)
-            
-#         elif opts.version==1:
-#             self.model = CageNet(
-#                 device=self.device,
-#                 optim_cage=self.opts.optim_cage
-#             )
-#         elif opts.version==2:
-#             self.model = NeuralGeneralizedBarycentricCoordinate(
-#                 self.opts, 
-#                 hid_dim=256,
-#                 num_cage_vertices=self.opts.num_cage_v,
-#                 num_layers=4,
-#                 use_relu=True,
-#                 is_train=True, 
-#                 device=self.device,
-#             )
-#         elif opts.version==5:
-#             self.model = NeuralGeneralizedBarycentricCoordinate5(
-#                 opts, num_layers=4,
-#                 num_cage_vertices=self.opts.num_cage_v,
-#                 use_exp_recon=False, # not used yet
-#                 use_shp_recon=False, # not used yet
-#                 use_shp=False,
-#                 use_relu=last_act_list[0],
-#                 use_elu=last_act_list[1],
-#                 use_softmax=last_act_list[2],
-#                 use_softplus=last_act_list[3],
-#                 no_activation=last_act_list[4],
-#                 use_least_N_on_V=False,
-#                 is_train=True,
-#                 use_pou = ~self.opts.no_pou,
-#                 device=self.device,
-#                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
-#                 hid_dim=128 if self.opts.align_latent else 256,
-#             )
-#         elif opts.version==8:
-#             self.model = NeuralGeneralizedBarycentricCoordinate8(
-#                 opts, num_layers=4,
-#                 num_cage_vertices=self.opts.num_cage_v,
-#                 use_exp_recon=False, # not used yet
-#                 use_shp_recon=False, # not used yet
-#                 use_shp=False,
-#                 use_relu=last_act_list[0],
-#                 use_elu=last_act_list[1],
-#                 use_softmax=last_act_list[2],
-#                 use_softplus=last_act_list[3],
-#                 no_activation=last_act_list[4],
-#                 use_least_N_on_V=False,
-#                 is_train=True,
-#                 use_pou = ~self.opts.no_pou,
-#                 device=self.device,
-#                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
-#                 hid_dim=128 if self.opts.align_latent else 256,
-#             )
-#         elif opts.version==55:
-#             self.model = NeuralGeneralizedBarycentricCoordinate55(
-#                 opts, num_layers=4,
-#                 num_cage_vertices=self.opts.num_cage_v,
-#                 use_exp_recon=False, # not used yet
-#                 use_shp_recon=False, # not used yet
-#                 use_shp=False,
-#                 use_relu=last_act_list[0],
-#                 use_elu=last_act_list[1],
-#                 use_softmax=last_act_list[2],
-#                 use_softplus=last_act_list[3],
-#                 no_activation=last_act_list[4],
-#                 use_least_N_on_V=False,
-#                 is_train=True,
-#                 use_pou = ~self.opts.no_pou,
-#                 device=self.device,
-#                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
-#                 hid_dim=128 if self.opts.align_latent else 256,
-#             )
-#         else:
-#             raise NotImplementedError('No matching model version')
-        
-#         # load weight
-#         self.load_weight()
-    
-#     def load_weight(self):
-#         if self.opts.ckpt:
-#             if self.opts.continue_ckpt:
-#                 ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
-#             else:
-#                 ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
-#             print(f"Loading... {ckpt}")
-            
-#             ckpt_dict = torch.load(ckpt, map_location=self.device)            
-#             self.model.load_state_dict(ckpt_dict,strict=False)
-#         else:
-#             print('no ckpt found, training from scratch!')
         
     def get_mesh(self, selection, dataset, SELECT_MESH):
         if selection=='ict'or selection=='ict-cap':
