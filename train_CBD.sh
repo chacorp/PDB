@@ -34,4 +34,7 @@
 
 # python train_CBD.py --max_epoch 200 --version 1 --lr 2E-6 --batch_size 16 --in_type 1 --out_type 1 --data_toggle --use_data2
 
-python train_CBD.py --max_epoch 1000 --lr 1E-4 --sc_step 1000 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --last_activation 'relu' --data_toggle --use_data2 --log_dir ckpts_CBD --version 5 --align_latent
+# python train_CBD.py --max_epoch 1000 --lr 1E-4 --sc_step 1000 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --last_activation 'relu' --data_toggle --use_data2 --log_dir ckpts_CBD --version 5 --align_latent
+
+
+python train_CBD.py --max_epoch 1000 --lr 1E-4 --sc_step 1000 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --last_activation 'relu' --data_toggle --use_data2 --log_dir ckpts_CBD --version 5 --align_latent --start_epoch 360 --ckpt './ckpts_CBD/2026-02-18-09-43-05-NGBCv5' --continue_ckpt
