@@ -483,7 +483,7 @@ class CBDDataset(data.Dataset):
             use_mf_SEN=True
             use_mf_ROM=True
             use_ict=True
-            use_ict_narrow=True
+            use_ict_narrow=False
         elif self.opts.use_data3:
             use_voca=False
             use_coma=True
@@ -564,12 +564,13 @@ class CBDDataset(data.Dataset):
             
             self.ict_synth_precompute_fh = f'{basedir}/ICT-audio2face/precompute-synth-fullhead'
             self.ict_synth_precompute_fo = f'{basedir}/ICT-audio2face/precompute-synth-face_only'
+            self.ict_synth_precompute_nf = f'{basedir}/ICT-audio2face/precompute-synth-narrow_face'
             ## Added segmentation ##################################################################
-            self.ict_seg=torch.tensor(np.load('utils/ict/ICT_segment_onehot_24.npy'))
+            self.ict_seg=torch.tensor(np.load(f'{__abs_path__}/utils/ict/ICT_segment_onehot_24.npy'))
             ########################################################################################
             if self.use_laplacian:
                 self.ict_cotmatrix={}
-                ict_cotmatrix_path='utils/ict/ict_cotmatrix.pkl'
+                ict_cotmatrix_path=f'{__abs_path__}/utils/ict/ict_cotmatrix.pkl'
                 
                 if os.path.exists(ict_cotmatrix_path):
                     with open(ict_cotmatrix_path,'rb') as f:
@@ -617,13 +618,13 @@ class CBDDataset(data.Dataset):
             self.ict_synth_precompute_nf = f'{basedir}/ICT-audio2face/precompute-synth-narrow_face'
             ## Added segmentation ##################################################################
             self.ict_narrow_seg=torch.tensor(
-                np.load('utils/ict/ICT_segment_onehot_24.npy')
+                np.load(f'{__abs_path__}/utils/ict/ICT_segment_onehot_24.npy')
             )[:self.ict_face_model_narrow.v_num]
             ########################################################################################
 
             if self.use_laplacian:
                 self.ict_narrow_cotmatrix={}
-                ict_cotmatrix_path='utils/ict/ict_narrow_cotmatrix.pkl'
+                ict_cotmatrix_path=f'{__abs_path__}/utils/ict/ict_narrow_cotmatrix.pkl'
                 
                 if os.path.exists(ict_cotmatrix_path):
                     with open(ict_cotmatrix_path,'rb') as f:
@@ -671,13 +672,13 @@ class CBDDataset(data.Dataset):
             assert len(self.voca_pca_holder_list) == len(self.voca_id_list), "mismatch in voca"
             
             self.voca_len = len(self.voca_pca_holder_list)
-            self.voca_std = np.load("utils/voca/standardization.npy", allow_pickle=True).item()
+            self.voca_std = np.load(f"{__abs_path__}/utils/voca/standardization.npy", allow_pickle=True).item()
             with open(f"{data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.voca_mesh = pickle.load(f)
             total_id = total_id + self.voca_len
             
             ## Added segmentation ##################################################################
-            self.voca_seg=torch.tensor(np.load('utils/voca/flame_seg_24.npy'))
+            self.voca_seg=torch.tensor(np.load(f'{__abs_path__}/utils/voca/flame_seg_24.npy'))
             ########################################################################################
 
             if self.use_laplacian:
@@ -724,12 +725,12 @@ class CBDDataset(data.Dataset):
             total_id = total_id + self.biwi_len
             
             ## Added segmentation ##################################################################
-            self.biwi_seg=torch.tensor(np.load('utils/biwi/biwi_seg_24.npy'))
+            self.biwi_seg=torch.tensor(np.load(f'{__abs_path__}/utils/biwi/biwi_seg_24.npy'))
             ########################################################################################
 
             if self.use_laplacian:
                 self.biwi_cotmatrix={}
-                biwi_cotmatrix_path='utils/biwi/biwi_cotmatrix.pkl'
+                biwi_cotmatrix_path=f'{__abs_path__}/utils/biwi/biwi_cotmatrix.pkl'
     
                 if os.path.exists(biwi_cotmatrix_path):
                     with open(biwi_cotmatrix_path,'rb') as f:
@@ -777,7 +778,7 @@ class CBDDataset(data.Dataset):
             
             if self.use_laplacian:
                 self.mf_SEN_cotmatrix={}
-                mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
+                mf_cotmatrix_path=f'{__abs_path__}/utils/mf/mf_cotmatrix.pkl'
     
                 if os.path.exists(mf_cotmatrix_path):
                     with open(mf_cotmatrix_path,'rb') as f:
@@ -816,12 +817,12 @@ class CBDDataset(data.Dataset):
 
             self.mf_precompute_path=f"{basedir}/multiface_align/precomputes"
             ## Added segmentation ##################################################################
-            self.coma_seg=torch.tensor(np.load('utils/voca/flame_seg_24.npy'))
+            self.coma_seg=torch.tensor(np.load(f'{__abs_path__}/utils/voca/flame_seg_24.npy'))
             ########################################################################################
 
             if self.use_laplacian:
                 self.coma_cotmatrix={}
-                coma_cotmatrix_path='utils/voca/voca_cotmatrix.pkl'
+                coma_cotmatrix_path=f'{__abs_path__}/utils/voca/voca_cotmatrix.pkl'
     
                 if os.path.exists(coma_cotmatrix_path):
                     with open(coma_cotmatrix_path,'rb') as f:
@@ -857,17 +858,17 @@ class CBDDataset(data.Dataset):
             assert len(self.mf_ROM_pca_holder_list) == len(self.mf_ROM_id_list), "mismatch in mf ROM"
                 
             self.mf_ROM_len = len(self.mf_ROM_pca_holder_list)
-            self.mf_ROM_std = np.load("utils/mf/standardization.npy", allow_pickle=True).item()
+            self.mf_ROM_std = np.load(f"{__abs_path__}/utils/mf/standardization.npy", allow_pickle=True).item()
             with open(f"{data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
                 self.mf_ROM_mesh = pickle.load(f)
             total_id = total_id + self.mf_ROM_len
             
             ## Added segmentation ##################################################################
-            self.mf_ROM_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
+            self.mf_ROM_seg=torch.tensor(np.load(f'{__abs_path__}/utils/mf/mf_seg_24.npy'))
             ########################################################################################
             if self.use_laplacian:
                 self.mf_ROM_cotmatrix={}
-                mf_cotmatrix_path='utils/mf/mf_cotmatrix.pkl'
+                mf_cotmatrix_path=f'{__abs_path__}/utils/mf/mf_cotmatrix.pkl'
     
                 if os.path.exists(mf_cotmatrix_path):
                     with open(mf_cotmatrix_path,'rb') as f:
@@ -935,11 +936,11 @@ class CBDDataset(data.Dataset):
             
     def get_ict_params(self):
         if self.mode == 'train':
-            iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')[:111]
-            expression_vecs = np.load('./ict_face_pt/random_expression_vecs.npy')
+            iden_vecs = np.load(f'{__abs_path__}/ict_face_pt/random_identity_vecs.npy')[:111]
+            expression_vecs = np.load(f'{__abs_path__}/ict_face_pt/random_expression_vecs.npy')
         else:
-            iden_vecs = np.load('./data/ICT_live_100/iden_vecs.npy')
-            expression_vecs = np.load(f'./data/ICT_live_100/expression_vecs_{self.mode}.npy')
+            iden_vecs = np.load(f'{__abs_path__}/data/ICT_live_100/iden_vecs.npy')
+            expression_vecs = np.load(f'{__abs_path__}/data/ICT_live_100/expression_vecs_{self.mode}.npy')
 
         return iden_vecs, expression_vecs
 
@@ -1303,17 +1304,17 @@ class CBDDataset(data.Dataset):
         elif self.use_mf_SEN and template.shape[0] == self.mf_trimesh.vertices.shape[0]:
             return self.identity_num[audio_path.split('wav2vec2')[-1].split('/')[-1].split('-SEN')[0]]
     
-    def vis_mesh(self, 
-                 vertices, # [B, V, 3]
-                 faces=None, 
-                #  frame=0, 
-                 mesh='ict', 
-                 tag='', 
-                 bg_black=False,
-                 size=2,
-                 render_mode='shade',
-                 logdir='_tmp',
-                ):
+    def vis_mesh(
+            self, 
+            vertices, # [B, V, 3]
+            faces=None, 
+            mesh='ict', 
+            tag='', 
+            bg_black=False,
+            size=2,
+            render_mode='shade',
+            logdir='_tmp',
+        ):
         if faces is None:
             if mesh == 'ict':
                 if vertices.shape[1] == 11248:

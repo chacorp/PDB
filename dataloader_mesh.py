@@ -162,7 +162,7 @@ class MeshDataset(data.Dataset):
         # self.use_coma = opts.use_coma if flag else False
         # self.use_biwi = opts.use_biwi if flag else False
         
-        self.use_ict_real = True
+        self.use_ict_real = False
         self.use_ict_synth = True
         self.use_mf_SEN = True
         self.use_mf_ROM = True
