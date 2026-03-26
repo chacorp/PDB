@@ -66,6 +66,12 @@ def Options():
                         help='Dirichlet smoothness on W: mean ||W_i - W_j||^2 over edges. '
                              '0 = disabled (default)')
 
+    # ablation
+    parser.add_argument("--freeze_adapt", dest='freeze_adapt', action='store_true',
+                        help='Freeze skin_weight_net & bind_pose_net (delta_W=0, delta_t=0). '
+                             'Only joint transforms are learned. Ablation for Maya init quality.')
+    parser.set_defaults(freeze_adapt=False)
+
     # target
     parser.add_argument("--target", type=str, default='gt',
                         choices=['gt', 'smooth_gt'],
@@ -170,7 +176,15 @@ class HLBSTrainer:
             hid_dim=opts.hid_dim,
             num_layers=opts.num_layers,
             device=str(self.device),
+            freeze_adapt=opts.freeze_adapt,
         ).to(self.device)
+
+        if opts.freeze_adapt:
+            print("[HLBS] freeze_adapt=True: delta_W=0, delta_t=0 (Maya init only, joint transforms learned)")
+            opts.lambda_W_reg = 0.0
+            opts.lambda_t_reg = 0.0
+            opts.lambda_W_smooth = 0.0
+            opts.lambda_neu = 0.0
 
         if opts.ckpt and opts.continue_ckpt:
             paths = sorted(glob.glob(os.path.join(opts.ckpt, f"model_hlbs_{opts.start_epoch:03d}.pth")))
@@ -216,7 +230,8 @@ class HLBSTrainer:
         if resume_mode and os.path.isdir(opts.ckpt):
             opts.log_dir = opts.ckpt
         else:
-            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}"
+            freeze_tag = "-frozenAdapt" if opts.freeze_adapt else ""
+            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
@@ -252,6 +267,7 @@ class HLBSTrainer:
             f"  lambda_t_reg  : {opts.lambda_t_reg}\n"
             f"  lambda_neu    : {opts.lambda_neu}\n"
             f"  lambda_W_smooth: {opts.lambda_W_smooth}\n"
+            f"  freeze_adapt  : {opts.freeze_adapt}\n"
             f"=====================\n"
         )
         print(config_text)

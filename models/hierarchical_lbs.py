@@ -63,10 +63,12 @@ class HierarchicalLBS(nn.Module):
         hid_dim: int = 256,
         num_layers: int = 4,
         device: str = 'cpu',
+        freeze_adapt: bool = False,
     ):
         super().__init__()
 
         self.device_str = device
+        self.freeze_adapt = freeze_adapt
         J = len(rig.joint_names)
         self.num_joints = J
         self.joint_names = rig.joint_names
@@ -122,6 +124,13 @@ class HierarchicalLBS(nn.Module):
             out_type='global',
         ).to(device)
 
+        # ── Freeze adaptation networks if requested ─────────────────────
+        if self.freeze_adapt:
+            for p in self.skin_weight_net.parameters():
+                p.requires_grad_(False)
+            for p in self.bind_pose_net.parameters():
+                p.requires_grad_(False)
+
         # ── Expression encoder: deform_in [B,N,C] -> z_exp [B,1,L] ──────
         self.lbs_exp_z_model = LinearEncoder(
             in_dim=in_dim_exp,
@@ -149,9 +158,13 @@ class HierarchicalLBS(nn.Module):
             source_vert : [B, N, 3]
         Returns:
             W : [B, N, J]  rows sum to 1
+            delta_W : [B, N, J]
         """
         B = source_vert.shape[0]
-        delta_W = self.skin_weight_net(source_vert)                   # [B, N, J]
+        if self.freeze_adapt:
+            delta_W = source_vert.new_zeros(B, self.N, self.num_joints)
+        else:
+            delta_W = self.skin_weight_net(source_vert)               # [B, N, J]
         logit_W = self.logit_W_base.unsqueeze(0) + delta_W            # [B, N, J]
         return F.softmax(logit_W, dim=-1), delta_W                    # [B, N, J]
 
@@ -228,13 +241,16 @@ class HierarchicalLBS(nn.Module):
 
         # 1. Per-identity skin weights and bind-pose offset from template geometry
         W, delta_W = self._get_skinning_weights(source_vert)           # [B,N,J], [B,N,J]
-        delta_t = self.bind_pose_net(source_vert)                      # [B,1,J*3]
-        delta_t = delta_t.squeeze(1).reshape(B, J, 3)                 # [B,J,3]
+        if self.freeze_adapt:
+            delta_t = source_vert.new_zeros(B, J, 3)
+        else:
+            delta_t = self.bind_pose_net(source_vert)                  # [B,1,J*3]
+            delta_t = delta_t.squeeze(1).reshape(B, J, 3)             # [B,J,3]
 
         # 2. Expression latent (per frame)
         z_exp = self.lbs_exp_z_model(deform_in)                        # [B, 1, L]
         z_exp_flat = z_exp.squeeze(1)                                  # [B, L]
-
+        
         # 3. Local joint rotations (6D → 3x3)
         rot6d = self.lbs_pose_model(z_exp)                             # [B, 1, J*6]
         rot6d = rot6d.reshape(B * J, 6)
