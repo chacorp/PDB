@@ -184,7 +184,6 @@ class HLBSTrainer:
             opts.lambda_W_reg = 0.0
             opts.lambda_t_reg = 0.0
             opts.lambda_W_smooth = 0.0
-            opts.lambda_neu = 0.0
 
         if opts.ckpt and opts.continue_ckpt:
             paths = sorted(glob.glob(os.path.join(opts.ckpt, f"model_hlbs_{opts.start_epoch:03d}.pth")))
