@@ -71,6 +71,9 @@ def Options():
                         help='Freeze skin_weight_net & bind_pose_net (delta_W=0, delta_t=0). '
                              'Only joint transforms are learned. Ablation for Maya init quality.')
     parser.set_defaults(freeze_adapt=False)
+    parser.add_argument("--use_joint_trans", dest='use_joint_trans', action='store_true',
+                        help='Predict per-joint local translation in addition to rotation (6+3=9 DOF per joint)')
+    parser.set_defaults(use_joint_trans=False)
 
     # target
     parser.add_argument("--target", type=str, default='gt',
@@ -177,6 +180,7 @@ class HLBSTrainer:
             num_layers=opts.num_layers,
             device=str(self.device),
             freeze_adapt=opts.freeze_adapt,
+            use_joint_trans=opts.use_joint_trans,
         ).to(self.device)
 
         if opts.freeze_adapt:
@@ -230,7 +234,8 @@ class HLBSTrainer:
             opts.log_dir = opts.ckpt
         else:
             freeze_tag = "-frozenAdapt" if opts.freeze_adapt else ""
-            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}"
+            trans_tag = "-jTrans" if opts.use_joint_trans else ""
+            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
@@ -267,6 +272,7 @@ class HLBSTrainer:
             f"  lambda_neu    : {opts.lambda_neu}\n"
             f"  lambda_W_smooth: {opts.lambda_W_smooth}\n"
             f"  freeze_adapt  : {opts.freeze_adapt}\n"
+            f"  use_joint_trans: {opts.use_joint_trans}\n"
             f"=====================\n"
         )
         print(config_text)

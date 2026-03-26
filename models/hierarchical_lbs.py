@@ -64,11 +64,13 @@ class HierarchicalLBS(nn.Module):
         num_layers: int = 4,
         device: str = 'cpu',
         freeze_adapt: bool = False,
+        use_joint_trans: bool = False,
     ):
         super().__init__()
 
         self.device_str = device
         self.freeze_adapt = freeze_adapt
+        self.use_joint_trans = use_joint_trans
         J = len(rig.joint_names)
         self.num_joints = J
         self.joint_names = rig.joint_names
@@ -140,10 +142,11 @@ class HierarchicalLBS(nn.Module):
             out_type='global',
         ).to(device)
 
-        # ── BoneTransformNet: z_exp [B,1,L] -> rot6d [B,1,J*6] ──────────
+        # ── BoneTransformNet: z_exp [B,1,L] -> rot6d [B,1,J*6] (+ trans [B,1,J*3]) ─
+        pose_out_dim = J * 9 if use_joint_trans else J * 6
         self.lbs_pose_model = LinearEncoder(
             in_dim=hid_dim,
-            out_dim=J * 6,
+            out_dim=pose_out_dim,
             hid_dim=hid_dim,
             out_type='global',
         ).to(device)
@@ -251,16 +254,22 @@ class HierarchicalLBS(nn.Module):
         z_exp = self.lbs_exp_z_model(deform_in)                        # [B, 1, L]
         z_exp_flat = z_exp.squeeze(1)                                  # [B, L]
         
-        # 3. Local joint rotations (6D → 3x3)
-        rot6d = self.lbs_pose_model(z_exp)                             # [B, 1, J*6]
-        rot6d = rot6d.reshape(B * J, 6)
+        # 3. Local joint rotations (6D → 3x3) and optional translation
+        pose_out = self.lbs_pose_model(z_exp)                           # [B, 1, J*(6+3?)]
+        pose_out = pose_out.squeeze(1)                                  # [B, J*D]
+
+        rot6d = pose_out[:, :J * 6].reshape(B * J, 6)
         local_R = self._rot6d(rot6d).reshape(B, J, 3, 3)              # [B, J, 3, 3]
 
-        # 4. Build local 4x4 transforms (no in-place ops)
-        zeros_col = torch.zeros(B, J, 3, 1, device=device, dtype=source_vert.dtype)
+        if self.use_joint_trans:
+            local_t = pose_out[:, J * 6:].reshape(B, J, 3, 1)         # [B, J, 3, 1]
+        else:
+            local_t = torch.zeros(B, J, 3, 1, device=device, dtype=source_vert.dtype)
+
+        # 4. Build local 4x4 transforms
         zeros_row = torch.zeros(B, J, 1, 3, device=device, dtype=source_vert.dtype)
         ones_val  = torch.ones( B, J, 1, 1, device=device, dtype=source_vert.dtype)
-        top       = torch.cat([local_R, zeros_col], dim=-1)            # [B, J, 3, 4]
+        top       = torch.cat([local_R, local_t], dim=-1)              # [B, J, 3, 4]
         bot       = torch.cat([zeros_row, ones_val], dim=-1)           # [B, J, 1, 4]
         T_local   = torch.cat([top, bot], dim=-2)                      # [B, J, 4, 4]
 
