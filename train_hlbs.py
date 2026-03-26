@@ -111,6 +111,10 @@ def Options():
     parser.add_argument("--continue_ckpt", dest='continue_ckpt', action='store_true')
     parser.set_defaults(continue_ckpt=False)
 
+    # data path
+    parser.add_argument("--data_basedir", type=str, default="/data/sihun",
+                        help='Base directory for datasets')
+
     # logging
     parser.add_argument("--log_dir", type=str, default="./ckpts_hlbs")
     parser.add_argument("--tb", dest='tb', action='store_true')
@@ -191,9 +195,9 @@ class HLBSTrainer:
         # When target is GT, smooth data is not needed — override to skip loading
         if opts.target == 'gt':
             opts.smooth_n_iter = 0
-
-        train_ds = CBDDataset(opts, is_train=True, toggle=opts.data_toggle)
-        valid_ds = CBDDataset(opts, is_valid=True, toggle=opts.data_toggle)
+        
+        train_ds = CBDDataset(opts, is_train=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
+        valid_ds = CBDDataset(opts, is_valid=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
         train_sampler = CBDdataSampler(train_ds.len_list, BS, shuffle=True,  balance=False, is_train=True)
         valid_sampler = CBDdataSampler(valid_ds.len_list, BS, shuffle=True,  balance=False, is_valid=True)
         _nw = opts.num_workers
@@ -209,8 +213,8 @@ class HLBSTrainer:
         import datetime
         now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         resume_mode = opts.ckpt and opts.continue_ckpt
-        if resume_mode and opts.ckpt and os.path.isdir(opts.ckpt):
-            pass
+        if resume_mode and os.path.isdir(opts.ckpt):
+            opts.log_dir = opts.ckpt
         else:
             tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
