@@ -231,7 +231,12 @@ class HLBSTrainer:
         now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         resume_mode = opts.ckpt and opts.continue_ckpt
         if resume_mode and os.path.isdir(opts.ckpt):
-            opts.log_dir = opts.ckpt
+            if opts.log_dir != './ckpts_hlbs':
+                # Explicit --log_dir given → use it as new dir
+                pass
+            else:
+                # No explicit --log_dir → reuse ckpt dir
+                opts.log_dir = opts.ckpt
         else:
             freeze_tag = "-frozenAdapt" if opts.freeze_adapt else ""
             trans_tag = "-jTrans" if opts.use_joint_trans else ""
