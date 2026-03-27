@@ -295,6 +295,85 @@ class HierarchicalLBS(nn.Module):
             return rigid_v, z_exp_flat
         return rigid_v
 
+    # ── Cross-retargeting ─────────────────────────────────────────────────
+
+    def retarget(
+        self,
+        src_neu_vert: torch.Tensor,
+        src_neu_norm: torch.Tensor,
+        src_def_vert: torch.Tensor,
+        src_def_norm: torch.Tensor,
+        tgt_neu_vert: torch.Tensor,
+        tgt_neu_norm: torch.Tensor,
+    ):
+        """
+        Cross-retargeting: apply SOURCE expression to TARGET identity.
+
+        - Expression (joint rotations): extracted from SOURCE deform_in
+        - Identity (skin weights W, bind pose delta_t): from TARGET template
+
+        Args:
+            src_neu_vert : [B, N_s, 3]  source neutral vertices
+            src_neu_norm : [B, N_s, 3]  source neutral normals
+            src_def_vert : [B, N_s, 3]  source deformed vertices
+            src_def_norm : [B, N_s, 3]  source deformed normals
+            tgt_neu_vert : [B, N_t, 3]  target neutral vertices
+            tgt_neu_norm : [B, N_t, 3]  target neutral normals
+
+        Returns:
+            rigid_v : [B, N_t, 3]  retargeted vertices on target mesh
+        """
+        B = src_def_vert.shape[0]
+        N_t = tgt_neu_vert.shape[1]
+        J = self.num_joints
+        device = src_def_vert.device
+
+        # ── Expression from SOURCE ──────────────────────────────────────
+        delta_src = src_def_vert - src_neu_vert
+        src_in    = torch.cat([src_neu_vert, src_neu_norm], dim=-1)
+        deform_in = torch.cat([delta_src, src_def_norm, src_in], dim=-1)
+
+        z_exp = self.lbs_exp_z_model(deform_in)                        # [B, 1, L]
+
+        pose_out = self.lbs_pose_model(z_exp).squeeze(1)               # [B, J*D]
+        rot6d    = pose_out[:, :J * 6].reshape(B * J, 6)
+        local_R  = self._rot6d(rot6d).reshape(B, J, 3, 3)
+
+        if self.use_joint_trans:
+            local_t = pose_out[:, J * 6:].reshape(B, J, 3, 1)
+        else:
+            local_t = torch.zeros(B, J, 3, 1, device=device, dtype=src_def_vert.dtype)
+
+        zeros_row = torch.zeros(B, J, 1, 3, device=device, dtype=src_def_vert.dtype)
+        ones_val  = torch.ones( B, J, 1, 1, device=device, dtype=src_def_vert.dtype)
+        top       = torch.cat([local_R, local_t], dim=-1)
+        bot       = torch.cat([zeros_row, ones_val], dim=-1)
+        T_local   = torch.cat([top, bot], dim=-2)                      # [B, J, 4, 4]
+        T_world   = self._chain_hierarchy(T_local)                     # [B, J, 4, 4]
+
+        # ── Identity from TARGET ────────────────────────────────────────
+        W_tgt, _ = self._get_skinning_weights(tgt_neu_vert)            # [B, N_t, J]
+        if self.freeze_adapt:
+            delta_t_tgt = tgt_neu_vert.new_zeros(B, J, 3)
+        else:
+            delta_t_tgt = self.bind_pose_net(tgt_neu_vert).squeeze(1).reshape(B, J, 3)
+
+        B_inv_tgt = self._get_adjusted_B_inv(delta_t_tgt)              # [B, J, 4, 4]
+        G = torch.bmm(
+            T_world.reshape(B * J, 4, 4),
+            B_inv_tgt.reshape(B * J, 4, 4),
+        ).reshape(B, J, 4, 4)
+
+        # ── LBS on target mesh ──────────────────────────────────────────
+        v_h = torch.cat([
+            tgt_neu_vert,
+            torch.ones(B, N_t, 1, device=device, dtype=tgt_neu_vert.dtype),
+        ], dim=-1)
+        v_per_joint = torch.einsum('bjkl,bnl->bnjk', G[:, :, :3, :], v_h)
+        rigid_v     = torch.einsum('bnj,bnjk->bnk', W_tgt, v_per_joint)
+
+        return rigid_v
+
     # ── Regularization ────────────────────────────────────────────────────
 
     def reg_loss(self, source_vert: torch.Tensor, edges=None) -> dict:
