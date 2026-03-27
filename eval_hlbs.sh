@@ -3,8 +3,8 @@
 
 set -e
 
-CKPT="./ckpts_hlbs/FILL_ME"   # ← fill with actual checkpoint dir
-EPOCH=-1                       # -1 = best, or specific epoch number
+CKPT="./ckpts_hlbs/2026-03-26-07-47-48-HLBS-mf-s0-jTrans"   # ← fill with actual checkpoint dir
+EPOCH=50                       # -1 = best, or specific epoch number
 
 RIG_PATH="utils/mf/rig_info.json"
 
@@ -32,15 +32,15 @@ python eval_hlbs.py ${COMMON_FLAGS} --data_selection mf_ROM
 ########################################
 ## Cross-retargeting  →  visualization only
 ########################################
-if [ -f "${TGT_VERT_PATH}" ]; then
-    echo "=== [Cross] mf_ROM → target epoch ${EPOCH} ==="
-    python eval_hlbs.py ${COMMON_FLAGS} \
-        --cross_retarget \
-        --data_selection mf_ROM \
-        --tgt_vert_path ${TGT_VERT_PATH} \
-        --tgt_norm_path ${TGT_NORM_PATH} \
-        --tgt_obj_path  ${TGT_OBJ_PATH} \
-        --make_video
-else
-    echo "[Cross] Skipped — tgt_vert_path not found: ${TGT_VERT_PATH}"
-fi
+# if [ -f "${TGT_VERT_PATH}" ]; then
+#     echo "=== [Cross] mf_ROM → target epoch ${EPOCH} ==="
+#     python eval_hlbs.py ${COMMON_FLAGS} \
+#         --cross_retarget \
+#         --data_selection mf_ROM \
+#         --tgt_vert_path ${TGT_VERT_PATH} \
+#         --tgt_norm_path ${TGT_NORM_PATH} \
+#         --tgt_obj_path  ${TGT_OBJ_PATH} \
+#         --make_video
+# else
+#     echo "[Cross] Skipped — tgt_vert_path not found: ${TGT_VERT_PATH}"
+# fi

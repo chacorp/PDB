@@ -115,11 +115,12 @@ def Options():
     parser.add_argument("--save_obj", dest='save_obj', action='store_true')
     parser.set_defaults(save_obj=False)
     parser.add_argument("--make_video", dest='make_video', action='store_true')
-    parser.set_defaults(make_video=False)
+    parser.add_argument("--no_video", dest='make_video', action='store_false')
+    parser.set_defaults(make_video=True)
     parser.add_argument("--no_vis", dest='no_vis', action='store_true',
                         help='Skip image rendering (metrics only)')
     parser.set_defaults(no_vis=False)
-    parser.add_argument("--vis_every", type=int, default=5,
+    parser.add_argument("--vis_every", type=int, default=1,
                         help='Render image every N batches (1 = all frames)')
 
     parser.add_argument("--device", type=str, default="cuda:0")
