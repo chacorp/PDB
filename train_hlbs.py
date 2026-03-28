@@ -74,6 +74,10 @@ def Options():
     parser.add_argument("--use_joint_trans", dest='use_joint_trans', action='store_true',
                         help='Predict per-joint local translation in addition to rotation (6+3=9 DOF per joint)')
     parser.set_defaults(use_joint_trans=False)
+    parser.add_argument("--smooth_delta_W", type=int, default=0,
+                        help='Laplacian smoothing iterations on delta_W in forward pass (0=off)')
+    parser.add_argument("--smooth_delta_W_alpha", type=float, default=0.5,
+                        help='Smoothing blend ratio (0=no smooth, 1=full neighbor average)')
 
     # target
     parser.add_argument("--target", type=str, default='gt',
@@ -181,6 +185,8 @@ class HLBSTrainer:
             device=str(self.device),
             freeze_adapt=opts.freeze_adapt,
             use_joint_trans=opts.use_joint_trans,
+            smooth_delta_W=opts.smooth_delta_W,
+            smooth_delta_W_alpha=opts.smooth_delta_W_alpha,
         ).to(self.device)
 
         if opts.freeze_adapt:
@@ -240,7 +246,8 @@ class HLBSTrainer:
         else:
             freeze_tag = "-frozenAdapt" if opts.freeze_adapt else ""
             trans_tag = "-jTrans" if opts.use_joint_trans else ""
-            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}"
+            sdw_tag = f"-sdw{opts.smooth_delta_W}a{opts.smooth_delta_W_alpha}" if opts.smooth_delta_W > 0 else ""
+            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}{sdw_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
@@ -298,6 +305,14 @@ class HLBSTrainer:
         len_valid  = len(valid_loader)
         interv     = max(1, round(len_train / 10))
         interv_val = max(1, round(len_valid / 3))
+
+        # Precompute mesh edges for delta_W forward smoothing (if enabled)
+        if opts.smooth_delta_W > 0 and self.model._mesh_edges is None:
+            # Get faces from first batch
+            _first = next(iter(train_loader))
+            _faces = _first.faces[0] if hasattr(_first.faces, '__getitem__') else _first.faces
+            self.model.set_mesh_edges(_faces)
+            print(f"[HLBS] delta_W forward smoothing: iters={opts.smooth_delta_W}, alpha={opts.smooth_delta_W_alpha}")
 
         for epoch in range(opts.start_epoch, epochs + 1):
             # ── Train ────────────────────────────────────────────────────────
@@ -387,14 +402,21 @@ class HLBSTrainer:
                     logger.write(log_text + "\n")
 
                     HB = BS // 2
+                    _s = lambda i: min(i, BS-1)
+                    _d = lambda t: t.cpu().detach()
                     faces_cpu = batch.faces.cpu()
                     v_list = [
-                        gt_v[0].cpu().detach(),            gt_v[min(1,BS-1)].cpu().detach(),
-                        gt_v[min(HB,BS-1)].cpu().detach(), gt_v[BS-1].cpu().detach(),
-                        smt_v[0].cpu().detach(),            smt_v[min(1,BS-1)].cpu().detach(),
-                        smt_v[min(HB,BS-1)].cpu().detach(), smt_v[BS-1].cpu().detach(),
-                        pred_lbs[0].cpu().detach(),            pred_lbs[min(1,BS-1)].cpu().detach(),
-                        pred_lbs[min(HB,BS-1)].cpu().detach(), pred_lbs[BS-1].cpu().detach(),
+                        _d(gt_v[0]),        _d(gt_v[_s(1)]),
+                        _d(gt_v[_s(HB)]),   _d(gt_v[BS-1]),
+                    ]
+                    if opts.target == 'smooth_gt':
+                        v_list += [
+                            _d(smt_v[0]),       _d(smt_v[_s(1)]),
+                            _d(smt_v[_s(HB)]),  _d(smt_v[BS-1]),
+                        ]
+                    v_list += [
+                        _d(pred_lbs[0]),    _d(pred_lbs[_s(1)]),
+                        _d(pred_lbs[_s(HB)]), _d(pred_lbs[BS-1]),
                     ]
                     f_list = [faces_cpu] * len(v_list)
                     plot_image_array(
@@ -466,14 +488,20 @@ class HLBSTrainer:
                 if idx % interv_val == 0:
                     BS_v = batch.vertices.shape[0]
                     HB_v = BS_v // 2
+                    _s = lambda i: min(i, BS_v-1)
                     faces_cpu = batch.faces.cpu()
                     v_list = [
-                        gt_v[0].cpu(),             gt_v[min(1,BS_v-1)].cpu(),
-                        gt_v[min(HB_v,BS_v-1)].cpu(), gt_v[BS_v-1].cpu(),
-                        smt_v[0].cpu(),             smt_v[min(1,BS_v-1)].cpu(),
-                        smt_v[min(HB_v,BS_v-1)].cpu(), smt_v[BS_v-1].cpu(),
-                        pred_lbs[0].cpu(),             pred_lbs[min(1,BS_v-1)].cpu(),
-                        pred_lbs[min(HB_v,BS_v-1)].cpu(), pred_lbs[BS_v-1].cpu(),
+                        gt_v[0].cpu(),        gt_v[_s(1)].cpu(),
+                        gt_v[_s(HB_v)].cpu(), gt_v[BS_v-1].cpu(),
+                    ]
+                    if opts.target == 'smooth_gt':
+                        v_list += [
+                            smt_v[0].cpu(),        smt_v[_s(1)].cpu(),
+                            smt_v[_s(HB_v)].cpu(), smt_v[BS_v-1].cpu(),
+                        ]
+                    v_list += [
+                        pred_lbs[0].cpu(),        pred_lbs[_s(1)].cpu(),
+                        pred_lbs[_s(HB_v)].cpu(), pred_lbs[BS_v-1].cpu(),
                     ]
                     f_list = [faces_cpu] * len(v_list)
                     plot_image_array(

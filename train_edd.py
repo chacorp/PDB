@@ -79,6 +79,10 @@ def Options():
     parser.add_argument("--hid_dim", type=int, default=256,
                         help='HLBS/z_exp dim (must match hlbs_ckpt when provided)')
     parser.add_argument("--num_layers", type=int, default=4)
+    parser.add_argument("--freeze_adapt", dest='freeze_adapt', action='store_true')
+    parser.set_defaults(freeze_adapt=False)
+    parser.add_argument("--use_joint_trans", dest='use_joint_trans', action='store_true')
+    parser.set_defaults(use_joint_trans=False)
 
     # EDD architecture
     parser.add_argument("--edd_hid_channels", type=int, default=128)
@@ -195,6 +199,8 @@ class EDDTrainer:
                 hid_dim=opts.hid_dim,
                 num_layers=opts.num_layers,
                 device=str(self.device),
+                freeze_adapt=opts.freeze_adapt,
+                use_joint_trans=opts.use_joint_trans,
             ).to(self.device)
             self.model_hlbs.load_state_dict(
                 torch.load(opts.hlbs_ckpt, map_location=self.device))
@@ -398,15 +404,22 @@ class EDDTrainer:
                     HB = BS // 2
                     pred_full = pred_lbs + disp
                     faces_cpu = batch.faces.cpu()
+                    _d = lambda t: t.cpu().detach()
+                    _s = lambda i: min(i, BS-1)
                     v_list = [
-                        gt_v[0].cpu().detach(),             gt_v[min(1,BS-1)].cpu().detach(),
-                        gt_v[min(HB,BS-1)].cpu().detach(),  gt_v[BS-1].cpu().detach(),
-                        smt_v[0].cpu().detach(),             smt_v[min(1,BS-1)].cpu().detach(),
-                        smt_v[min(HB,BS-1)].cpu().detach(),  smt_v[BS-1].cpu().detach(),
-                        pred_lbs[0].cpu().detach(),          pred_lbs[min(1,BS-1)].cpu().detach(),
-                        pred_lbs[min(HB,BS-1)].cpu().detach(), pred_lbs[BS-1].cpu().detach(),
-                        pred_full[0].cpu().detach(),         pred_full[min(1,BS-1)].cpu().detach(),
-                        pred_full[min(HB,BS-1)].cpu().detach(), pred_full[BS-1].cpu().detach(),
+                        _d(gt_v[0]),        _d(gt_v[_s(1)]),
+                        _d(gt_v[_s(HB)]),   _d(gt_v[BS-1]),
+                    ]
+                    if opts.edd_target == 'smooth_gt':
+                        v_list += [
+                            _d(smt_v[0]),       _d(smt_v[_s(1)]),
+                            _d(smt_v[_s(HB)]),  _d(smt_v[BS-1]),
+                        ]
+                    v_list += [
+                        _d(pred_lbs[0]),    _d(pred_lbs[_s(1)]),
+                        _d(pred_lbs[_s(HB)]), _d(pred_lbs[BS-1]),
+                        _d(pred_full[0]),   _d(pred_full[_s(1)]),
+                        _d(pred_full[_s(HB)]), _d(pred_full[BS-1]),
                     ]
                     f_list = [faces_cpu] * len(v_list)
                     plot_image_array(
@@ -429,8 +442,8 @@ class EDDTrainer:
                            f'{opts.log_dir}/model_edd_{epoch:03d}.pth')
 
             if epoch % opts.eval_iter == 0 or epoch == opts.start_epoch:
-                vis_mode = 'disp_only' if self.standalone else 'stage_disp'
-                vis_disp = self._edd_vis_wrapper if self.standalone else self.model_edd
+                vis_mode = 'disp_only' if self.standalone else 'hlbs_edd'
+                vis_disp = self._edd_vis_wrapper
                 self.vis_loader.visualize(
                     self.model_hlbs, vis_disp, epoch,
                     save_dir=f'{opts.log_dir}/img/eval',
@@ -483,15 +496,21 @@ class EDDTrainer:
                     BS_v = batch.vertices.shape[0]
                     HB_v = BS_v // 2
                     faces_cpu = batch.faces.cpu()
+                    _s = lambda i: min(i, BS_v-1)
                     v_list = [
-                        gt_v[0].cpu(),              gt_v[min(1,BS_v-1)].cpu(),
-                        gt_v[min(HB_v,BS_v-1)].cpu(), gt_v[BS_v-1].cpu(),
-                        smt_v[0].cpu(),              smt_v[min(1,BS_v-1)].cpu(),
-                        smt_v[min(HB_v,BS_v-1)].cpu(), smt_v[BS_v-1].cpu(),
-                        pred_lbs[0].cpu(),           pred_lbs[min(1,BS_v-1)].cpu(),
-                        pred_lbs[min(HB_v,BS_v-1)].cpu(), pred_lbs[BS_v-1].cpu(),
-                        pred_full[0].cpu(),          pred_full[min(1,BS_v-1)].cpu(),
-                        pred_full[min(HB_v,BS_v-1)].cpu(), pred_full[BS_v-1].cpu(),
+                        gt_v[0].cpu(),        gt_v[_s(1)].cpu(),
+                        gt_v[_s(HB_v)].cpu(), gt_v[BS_v-1].cpu(),
+                    ]
+                    if opts.edd_target == 'smooth_gt':
+                        v_list += [
+                            smt_v[0].cpu(),        smt_v[_s(1)].cpu(),
+                            smt_v[_s(HB_v)].cpu(), smt_v[BS_v-1].cpu(),
+                        ]
+                    v_list += [
+                        pred_lbs[0].cpu(),        pred_lbs[_s(1)].cpu(),
+                        pred_lbs[_s(HB_v)].cpu(), pred_lbs[BS_v-1].cpu(),
+                        pred_full[0].cpu(),        pred_full[_s(1)].cpu(),
+                        pred_full[_s(HB_v)].cpu(), pred_full[BS_v-1].cpu(),
                     ]
                     f_list = [faces_cpu] * len(v_list)
                     plot_image_array(

@@ -289,7 +289,7 @@ class CheckpointVisLoader:
                 # No LBS — use smooth_GT as proxy, t_mask from geometry
                 pred_lbs = smooth_v
                 t_mask = plateau_hat_points(template_v)
-            elif mode == 'hlbs':
+            elif mode in ('hlbs', 'hlbs_edd'):
                 # HierarchicalLBS forward: geometry-driven, no id_idx needed
                 delta     = vertices_v - template_v
                 src_in    = torch.cat([template_v, template_n], dim=-1)
