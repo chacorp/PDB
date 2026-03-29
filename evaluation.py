@@ -536,8 +536,8 @@ class Trainer():
         # define dataset -----------------------------------------------------------------------------------------
         # self.opts.selection = 2
         self.test_dataset = NFSDataset(self.opts, is_train=False, is_valid=False, return_audio_dir=True)
-       
-        self.test_dataloader = torch.utils.data.DataLoader(self.test_dataset, batch_size=1, shuffle=False, num_workers=0)
+
+        self.test_dataloader = torch.utils.data.DataLoader(self.test_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: x[0])
 #         testsampler = MeshSampler_coarse(self.test_dataset.len_list, batch_size=1, shuffle=False, n_sampling=True, n_=30)
 #         self.test_dataloader = torch.utils.data.DataLoader(
 #             self.test_dataset, 
@@ -623,9 +623,9 @@ class Trainer():
             batch.gt_rig_params=gt_rig_params
             batch.template=template
             batch.get_dfn_info=dfn_info
-            batch.operators=operators[0]
+            batch.operators=operators[0] if isinstance(operators, (list, tuple)) else operators
             batch.vertices=vertices
-            batch.faces=faces[0]
+            batch.faces=faces[0] if isinstance(faces, torch.Tensor) and faces.dim() > 2 else faces
             batch.img=img
             batch.mesh_data=mesh_data
             mesh_data = np.array(['ict', 'voca', 'biwi', 'mf'])[batch.mesh_data.cpu().numpy()]
