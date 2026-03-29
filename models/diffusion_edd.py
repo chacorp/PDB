@@ -190,12 +190,12 @@ class DiffusionNetEDD(nn.Module):
     def forward(
         self,
         jac_feat: torch.Tensor,
-        z_exp:    torch.Tensor,
+        z_exp:    torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
             jac_feat: [B, V, 7]   Jacobian features (neutral-relative stretch)
-            z_exp:    [B, z_dim]  expression code
+            z_exp:    [B, z_dim]  expression code (optional, skipped if z_dim=0)
 
         Returns:
             disp: [B, V, 3]  residual displacement to add to LBS output
@@ -206,7 +206,10 @@ class DiffusionNetEDD(nn.Module):
         device   = jac_feat.device
 
         # 1. Condition: broadcast z_exp and concatenate → [B, V, 7+z_dim]
-        x = torch.cat([jac_feat, z_exp.unsqueeze(1).expand(-1, V, -1)], dim=-1)
+        if self.z_dim > 0 and z_exp is not None:
+            x = torch.cat([jac_feat, z_exp.unsqueeze(1).expand(-1, V, -1)], dim=-1)
+        else:
+            x = jac_feat
 
         # 2. Build per-batch operator lists (same topology for entire batch)
         ops = self._active_dfn
