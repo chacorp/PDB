@@ -118,6 +118,8 @@ class CheckpointVisLoader:
 
         # Resolve data_basedir (same logic as CBDDataset with data_toggle)
         data_basedir = getattr(opts, 'data_basedir', '/data/sihun')
+        if getattr(opts, 'data_toggle', False):
+            data_basedir = os.path.join(data_basedir, 'pca')
 
         # Cache: template pkl, faces, seg per dataset (loaded once)
         _template_cache = {}
