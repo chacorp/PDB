@@ -79,6 +79,12 @@ def Options():
     parser.add_argument("--smooth_delta_W_alpha", type=float, default=0.5,
                         help='Smoothing blend ratio (0=no smooth, 1=full neighbor average)')
 
+    # surface losses
+    parser.add_argument("--lambda_normal", type=float, default=0.0,
+                        help='Normal consistency loss (1 - cos(n_pred, n_gt))')
+    parser.add_argument("--lambda_curvature", type=float, default=0.0,
+                        help='Curvature loss (Laplacian difference)')
+
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
                         help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
@@ -366,7 +372,10 @@ class HLBSTrainer:
             trans_tag = "-jTrans" if opts.use_joint_trans else ""
             sdw_tag = f"-sdw{opts.smooth_delta_W}a{opts.smooth_delta_W_alpha}" if opts.smooth_delta_W > 0 else ""
             nfs_tag = "-nfsEnc" if opts.nfs_ckpt else ""
-            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}{sdw_tag}{nfs_tag}"
+            surf_tag = ""
+            if opts.lambda_normal > 0: surf_tag += f"-nrm{opts.lambda_normal}"
+            if opts.lambda_curvature > 0: surf_tag += f"-crv{opts.lambda_curvature}"
+            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}{sdw_tag}{nfs_tag}{surf_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
@@ -416,6 +425,8 @@ class HLBSTrainer:
             "lbs-W-reg":   opts.lambda_W_reg,
             "lbs-t-reg":   opts.lambda_t_reg,
             "lbs-W-smooth": opts.lambda_W_smooth,
+            "recon-normal": opts.lambda_normal,
+            "recon-curvature": opts.lambda_curvature,
         }
 
         BEST_LOSS  = 1e8
@@ -436,7 +447,7 @@ class HLBSTrainer:
         for epoch in range(opts.start_epoch, epochs + 1):
             # ── Train ────────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "lbs-W-reg": 0.0, "lbs-t-reg": 0.0, "lbs-W-smooth": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "recon-curvature": 0.0, "lbs-W-reg": 0.0, "lbs-t-reg": 0.0, "lbs-W-smooth": 0.0, "total": 0.0}
             cnt = 0
 
             pbar = tqdm(enumerate(train_loader), total=len_train, ncols=120,
@@ -490,6 +501,20 @@ class HLBSTrainer:
                             F.mse_loss(src_v * t_mask,    pred_neutral * t_mask)
                             + F.mse_loss(src_v * inv_mask, pred_neutral * inv_mask)
                         )
+
+                # ── Normal consistency loss ───────────────────────────────
+                if opts.lambda_normal > 0:
+                    from utils.mesh_utils import calc_norm_torch
+                    pred_n = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+                    gt_n_recomputed = calc_norm_torch(target_v, batch.faces, at='verts')
+                    loss_dict["recon-normal"] = (1 - F.cosine_similarity(pred_n, gt_n_recomputed, dim=-1)).mean()
+
+                # ── Curvature loss (Laplacian difference) ────────────────────
+                if opts.lambda_curvature > 0:
+                    from train_edd_real import _uniform_laplacian
+                    loss_dict["recon-curvature"] = F.mse_loss(
+                        _uniform_laplacian(pred_lbs, batch.faces),
+                        _uniform_laplacian(target_v, batch.faces))
 
                 # ── Regularization + smoothness ───────────────────────────
                 # Lazily build mesh edges for smoothness loss
