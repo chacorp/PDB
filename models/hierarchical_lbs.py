@@ -268,12 +268,14 @@ class HierarchicalLBS(nn.Module):
         source_vert: torch.Tensor,
         deform_in: torch.Tensor,
         return_z_exp: bool = False,
+        z_exp_override: torch.Tensor = None,
     ):
         """
         Args:
-            source_vert  : [B, N, 3]  template/neutral mesh vertices
-            deform_in    : [B, N, C]  expression input features
-            return_z_exp : if True, return (rigid_v, z_exp)
+            source_vert   : [B, N, 3]  template/neutral mesh vertices
+            deform_in     : [B, N, C]  expression input features
+            return_z_exp  : if True, return (rigid_v, z_exp)
+            z_exp_override: [B, L] if provided, skip internal encoder and use this
 
         Returns:
             rigid_v : [B, N, 3]
@@ -292,8 +294,12 @@ class HierarchicalLBS(nn.Module):
             delta_t = delta_t.squeeze(1).reshape(B, J, 3)             # [B,J,3]
 
         # 2. Expression latent (per frame)
-        z_exp = self.lbs_exp_z_model(deform_in)                        # [B, 1, L]
-        z_exp_flat = z_exp.squeeze(1)                                  # [B, L]
+        if z_exp_override is not None:
+            z_exp_flat = z_exp_override                                # [B, L]
+            z_exp = z_exp_flat.unsqueeze(1)                            # [B, 1, L]
+        else:
+            z_exp = self.lbs_exp_z_model(deform_in)                    # [B, 1, L]
+            z_exp_flat = z_exp.squeeze(1)                              # [B, L]
         
         # 3. Local joint rotations (6D → 3x3) and optional translation
         pose_out = self.lbs_pose_model(z_exp)                           # [B, 1, J*(6+3?)]

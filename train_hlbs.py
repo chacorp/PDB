@@ -79,6 +79,10 @@ def Options():
     parser.add_argument("--smooth_delta_W_alpha", type=float, default=0.5,
                         help='Smoothing blend ratio (0=no smooth, 1=full neighbor average)')
 
+    # NFS encoder
+    parser.add_argument("--nfs_ckpt", type=str, default=None,
+                        help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
+
     # target
     parser.add_argument("--target", type=str, default='gt',
                         choices=['gt', 'smooth_gt'],
@@ -203,15 +207,129 @@ class HLBSTrainer:
                 self.model.load_state_dict(torch.load(paths[0], map_location=self.device))
                 print(f"Resumed HLBS from: {paths[0]}")
 
+        # ── NFS expression encoder (optional) ─────────────────────────────
+        self.nfs_encoder = None
+        self.nfs_z_adapter = None
+        if opts.nfs_ckpt:
+            self._load_nfs_encoder(opts)
+
         self.vis_loader = CheckpointVisLoader(opts, device=self.device)
         self._edges = None   # lazily computed from first batch faces
+
+    def _load_nfs_encoder(self, opts):
+        """Load NFS expression encoder standalone (no full NFS model needed)."""
+        import yaml, pickle, trimesh
+        from models.encoder import BaseDiffusionNetEncoder
+        from models.CNN import TextureEncoder
+        from utils.nfr_utils import get_dfn_info
+
+        print(f"[HLBS] Loading NFS expression encoder from: {opts.nfs_ckpt}")
+
+        # ── Read NFS config ──
+        nfs_dir = os.path.dirname(opts.nfs_ckpt)
+        with open(os.path.join(nfs_dir, "train_opts.yml")) as f:
+            nfs_cfg = yaml.safe_load(f)
+        nfs_rig_dim = nfs_cfg.get('rig_dim', 128)
+        nfs_img_feat_dim = nfs_cfg.get('img_feat_dim', 128)
+
+        # ── Build standalone modules ──
+        in_shape = 6 + nfs_img_feat_dim   # pos(3) + normal(3) + img_feat(128)
+        exp_encoder = BaseDiffusionNetEncoder(
+            in_shape=in_shape, pre_computes=None, out_shape=nfs_rig_dim,
+        ).to(self.device)
+        img_encoder = TextureEncoder().to(self.device)
+        img_fc = torch.nn.Linear(128, nfs_img_feat_dim).to(self.device)
+
+        # ── Load weights from NFS checkpoint ──
+        ckpt = torch.load(opts.nfs_ckpt, map_location=self.device)
+        skip_suffixes = {'mass', 'L_ind', 'L_val', 'evals', 'evecs', 'grad_X', 'grad_Y', 'faces'}
+
+        def _extract(prefix):
+            out = {}
+            for k, v in ckpt.items():
+                if k.startswith(prefix):
+                    short = k[len(prefix):]
+                    if not any(short.startswith(s) or s in short for s in skip_suffixes):
+                        out[short] = v
+            return out
+
+        exp_encoder.load_state_dict(_extract('mesh_exp_encoder.'), strict=False)
+        img_encoder.load_state_dict(_extract('img_encoder.'), strict=False)
+        img_fc.load_state_dict(_extract('img_fc.'), strict=False)
+        print(f"  Loaded exp_encoder, img_encoder, img_fc weights")
+
+        # ── Freeze all ──
+        for m in [exp_encoder, img_encoder, img_fc]:
+            for p in m.parameters():
+                p.requires_grad_(False)
+            m.eval()
+
+        self.nfs_exp_encoder = exp_encoder
+        self.nfs_img_encoder = img_encoder
+        self.nfs_img_fc = img_fc
+        self.nfs_encoder = exp_encoder  # for None-check in train loop
+
+        # ── Precompute DiffusionNet operators for MF template ──
+        with open("/data/sihun/pca/multiface_align/mf_templates.pkl", 'rb') as f:
+            templates = pickle.load(f)
+        faces_np = np.array(templates['face'], dtype=np.int32)
+        first_id = [k for k in templates if k != 'face'][0]
+        verts_np = templates[first_id].astype(np.float32)
+        mesh = trimesh.Trimesh(vertices=verts_np, faces=faces_np, process=False)
+        self._nfs_dfn_info = get_dfn_info(mesh, map_location=self.device)
+        print(f"  DiffusionNet operators precomputed")
+
+        # ── Precompute image feature from prerendered neutral image ──
+        img_npy_path = "data/MF_all_v5/m--20180426--0000--002643814--GHS_neutral_img.npy"
+        img_np = np.load(img_npy_path)                                  # [256, 256, 3]
+        img_t = torch.tensor(img_np, dtype=torch.float32, device=self.device)
+        img_t = img_t.unsqueeze(0).permute(0, 3, 1, 2)                 # [1, 3, 256, 256]
+        with torch.no_grad():
+            self._nfs_img_feat = img_fc(img_encoder(img_t))             # [1, img_feat_dim]
+        print(f"  Image feature precomputed from {img_npy_path}")
+
+        # ── Adapter: NFS z_GE [B, rig_dim] → HLBS z_exp [B, hid_dim] ──
+        if nfs_rig_dim != opts.hid_dim:
+            self.nfs_z_adapter = torch.nn.Linear(nfs_rig_dim, opts.hid_dim).to(self.device)
+            print(f"  z_adapter: {nfs_rig_dim} → {opts.hid_dim}")
+        else:
+            self.nfs_z_adapter = torch.nn.Identity()
+
+        # ── Freeze HLBS's own expression encoder ──
+        for p in self.model.lbs_exp_z_model.parameters():
+            p.requires_grad_(False)
+        print("[HLBS] NFS encoder ready. HLBS lbs_exp_z_model frozen.")
+
+    @torch.no_grad()
+    def _nfs_encode_exp(self, gt_v, gt_n):
+        """Encode expression using NFS pretrained encoder.
+        Args:
+            gt_v: [B, V, 3] expression vertices
+            gt_n: [B, V, 3] expression normals
+        Returns:
+            z_exp: [B, hid_dim]
+        """
+        B, V, _ = gt_v.shape
+        # vertex feature: pos + normal + img_feat (broadcast over V)
+        vert_feat = torch.cat([gt_v, gt_n], dim=-1)                    # [B, V, 6]
+        img_feat = self._nfs_img_feat.expand(B, -1)                    # [B, 128]
+        img_exp = img_feat.unsqueeze(1).expand(-1, V, -1)              # [B, V, 128]
+        nfs_input = torch.cat([vert_feat, img_exp], dim=-1)            # [B, V, 134]
+        # DiffusionNet encode
+        self.nfs_exp_encoder.update_precomputes(self._nfs_dfn_info)
+        z_ge = self.nfs_exp_encoder(nfs_input)                         # [B, 128]
+        return self.nfs_z_adapter(z_ge)                                # [B, hid_dim]
 
     def train(self, epochs):
         opts = self.opts
         BS = opts.batch_size
 
+        # Collect trainable params: HLBS model + NFS adapter (if any)
+        train_params = list(self.model.parameters())
+        if self.nfs_z_adapter is not None and not isinstance(self.nfs_z_adapter, torch.nn.Identity):
+            train_params += list(self.nfs_z_adapter.parameters())
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=opts.lr, betas=(0.9, 0.999))
+            train_params, lr=opts.lr, betas=(0.9, 0.999))
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=opts.sc_step, gamma=opts.sc_gamma)
 
@@ -247,7 +365,8 @@ class HLBSTrainer:
             freeze_tag = "-frozenAdapt" if opts.freeze_adapt else ""
             trans_tag = "-jTrans" if opts.use_joint_trans else ""
             sdw_tag = f"-sdw{opts.smooth_delta_W}a{opts.smooth_delta_W_alpha}" if opts.smooth_delta_W > 0 else ""
-            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}{sdw_tag}"
+            nfs_tag = "-nfsEnc" if opts.nfs_ckpt else ""
+            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}{sdw_tag}{nfs_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
@@ -338,7 +457,12 @@ class HLBSTrainer:
                 src_in    = torch.cat([src_v, src_n], dim=-1)        # [B, N, 6]
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1) # [B, N, 12]
 
-                pred_lbs = self.model(src_v, deform_in)              # [B, N, 3]
+                # z_exp from NFS encoder or HLBS internal encoder
+                z_exp_ext = None
+                if self.nfs_encoder is not None:
+                    z_exp_ext = self._nfs_encode_exp(gt_v, gt_n)      # [B, hid_dim]
+
+                pred_lbs = self.model(src_v, deform_in, z_exp_override=z_exp_ext)  # [B, N, 3]
 
                 if opts.no_t_mask:
                     loss_dict = {"recon-lbs": F.mse_loss(target_v, pred_lbs)}
@@ -467,7 +591,12 @@ class HLBSTrainer:
                     delta     = gt_v - src_v
                     src_in    = torch.cat([src_v, src_n], dim=-1)
                     deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
-                    pred_lbs  = self.model(src_v, deform_in)
+
+                    z_exp_ext = None
+                    if self.nfs_encoder is not None:
+                        z_exp_ext = self._nfs_encode_exp(gt_v, gt_n)
+
+                    pred_lbs  = self.model(src_v, deform_in, z_exp_override=z_exp_ext)
 
                     target_v_val = smt_v if opts.target == 'smooth_gt' else gt_v
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * loss_lambda["recon-lbs"]
