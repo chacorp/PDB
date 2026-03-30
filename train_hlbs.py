@@ -598,7 +598,7 @@ class HLBSTrainer:
 
             # ── Valid ────────────────────────────────────────────────────────
             self.model.eval()
-            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "total": 0.0}
+            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "recon-curvature": 0.0, "total": 0.0}
             vcnt = 0
 
             pbar = tqdm(enumerate(valid_loader), total=len_valid, ncols=120,
@@ -636,6 +636,24 @@ class HLBSTrainer:
                         val_neu = F.mse_loss(src_v, pred_neutral).item() * loss_lambda["recon-neu"]
                         running_val["recon-neu"] += val_neu
                         running_val["total"]     += val_neu
+
+                    # Normal consistency loss (val)
+                    if opts.lambda_normal > 0:
+                        from utils.mesh_utils import calc_norm_torch
+                        pred_n = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+                        gt_n_val = calc_norm_torch(target_v_val, batch.faces, at='verts')
+                        val_nrm = (1 - F.cosine_similarity(pred_n, gt_n_val, dim=-1)).mean().item() * loss_lambda["recon-normal"]
+                        running_val["recon-normal"] += val_nrm
+                        running_val["total"]        += val_nrm
+
+                    # Curvature loss (val)
+                    if opts.lambda_curvature > 0:
+                        from train_edd_real import _uniform_laplacian
+                        val_crv = F.mse_loss(
+                            _uniform_laplacian(pred_lbs, batch.faces),
+                            _uniform_laplacian(target_v_val, batch.faces)).item() * loss_lambda["recon-curvature"]
+                        running_val["recon-curvature"] += val_crv
+                        running_val["total"]           += val_crv
 
                 pbar.set_description(f"[{epoch:03d}] val lbs: {val_loss:.5e}")
 
