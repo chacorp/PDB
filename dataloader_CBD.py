@@ -1033,12 +1033,12 @@ class CBDDataset(data.Dataset):
         smooth_deformed = deformed  # ICT narrow: no smooth PCA, fallback
         return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff, id_name, smooth_deformed)
 
-    def get_ict(self, index, id_index):
+    def get_ict(self, index, id_index, ict_region=0):
         id_coeff = self.iden_vecs[id_index]
         id_name = f"{id_index:03d}"
 
-        # Random region select (same as NFS): 0=fullhead, 1=face_only, 2=narrow
-        region = np.random.randint(3) if self.mode == 'train' else 0
+        # Region from sampler (batch-consistent, same as NFS)
+        region = ict_region if self.mode == 'train' else 0
 
         if index >= self.ict_exp_len:
             index = index % self.ict_exp_len
@@ -1285,10 +1285,14 @@ class CBDDataset(data.Dataset):
         Returns:
             data
         """
-        idx, id_mesh, mesh_data = index
-        
+        if len(index) == 4:
+            idx, id_mesh, mesh_data, ict_region = index
+        else:
+            idx, id_mesh, mesh_data = index
+            ict_region = 0
+
         if mesh_data == 0:
-            datas = self.get_voca(idx, id_mesh)        
+            datas = self.get_voca(idx, id_mesh)
         elif mesh_data == 1:
             datas = self.get_biwi(idx, id_mesh)
         elif mesh_data == 2:
@@ -1300,7 +1304,7 @@ class CBDDataset(data.Dataset):
             datas = self.get_multiface_ROM(idx, id_mesh)
             mesh_data = 2
         elif mesh_data == 5:
-            datas = self.get_ict(idx, id_mesh)
+            datas = self.get_ict(idx, id_mesh, ict_region=ict_region)
             mesh_data = 5
         elif mesh_data == 6:
             datas = self.get_ict_narrow(idx, id_mesh)
@@ -1499,8 +1503,15 @@ class CBDdataSampler(data.Sampler):
             id_mesh = self.id_mesh[::-1]
         
         self.length = len(indices)
-        
-        batch = np.concatenate([indices[:,:,None], labels[:,:,None], id_mesh[:,:,None]], axis=-1)
+
+        # Per-batch ICT region select (0=fullhead, 1=face_only, 2=narrow)
+        # Same region for all samples in a batch (same as NFS MeshSampler)
+        n_batches = indices.shape[0]
+        bs = indices.shape[1]
+        region_per_batch = np.random.randint(0, 3, size=n_batches)
+        region = np.tile(region_per_batch[:, None], (1, bs))  # [n_batches, bs]
+
+        batch = np.concatenate([indices[:,:,None], labels[:,:,None], id_mesh[:,:,None], region[:,:,None]], axis=-1)
         batch = batch.tolist()
         return iter(batch)
 
