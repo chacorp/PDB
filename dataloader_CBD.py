@@ -1059,8 +1059,8 @@ class CBDDataset(data.Dataset):
         exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128
         exp_coeff = torch.tensor(exp_coeff).float()
 
-        deformed=deformed[0]
-        template=template[0]
+        deformed = deformed[0]
+        template = template[0]
 
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
@@ -1071,7 +1071,6 @@ class CBDDataset(data.Dataset):
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
 
-        # seg label: slice to match region vertex count
         ict_seg = self.ict_seg[:v_num]
 
         smooth_deformed = deformed  # ICT: no smooth PCA, fallback
