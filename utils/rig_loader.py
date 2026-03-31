@@ -44,10 +44,14 @@ from typing import Dict, List, Optional
 class RigData:
     joint_names : List[str]           # [J]
     parent_idx  : torch.Tensor        # [J]      int64, -1 = root
-    bind_pos    : torch.Tensor        # [J, 3]   float32
+    bind_pos    : torch.Tensor        # [J, 3]   float32 (default/first topology)
     B_inv       : torch.Tensor        # [J, 4, 4] float32, column-major (already transposed)
     W_init      : Dict[str, torch.Tensor] = field(default_factory=dict)
     # key -> [V, J] float32, rows sum to 1.0
+    bind_pos_dict : Dict[str, torch.Tensor] = field(default_factory=dict)
+    # key -> [J, 3] per-topology bind positions
+    B_inv_dict    : Dict[str, torch.Tensor] = field(default_factory=dict)
+    # key -> [J, 4, 4] per-topology inverse bind matrices
 
 
 def load_rig(
@@ -67,33 +71,64 @@ def load_rig(
         topologies = ['mf', 'biwi', 'voca']
 
     # ------------------------------------------------------------------
-    # 1. Parse rig_info.json
+    # 1. Parse rig_info JSON(s) — per-topology if available
     # ------------------------------------------------------------------
-    rig_path = os.path.join(rig_dir, 'rig_info.json')
-    if not os.path.exists(rig_path):
-        raise FileNotFoundError(
-            f"rig_info.json not found at '{rig_path}'. "
-            "Run maya_rig/export_rig.py inside Maya first."
-        )
+    # Try topology-specific files first (rig_info_mf.json, rig_info_ict.json)
+    # Fall back to single rig_info.json for backward compatibility
+    rig_info_files = {}
+    for topo in topologies:
+        topo_path = os.path.join(rig_dir, f'rig_info_{topo}.json')
+        if os.path.exists(topo_path):
+            rig_info_files[topo] = topo_path
 
-    with open(rig_path) as f:
+    # Fallback: single rig_info.json
+    fallback_path = os.path.join(rig_dir, 'rig_info.json')
+    if not rig_info_files:
+        if os.path.exists(fallback_path):
+            for topo in topologies:
+                rig_info_files[topo] = fallback_path
+        else:
+            raise FileNotFoundError(
+                f"No rig_info found in '{rig_dir}'. "
+                "Expected rig_info_mf.json / rig_info_ict.json or rig_info.json."
+            )
+
+    # Parse first available rig_info for shared hierarchy (joint_names, parent_idx)
+    first_path = list(rig_info_files.values())[0]
+    with open(first_path) as f:
         rig_info = json.load(f)
 
-    joints = rig_info['joints']   # list of dicts, topologically sorted
+    joints = rig_info['joints']
     J = len(joints)
 
     joint_names  = [None] * J
-    parent_arr   = np.full(J, -1,         dtype=np.int64)
-    bind_pos_arr = np.zeros((J, 3),       dtype=np.float32)
-    B_inv_arr    = np.zeros((J, 4, 4),    dtype=np.float32)
+    parent_arr   = np.full(J, -1, dtype=np.int64)
+
+    # Default bind_pos / B_inv from first rig_info
+    bind_pos_arr = np.zeros((J, 3),    dtype=np.float32)
+    B_inv_arr    = np.zeros((J, 4, 4), dtype=np.float32)
 
     for jdata in joints:
         idx = jdata['index']
-        joint_names[idx]    = jdata['name']
-        parent_arr[idx]     = jdata['parent_index']
-        bind_pos_arr[idx]   = jdata['bind_world_pos']
-        # Maya row-major → column-major via transpose
-        B_inv_arr[idx]      = np.array(jdata['bind_pre_matrix'], dtype=np.float32).T
+        joint_names[idx]  = jdata['name']
+        parent_arr[idx]   = jdata['parent_index']
+        bind_pos_arr[idx] = jdata['bind_world_pos']
+        B_inv_arr[idx]    = np.array(jdata['bind_pre_matrix'], dtype=np.float32).T
+
+    # Per-topology bind_pos / B_inv
+    bind_pos_dict = {}
+    B_inv_dict = {}
+    for topo, rpath in rig_info_files.items():
+        with open(rpath) as f:
+            ri = json.load(f)
+        bp = np.zeros((J, 3),    dtype=np.float32)
+        bi = np.zeros((J, 4, 4), dtype=np.float32)
+        for jdata in ri['joints']:
+            idx = jdata['index']
+            bp[idx] = jdata['bind_world_pos']
+            bi[idx] = np.array(jdata['bind_pre_matrix'], dtype=np.float32).T
+        bind_pos_dict[topo] = torch.tensor(bp, dtype=torch.float32).to(device)
+        B_inv_dict[topo]    = torch.tensor(bi, dtype=torch.float32).to(device)
 
     # Validate topological order
     for idx, p in enumerate(parent_arr):
@@ -108,6 +143,7 @@ def load_rig(
     # ------------------------------------------------------------------
     weight_files = {
         'mf'  : os.path.join(rig_dir, 'skin_weights_mf.npy'),
+        'ict' : os.path.join(rig_dir, 'skin_weights_ict.npy'),
         'biwi': os.path.join(rig_dir, 'skin_weights_biwi.npy'),
         'voca': os.path.join(rig_dir, 'skin_weights_voca.npy'),
     }
@@ -136,6 +172,8 @@ def load_rig(
         bind_pos=torch.tensor(bind_pos_arr,   dtype=torch.float32).to(device),
         B_inv=torch.tensor(B_inv_arr,         dtype=torch.float32).to(device),
         W_init=W_init,
+        bind_pos_dict=bind_pos_dict,
+        B_inv_dict=B_inv_dict,
     )
 
 

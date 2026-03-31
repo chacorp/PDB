@@ -62,6 +62,7 @@ _notebook/
 ict_face_pt/
 
 *.npy
+!maya_rig/*.npy
 ckpt*
 
 # eval*
