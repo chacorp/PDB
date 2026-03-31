@@ -692,11 +692,12 @@ class ICT_face_model():
             mesh_v_idx (np.ndarray): <int> array of std mesh vertex indices
         """
         # id vertices
+        v_num = self.region[region][0]
         id_disps = self.get_id_disp(id_coeff, region=region)
-        
+
         # exp vertices
         exp_disp = self.get_exp_disp(exp_coeffs, region=region)
-        id_verts = self.neutral_verts + id_disps
+        id_verts = self.neutral_verts[:v_num] + id_disps
         id_exp_verts = id_verts + exp_disp
         
         # apply std
