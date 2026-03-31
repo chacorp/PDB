@@ -85,6 +85,15 @@ def Options():
     parser.add_argument("--lambda_curvature", type=float, default=0.0,
                         help='Curvature loss (Laplacian difference)')
 
+    # full prediction mode
+    parser.add_argument("--full_prediction", dest='full_prediction', action='store_true',
+                        help='Use HierarchicalLBS_FullPred (no Maya base dependency)')
+    parser.set_defaults(full_prediction=False)
+    parser.add_argument("--init_phase_epochs", type=int, default=20,
+                        help='Phase 1 warm-up epochs for init supervision (full_prediction only)')
+    parser.add_argument("--lambda_init", type=float, default=1.0,
+                        help='Init supervision loss weight at epoch 0 (linearly annealed to 0)')
+
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
                         help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
@@ -704,6 +713,315 @@ class HLBSTrainer:
                 logger.write(f"[{epoch:03d}] Val: {total_val:.6e} (Best: {BEST_LOSS:.6e} [{BEST_EPOCH}])\n")
 
 
+    def train_full_prediction(self, epochs):
+        """Train with HierarchicalLBS_FullPred: full W/bind prediction + Phase 1 annealing."""
+        from models.hierarchical_lbs import HierarchicalLBS_FullPred
+        opts = self.opts
+        BS = opts.batch_size
+
+        # ── Build FullPred model ─────────────────────────────────────────
+        from utils.rig_loader import load_rig
+        rig = load_rig(opts.rig_path)
+        self.model = HierarchicalLBS_FullPred(
+            rig=rig,
+            topology=opts.topo_key,
+            in_dim_exp=12,
+            hid_dim=opts.hid_dim,
+            num_layers=opts.num_layers,
+            device=str(self.device),
+            use_joint_trans=opts.use_joint_trans,
+            smooth_W=opts.smooth_delta_W,
+            smooth_W_alpha=opts.smooth_delta_W_alpha,
+        ).to(self.device)
+        print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
+
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(), lr=opts.lr, betas=(0.9, 0.999))
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer, step_size=opts.sc_step, gamma=opts.sc_gamma)
+
+        if opts.target == 'gt':
+            opts.smooth_n_iter = 0
+
+        train_ds = CBDDataset(opts, is_train=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
+        valid_ds = CBDDataset(opts, is_valid=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
+        train_sampler = CBDdataSampler(train_ds.len_list, BS, shuffle=True,  balance=False, is_train=True)
+        valid_sampler = CBDdataSampler(valid_ds.len_list, BS, shuffle=True,  balance=False, is_valid=True)
+        _nw = opts.num_workers
+        train_loader = torch.utils.data.DataLoader(
+            train_ds, batch_sampler=train_sampler,
+            collate_fn=partial(CBD_collate_wrapper, device='cpu'),
+            num_workers=_nw, persistent_workers=(_nw > 0))
+        valid_loader = torch.utils.data.DataLoader(
+            valid_ds, batch_sampler=valid_sampler,
+            collate_fn=partial(CBD_collate_wrapper, device='cpu'), num_workers=0)
+
+        # ── Logging ──────────────────────────────────────────────────────
+        import datetime
+        now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        trans_tag = "-jTrans" if opts.use_joint_trans else ""
+        sdw_tag = f"-sdw{opts.smooth_delta_W}a{opts.smooth_delta_W_alpha}" if opts.smooth_delta_W > 0 else ""
+        tag = f"-HLBS-FullPred-{opts.topo_key}{trans_tag}{sdw_tag}"
+        opts.log_dir = os.path.join(opts.log_dir, now + tag)
+
+        os.makedirs(opts.log_dir, exist_ok=True)
+        os.makedirs(f"{opts.log_dir}/img/train/mesh", exist_ok=True)
+        os.makedirs(f"{opts.log_dir}/img/valid/mesh", exist_ok=True)
+
+        with open(os.path.join(opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(opts), f, indent=4)
+        with open(os.path.join(opts.log_dir, "train_opts.yml"), 'w') as f:
+            yaml.dump(vars(opts), f, sort_keys=False)
+
+        writer_train = writer_valid = None
+        if opts.tb:
+            writer_train = SummaryWriter(log_dir=os.path.join(opts.log_dir, "train"))
+            writer_valid = SummaryWriter(log_dir=os.path.join(opts.log_dir, "valid"))
+
+        logger = Logger(os.path.join(opts.log_dir, "log.txt"))
+        print(f'Log: {logger.file_path}')
+
+        config_text = (
+            f"=== HLBS FullPred Training ===\n"
+            f"  topo_key       : {opts.topo_key}\n"
+            f"  use_joint_trans: {opts.use_joint_trans}\n"
+            f"  init_phase     : {opts.init_phase_epochs} epochs\n"
+            f"  lambda_init    : {opts.lambda_init}\n"
+            f"  lambda_vert    : {opts.lambda_vert}\n"
+            f"  lambda_neu     : {opts.lambda_neu}\n"
+            f"==============================\n"
+        )
+        print(config_text)
+        logger.write(config_text)
+        logger.write(train_ds.get_data_config())
+
+        # ── Precompute mesh edges ────────────────────────────────────────
+        if opts.smooth_delta_W > 0 and self.model._mesh_edges is None:
+            _first = next(iter(train_loader))
+            _faces = _first.faces[0] if hasattr(_first.faces, '__getitem__') else _first.faces
+            self.model.set_mesh_edges(_faces)
+
+        BEST_LOSS = 1e8
+        BEST_EPOCH = 0
+        len_train = len(train_loader)
+        len_valid = len(valid_loader)
+        interv = max(1, round(len_train / 10))
+        interv_val = max(1, round(len_valid / 3))
+        K = opts.init_phase_epochs
+
+        for epoch in range(opts.start_epoch, epochs + 1):
+            # Phase 1 annealing
+            lambda_init = opts.lambda_init * max(0.0, 1.0 - epoch / K) if K > 0 else 0.0
+
+            # ── Train ────────────────────────────────────────────────────
+            self.model.train()
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "total": 0.0}
+            cnt = 0
+
+            pbar = tqdm(enumerate(train_loader), total=len_train, ncols=120,
+                        desc=f"[{epoch:03d}] Train FullPred (phase{'1' if lambda_init > 0 else '2'})")
+            for idx, batch in pbar:
+                batch = batch.to(self.device)
+                self.optimizer.zero_grad()
+
+                src_v  = batch.template
+                src_n  = batch.template_normal
+                gt_v   = batch.vertices
+                gt_n   = batch.vertices_normal
+                target_v = gt_v
+
+                delta     = gt_v - src_v
+                src_in    = torch.cat([src_v, src_n], dim=-1)
+                deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
+
+                pred_lbs = self.model(src_v, deform_in)
+
+                # ── Recon loss ───────────────────────────────────────────
+                if opts.no_t_mask:
+                    loss_dict = {"recon-lbs": F.mse_loss(target_v, pred_lbs)}
+                else:
+                    from utils.exp_utils import plateau_hat_points
+                    t_mask   = plateau_hat_points(src_v)
+                    inv_mask = 1.0 - t_mask
+                    loss_dict = {
+                        "recon-lbs": (
+                            F.mse_loss(target_v * t_mask,  pred_lbs * t_mask)
+                            + F.mse_loss(src_v * inv_mask, pred_lbs * inv_mask)
+                        )
+                    }
+
+                # ── Neutral recon loss ───────────────────────────────────
+                if opts.lambda_neu > 0:
+                    delta_zero = torch.zeros_like(src_v)
+                    neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
+                    pred_neutral = self.model(src_v, neu_deform_in)
+                    if opts.no_t_mask:
+                        loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
+                    else:
+                        loss_dict["recon-neu"] = (
+                            F.mse_loss(src_v * t_mask,    pred_neutral * t_mask)
+                            + F.mse_loss(src_v * inv_mask, pred_neutral * inv_mask)
+                        )
+
+                # ── Normal consistency loss ───────────────────────────────
+                if opts.lambda_normal > 0:
+                    from utils.mesh_utils import calc_norm_torch
+                    pred_n = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+                    gt_n_recomp = calc_norm_torch(target_v, batch.faces, at='verts')
+                    normal_diff = 1 - F.cosine_similarity(pred_n, gt_n_recomp, dim=-1)
+                    if not opts.no_t_mask:
+                        normal_diff = normal_diff * t_mask.squeeze(-1)
+                    loss_dict["recon-normal"] = normal_diff.mean()
+
+                # ── Phase 1: init supervision (dataset-aware) ──────────────
+                if lambda_init > 0:
+                    _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
+                    init_losses = self.model.init_loss(src_v, mesh_data=_md)
+                    for k, v in init_losses.items():
+                        loss_dict[k] = v
+
+                # ── Total loss ───────────────────────────────────────────
+                loss_lambda = {
+                    "recon-lbs": opts.lambda_vert,
+                    "recon-neu": opts.lambda_neu,
+                    "recon-normal": opts.lambda_normal,
+                    "L_W_init": lambda_init,
+                    "L_bind_init": lambda_init,
+                }
+                loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
+                loss.backward()
+                self.optimizer.step()
+
+                for k in running:
+                    if k != "total" and k in loss_dict:
+                        running[k] += (loss_dict[k] * loss_lambda.get(k, 1.0)).item()
+                    elif k == "init-W" and "L_W_init" in loss_dict:
+                        running[k] += (loss_dict["L_W_init"] * lambda_init).item()
+                    elif k == "init-bind" and "L_bind_init" in loss_dict:
+                        running[k] += (loss_dict["L_bind_init"] * lambda_init).item()
+                running["total"] += loss.item()
+                cnt += 1
+                pbar.set_description(
+                    f"[{epoch:03d}] lbs:{loss_dict['recon-lbs']:.4e} init:{lambda_init:.2f}")
+
+                if idx % interv == 1:
+                    inv = 1.0 / cnt
+                    log_text = f"[{epoch:03d}/{epochs:03d}][{idx:04d}][Train] "
+                    log_text += " ".join(f"{k}: {v*inv:.6e}" for k, v in running.items())
+                    logger.write(log_text + "\n")
+
+                    HB = BS // 2
+                    _d = lambda t: t.cpu().detach()
+                    _s = lambda i: min(i, BS-1)
+                    faces_cpu = batch.faces.cpu()
+                    v_list = [
+                        _d(gt_v[0]),        _d(gt_v[_s(1)]),
+                        _d(gt_v[_s(HB)]),   _d(gt_v[BS-1]),
+                        _d(pred_lbs[0]),    _d(pred_lbs[_s(1)]),
+                        _d(pred_lbs[_s(HB)]), _d(pred_lbs[BS-1]),
+                    ]
+                    f_list = [faces_cpu] * len(v_list)
+                    plot_image_array(
+                        v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
+                        size=1, bg_black=False, mode='shade',
+                        logdir=f"{opts.log_dir}/img/train/mesh",
+                        name=f"{epoch:03d}_{idx:04d}", save=True)
+
+                if opts.debug:
+                    break
+
+            if epoch != 0:
+                self.scheduler.step()
+            if writer_train:
+                for k, v in running.items():
+                    writer_train.add_scalar(k, v / cnt, epoch)
+
+            if epoch % opts.save_interval == 0:
+                torch.save(self.model.state_dict(),
+                           f'{opts.log_dir}/model_hlbs_{epoch:03d}.pth')
+
+            if epoch % opts.eval_iter == 0:
+                self.vis_loader.visualize(
+                    self.model, None, epoch,
+                    save_dir=f'{opts.log_dir}/img/eval',
+                    mode='hlbs',
+                    smooth_n_iter=opts.smooth_n_iter,
+                    no_t_mask=opts.no_t_mask,
+                )
+
+            # ── Valid ────────────────────────────────────────────────────
+            self.model.eval()
+            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "total": 0.0}
+            vcnt = 0
+
+            pbar = tqdm(enumerate(valid_loader), total=len_valid, ncols=120,
+                        desc=f"[{epoch:03d}] Valid FullPred")
+            for idx, batch in pbar:
+                batch = batch.to(self.device)
+                vcnt += 1
+                with torch.no_grad():
+                    src_v  = batch.template
+                    src_n  = batch.template_normal
+                    gt_v   = batch.vertices
+                    gt_n   = batch.vertices_normal
+
+                    delta     = gt_v - src_v
+                    src_in    = torch.cat([src_v, src_n], dim=-1)
+                    deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
+                    pred_lbs  = self.model(src_v, deform_in)
+
+                    target_v_val = gt_v
+                    val_loss = F.mse_loss(target_v_val, pred_lbs).item() * opts.lambda_vert
+                    running_val["recon-lbs"] += val_loss
+                    running_val["total"]     += val_loss
+
+                    if opts.lambda_neu > 0:
+                        delta_zero = torch.zeros_like(src_v)
+                        neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
+                        pred_neutral = self.model(src_v, neu_deform_in)
+                        val_neu = F.mse_loss(src_v, pred_neutral).item() * opts.lambda_neu
+                        running_val["recon-neu"] += val_neu
+                        running_val["total"]     += val_neu
+
+                pbar.set_description(f"[{epoch:03d}] val lbs: {val_loss:.5e}")
+
+                if idx % interv_val == 0:
+                    BS_v = batch.vertices.shape[0]
+                    HB_v = BS_v // 2
+                    _s = lambda i: min(i, BS_v-1)
+                    faces_cpu = batch.faces[0].cpu() if batch.faces.dim() == 3 else batch.faces.cpu()
+                    v_list = [
+                        gt_v[0].cpu(),        gt_v[_s(1)].cpu(),
+                        gt_v[_s(HB_v)].cpu(), gt_v[BS_v-1].cpu(),
+                        pred_lbs[0].cpu(),        pred_lbs[_s(1)].cpu(),
+                        pred_lbs[_s(HB_v)].cpu(), pred_lbs[BS_v-1].cpu(),
+                    ]
+                    f_list = [faces_cpu] * len(v_list)
+                    plot_image_array(
+                        v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
+                        size=1, bg_black=False, mode='shade',
+                        logdir=f"{opts.log_dir}/img/valid/mesh",
+                        name=f"{epoch:03d}_{idx:04d}", save=True)
+
+                if opts.debug:
+                    break
+
+            if writer_valid:
+                for k, v in running_val.items():
+                    writer_valid.add_scalar(k, v / vcnt, epoch)
+
+            total_val = running_val["total"] / vcnt
+            if total_val < BEST_LOSS:
+                BEST_LOSS  = total_val
+                BEST_EPOCH = epoch
+                torch.save(self.model.state_dict(), f'{opts.log_dir}/model_hlbs_best.pth')
+                print(f"[{epoch:03d}] Best: {BEST_LOSS:.6e} (epoch {BEST_EPOCH})")
+                logger.write(f"[{epoch:03d}] Best Loss: {BEST_LOSS:.6e}\n")
+            else:
+                print(f"[{epoch:03d}] Val: {total_val:.6e} (Best: {BEST_LOSS:.6e} [{BEST_EPOCH}])")
+                logger.write(f"[{epoch:03d}] Val: {total_val:.6e} (Best: {BEST_LOSS:.6e} [{BEST_EPOCH}])\n")
+
+
 if __name__ == "__main__":
     opts = Options()
 
@@ -717,4 +1035,7 @@ if __name__ == "__main__":
         assert opts.smooth_n_iter > 0, "target=smooth_gt requires --smooth_n_iter > 0"
 
     trainer = HLBSTrainer(opts)
-    trainer.train(epochs=opts.max_epoch)
+    if opts.full_prediction:
+        trainer.train_full_prediction(epochs=opts.max_epoch)
+    else:
+        trainer.train(epochs=opts.max_epoch)

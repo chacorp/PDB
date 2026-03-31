@@ -67,6 +67,7 @@ class HierarchicalLBS(nn.Module):
         use_joint_trans: bool = False,
         smooth_delta_W: int = 0,
         smooth_delta_W_alpha: float = 0.5,
+        full_prediction: bool = False,
     ):
         super().__init__()
 
@@ -76,9 +77,6 @@ class HierarchicalLBS(nn.Module):
         self.smooth_delta_W_iters = smooth_delta_W
         self.smooth_delta_W_alpha = smooth_delta_W_alpha
         self._mesh_edges = None
-        self.smooth_delta_W_iters = smooth_delta_W
-        self.smooth_delta_W_alpha = smooth_delta_W_alpha
-        self._mesh_edges = None  # lazy-built from faces for delta_W smoothing
         J = len(rig.joint_names)
         self.num_joints = J
         self.joint_names = rig.joint_names
@@ -452,6 +450,252 @@ class HierarchicalLBS(nn.Module):
             L_W_smooth = source_vert.new_zeros(())
 
         return {'L_W_reg': L_W_reg, 'L_t_reg': L_t_reg, 'L_W_smooth': L_W_smooth}
+
+
+class HierarchicalLBS_FullPred(nn.Module):
+    """
+    Full-prediction HierarchicalLBS.
+
+    Unlike HierarchicalLBS which predicts delta_W on top of Maya base,
+    this model predicts full skin weights and bind pose directly.
+    Maya init is used only as Phase 1 supervision target (annealed away).
+    """
+
+    def __init__(
+        self,
+        rig: RigData,
+        topology: str = 'mf',
+        in_dim_exp: int = 12,
+        hid_dim: int = 256,
+        num_layers: int = 4,
+        device: str = 'cpu',
+        use_joint_trans: bool = False,
+        smooth_W: int = 0,
+        smooth_W_alpha: float = 0.5,
+    ):
+        super().__init__()
+
+        self.device_str = device
+        self.use_joint_trans = use_joint_trans
+        self.smooth_W_iters = smooth_W
+        self.smooth_W_alpha = smooth_W_alpha
+        self._mesh_edges = None
+
+        J = len(rig.joint_names)
+        self.num_joints = J
+        self.joint_names = rig.joint_names
+
+        # ── Fixed hierarchy buffers ──────────────────────────────────────
+        self.register_buffer('parent_idx', rig.parent_idx.to(device))
+        self.register_buffer('bind_pos',   rig.bind_pos.to(device))
+
+        B_inv_t = rig.B_inv.to(device)
+        B_bind  = torch.linalg.inv(B_inv_t)
+        parent  = rig.parent_idx.to(device)
+        T_bind_local = torch.zeros_like(B_bind)
+        for j in range(J):
+            p = parent[j].item()
+            if p == -1:
+                T_bind_local[j] = B_bind[j]
+            else:
+                T_bind_local[j] = B_inv_t[p] @ B_bind[j]
+        self.register_buffer('T_bind_local', T_bind_local)
+
+        # ── Maya init as supervision target (not structural base) ────────
+        # Per-topology init targets: {topology_key: W_target [N, J]}
+        self._init_targets = {}
+        for topo_key, W_t in rig.W_init.items():
+            self._init_targets[topo_key] = W_t.to(device)
+        self.register_buffer('bind_pos_target', rig.bind_pos.to(device).clone())
+
+        # mesh_data label → topology key mapping
+        self._mesh_data_to_topo = {
+            2: 'mf',    # mesh_data == 2 → mf (SEN/ROM)
+            5: 'ict',   # mesh_data == 5 → ict
+            1: 'biwi',
+            0: 'voca',
+        }
+
+        # ── Full prediction networks ─────────────────────────────────────
+        self.skin_weight_net = LinearEncoder(
+            in_dim=3, out_dim=J, hid_dim=hid_dim,
+            num_layers=num_layers, out_type='vertices',
+        ).to(device)
+
+        self.bind_pose_net = LinearEncoder(
+            in_dim=3, out_dim=J * 3, hid_dim=hid_dim,
+            num_layers=num_layers, out_type='global',
+        ).to(device)
+
+        # ── Expression encoder + pose model (same as v1) ─────────────────
+        self.lbs_exp_z_model = LinearEncoder(
+            in_dim=in_dim_exp, out_dim=hid_dim, hid_dim=hid_dim,
+            num_layers=num_layers, out_type='global',
+        ).to(device)
+
+        pose_out_dim = J * 9 if use_joint_trans else J * 6
+        self.lbs_pose_model = LinearEncoder(
+            in_dim=hid_dim, out_dim=pose_out_dim, hid_dim=hid_dim,
+            out_type='global',
+        ).to(device)
+
+        self._rot6d = from_6D_to_rotation_matrix_torch
+
+    # ── Mesh edges ───────────────────────────────────────────────────────
+
+    def set_mesh_edges(self, faces):
+        import numpy as _np
+        f_np = faces.cpu().numpy() if isinstance(faces, torch.Tensor) else faces
+        if f_np.ndim == 1:
+            f_np = f_np.reshape(-1, 3)
+        e = _np.concatenate([f_np[:, [0,1]], f_np[:, [1,2]], f_np[:, [0,2]]], axis=0)
+        e = _np.sort(e, axis=1)
+        e = _np.unique(e, axis=0)
+        self._mesh_edges = torch.tensor(e, dtype=torch.long, device=self.parent_idx.device)
+
+    def _smooth_logit_W(self, logit_W):
+        if self._mesh_edges is None or self.smooth_W_iters <= 0:
+            return logit_W
+        edges = self._mesh_edges
+        alpha = self.smooth_W_alpha
+        B, N, J = logit_W.shape
+        for _ in range(self.smooth_W_iters):
+            src_idx = torch.cat([edges[:, 0], edges[:, 1]], dim=0)
+            tgt_idx = torch.cat([edges[:, 1], edges[:, 0]], dim=0)
+            neighbor_vals = logit_W[:, src_idx, :]
+            neighbor_sum = torch.zeros_like(logit_W)
+            neighbor_cnt = torch.zeros(B, N, 1, device=logit_W.device)
+            tgt_exp = tgt_idx.unsqueeze(0).unsqueeze(-1).expand(B, -1, J)
+            neighbor_sum.scatter_add_(1, tgt_exp, neighbor_vals)
+            cnt_ones = torch.ones(B, tgt_idx.shape[0], 1, device=logit_W.device)
+            neighbor_cnt.scatter_add_(1, tgt_idx.unsqueeze(0).unsqueeze(-1).expand(B, -1, 1), cnt_ones)
+            neighbor_mean = neighbor_sum / neighbor_cnt.clamp(min=1)
+            logit_W = (1 - alpha) * logit_W + alpha * neighbor_mean
+        return logit_W
+
+    # ── Core ─────────────────────────────────────────────────────────────
+
+    def _get_skinning_weights(self, source_vert):
+        logit_W = self.skin_weight_net(source_vert)                     # [B, N, J]
+        logit_W = self._smooth_logit_W(logit_W)
+        return F.softmax(logit_W, dim=-1), logit_W
+
+    def _get_bind_pose(self, source_vert):
+        B = source_vert.shape[0]
+        J = self.num_joints
+        joint_pos = self.bind_pose_net(source_vert).squeeze(1).reshape(B, J, 3)
+
+        dev, dtype = self.parent_idx.device, source_vert.dtype
+        eye3    = torch.eye(3, device=dev, dtype=dtype).expand(B, J, 3, 3)
+        neg_jp  = (-joint_pos).unsqueeze(-1)
+        top     = torch.cat([eye3, neg_jp], dim=-1)
+        bot     = torch.cat([
+            torch.zeros(B, J, 1, 3, device=dev, dtype=dtype),
+            torch.ones( B, J, 1, 1, device=dev, dtype=dtype),
+        ], dim=-1)
+        B_inv_id = torch.cat([top, bot], dim=-2)
+        return B_inv_id, joint_pos
+
+    def _chain_hierarchy(self, T_delta):
+        B, J, _, _ = T_delta.shape
+        T_bind_local = self.T_bind_local.unsqueeze(0).expand(B, -1, -1, -1)
+        T_world_list = [None] * J
+        for j in range(J):
+            p = self.parent_idx[j].item()
+            combined = torch.bmm(T_bind_local[:, j], T_delta[:, j])
+            if p == -1:
+                T_world_list[j] = combined
+            else:
+                T_world_list[j] = torch.bmm(T_world_list[p], combined)
+        return torch.stack(T_world_list, dim=1)
+
+    # ── Forward ──────────────────────────────────────────────────────────
+
+    def forward(self, source_vert, deform_in, return_z_exp=False, z_exp_override=None):
+        B, N, _ = source_vert.shape
+        J = self.num_joints
+        device = source_vert.device
+
+        W, _ = self._get_skinning_weights(source_vert)
+        B_inv_id, _ = self._get_bind_pose(source_vert)
+
+        if z_exp_override is not None:
+            z_exp_flat = z_exp_override
+            z_exp = z_exp_flat.unsqueeze(1)
+        else:
+            z_exp = self.lbs_exp_z_model(deform_in)
+            z_exp_flat = z_exp.squeeze(1)
+
+        pose_out = self.lbs_pose_model(z_exp).squeeze(1)
+        if self.use_joint_trans:
+            rot6d   = pose_out[:, :J*6].reshape(B * J, 6)
+            local_t = pose_out[:, J*6:].reshape(B, J, 3, 1)
+        else:
+            rot6d   = pose_out.reshape(B * J, 6)
+            local_t = torch.zeros(B, J, 3, 1, device=device, dtype=source_vert.dtype)
+
+        local_R   = self._rot6d(rot6d).reshape(B, J, 3, 3)
+        zeros_row = torch.zeros(B, J, 1, 3, device=device, dtype=source_vert.dtype)
+        ones_val  = torch.ones( B, J, 1, 1, device=device, dtype=source_vert.dtype)
+        top       = torch.cat([local_R, local_t], dim=-1)
+        bot       = torch.cat([zeros_row, ones_val], dim=-1)
+        T_local   = torch.cat([top, bot], dim=-2)
+
+        T_world = self._chain_hierarchy(T_local)
+        G = torch.bmm(
+            T_world.reshape(B * J, 4, 4),
+            B_inv_id.reshape(B * J, 4, 4),
+        ).reshape(B, J, 4, 4)
+
+        v_h = torch.cat([source_vert, torch.ones(B, N, 1, device=device, dtype=source_vert.dtype)], dim=-1)
+        v_per_joint = torch.einsum('bjkl,bnl->bnjk', G[:, :, :3, :], v_h)
+        rigid_v     = torch.einsum('bnj,bnjk->bnk', W, v_per_joint)
+
+        if return_z_exp:
+            return rigid_v, z_exp_flat
+        return rigid_v
+
+    # ── Phase 1 init supervision ─────────────────────────────────────────
+
+    def init_loss(self, source_vert, mesh_data=None):
+        """
+        Maya init supervision loss for Phase 1 warm-up.
+        If mesh_data is provided, uses per-topology W target.
+        """
+        W, _ = self._get_skinning_weights(source_vert)
+        _, joint_pos = self._get_bind_pose(source_vert)
+        losses = {}
+
+        # Find appropriate W target
+        W_target = None
+        if mesh_data is not None:
+            md = mesh_data.item() if isinstance(mesh_data, torch.Tensor) else mesh_data
+            topo_key = self._mesh_data_to_topo.get(md)
+            if topo_key and topo_key in self._init_targets:
+                W_target = self._init_targets[topo_key]
+        else:
+            # Fallback: use first available
+            for k, v in self._init_targets.items():
+                if v.shape[0] == source_vert.shape[1]:  # match vertex count
+                    W_target = v
+                    break
+
+        if W_target is not None:
+            losses['L_W_init'] = F.mse_loss(W, W_target.unsqueeze(0).expand_as(W))
+
+        losses['L_bind_init'] = F.mse_loss(joint_pos, self.bind_pos_target.unsqueeze(0).expand_as(joint_pos))
+        return losses
+
+    # ── Regularization ───────────────────────────────────────────────────
+
+    def reg_loss(self, source_vert, edges=None):
+        W, _ = self._get_skinning_weights(source_vert)
+        L_W_smooth = source_vert.new_zeros(())
+        if edges is not None:
+            W_i = W[:, edges[:, 0], :]
+            W_j = W[:, edges[:, 1], :]
+            L_W_smooth = ((W_i - W_j) ** 2).mean()
+        return {'L_W_smooth': L_W_smooth}
 
 
 # ── Quick sanity check ────────────────────────────────────────────────────
