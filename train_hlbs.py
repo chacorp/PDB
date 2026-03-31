@@ -90,9 +90,16 @@ def Options():
                         help='Use HierarchicalLBS_FullPred (no Maya base dependency)')
     parser.set_defaults(full_prediction=False)
     parser.add_argument("--init_phase_epochs", type=int, default=20,
-                        help='Phase 1 warm-up epochs for init supervision (full_prediction only)')
+                        help='Total Phase 1 epochs. Behavior depends on --init_mode.')
+    parser.add_argument("--init_hold_epochs", type=int, default=0,
+                        help='Hold epochs before annealing (only used in hold_anneal mode)')
+    parser.add_argument("--init_mode", type=str, default='anneal',
+                        choices=['anneal', 'hold_anneal', 'hold_cutoff'],
+                        help='anneal: linear decay 0→K. '
+                             'hold_anneal: hold H epochs then anneal to K. '
+                             'hold_cutoff: hold H epochs then drop to 0.')
     parser.add_argument("--lambda_init", type=float, default=1.0,
-                        help='Init supervision loss weight at epoch 0 (linearly annealed to 0)')
+                        help='Init supervision loss weight')
 
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
@@ -810,8 +817,19 @@ class HLBSTrainer:
         K = opts.init_phase_epochs
 
         for epoch in range(opts.start_epoch, epochs + 1):
-            # Phase 1 annealing
-            lambda_init = opts.lambda_init * max(0.0, 1.0 - epoch / K) if K > 0 else 0.0
+            # Phase 1 init loss scheduling
+            H = opts.init_hold_epochs
+            if opts.init_mode == 'anneal':
+                lambda_init = opts.lambda_init * max(0.0, 1.0 - epoch / K) if K > 0 else 0.0
+            elif opts.init_mode == 'hold_anneal':
+                if epoch < H:
+                    lambda_init = opts.lambda_init
+                elif epoch < K:
+                    lambda_init = opts.lambda_init * (1.0 - (epoch - H) / max(K - H, 1))
+                else:
+                    lambda_init = 0.0
+            elif opts.init_mode == 'hold_cutoff':
+                lambda_init = opts.lambda_init if epoch < H else 0.0
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
