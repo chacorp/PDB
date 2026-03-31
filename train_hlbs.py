@@ -507,7 +507,10 @@ class HLBSTrainer:
                     from utils.mesh_utils import calc_norm_torch
                     pred_n = calc_norm_torch(pred_lbs, batch.faces, at='verts')
                     gt_n_recomputed = calc_norm_torch(target_v, batch.faces, at='verts')
-                    loss_dict["recon-normal"] = (1 - F.cosine_similarity(pred_n, gt_n_recomputed, dim=-1)).mean()
+                    normal_diff = 1 - F.cosine_similarity(pred_n, gt_n_recomputed, dim=-1)  # [B, V]
+                    if not opts.no_t_mask:
+                        normal_diff = normal_diff * t_mask.squeeze(-1)
+                    loss_dict["recon-normal"] = normal_diff.mean()
 
                 # ── Curvature loss (Laplacian difference) ────────────────────
                 if opts.lambda_curvature > 0:
