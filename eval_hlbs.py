@@ -194,6 +194,39 @@ def _build_edges(faces_np):
     return torch.tensor(e, dtype=torch.long)
 
 
+def _per_segment_mse(pred, gt, seg_labels):
+    """Per-segment MSE.
+    Args:
+        pred, gt: [B, V, 3]
+        seg_labels: [V, S] one-hot segment labels
+    Returns:
+        dict {seg_idx: mse}, overall_mean
+    """
+    seg_idx = seg_labels.argmax(dim=-1)  # [V]
+    S = seg_labels.shape[-1]
+    per_seg = {}
+    for s in range(S):
+        mask = (seg_idx == s)
+        if mask.sum() == 0:
+            continue
+        per_seg[s] = F.mse_loss(pred[:, mask, :], gt[:, mask, :]).item()
+    overall = np.mean(list(per_seg.values()))
+    return per_seg, overall
+
+
+def _temporal_smoothness(pred_sequence):
+    """Acceleration-based jitter: mean ||v(t+1) - 2*v(t) + v(t-1)||².
+    Args:
+        pred_sequence: [T, V, 3]
+    Returns:
+        float (mean jitter)
+    """
+    if pred_sequence.shape[0] < 3:
+        return 0.0
+    accel = pred_sequence[2:] - 2 * pred_sequence[1:-1] + pred_sequence[:-2]
+    return (accel ** 2).sum(dim=-1).mean().item()
+
+
 # ── Evaluator ───────────────────────────────────────────────────────────────
 
 class HLBSEvaluator:
