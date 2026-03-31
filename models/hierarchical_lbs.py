@@ -681,6 +681,9 @@ class HierarchicalLBS_FullPred(nn.Module):
                     break
 
         if W_target is not None:
+            N = source_vert.shape[1]
+            if W_target.shape[0] > N:
+                W_target = W_target[:N, :]  # slice for smaller ICT regions
             losses['L_W_init'] = F.mse_loss(W, W_target.unsqueeze(0).expand_as(W))
 
         losses['L_bind_init'] = F.mse_loss(joint_pos, self.bind_pos_target.unsqueeze(0).expand_as(joint_pos))

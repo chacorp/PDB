@@ -1037,47 +1037,45 @@ class CBDDataset(data.Dataset):
         id_coeff = self.iden_vecs[id_index]
         id_name = f"{id_index:03d}"
 
-        # region_dice = np.random.randint(3, size=(1))
-        
-        
+        # Random region select (same as NFS): 0=fullhead, 1=face_only, 2=narrow
+        region = np.random.randint(3) if self.mode == 'train' else 0
+
         if index >= self.ict_exp_len:
             index = index % self.ict_exp_len
-        # exp_coeff = self.expression_vecs[index] 
-        # exp_coeff = exp_coeff * self.scale
 
         if self.mode=='train':
             if np.random.random(1) > 0.5:
                 exp_coeff = np.random.random(53)
             else:
-                #exp_coeff = np.random.randint(2, size=(1, 53))
                 exp_coeff = np.where(np.random.random(53) > 0.9, 1, 0)
         else:
             exp_coeff = self.expression_vecs[index]
-        # exp_coeff = self.expression_vecs[index] 
-        # exp_coeff = exp_coeff * self.scale
-        
-        faces = self.ict_face_model.faces
-        
+
+        v_num, faces = self.ict_face_model.get_random_v_and_f(select=region)
+
         deformed, template, _ = self.ict_face_model.apply_coeffs(
-            id_coeff, exp_coeff, return_all=True, #region=region_dice
+            id_coeff, exp_coeff, return_all=True, region=region,
         )
         exp_coeff = np.concatenate((exp_coeff, np.zeros(75))) # make it size 128
-        exp_coeff = torch.tensor(exp_coeff).float()        
-         
+        exp_coeff = torch.tensor(exp_coeff).float()
+
         deformed=deformed[0]
         template=template[0]
-        
+
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
-        
+
         template = torch.tensor(template).float()
         deformed = torch.tensor(deformed).float()
         faces = torch.tensor(faces).long()
         template_normal = torch.tensor(template_normal).float()
         deformed_normal = torch.tensor(deformed_normal).float()
-        
+
+        # seg label: slice to match region vertex count
+        ict_seg = self.ict_seg[:v_num]
+
         smooth_deformed = deformed  # ICT: no smooth PCA, fallback
-        return (template, deformed, faces, template_normal, deformed_normal, self.ict_seg, exp_coeff, id_name, smooth_deformed)
+        return (template, deformed, faces, template_normal, deformed_normal, ict_seg, exp_coeff, id_name, smooth_deformed)
 
     def get_voca(self, index, id_index):
 
