@@ -68,7 +68,7 @@ def load_rig(
         device     : torch device for returned tensors
     """
     if topologies is None:
-        topologies = ['mf', 'biwi', 'voca']
+        topologies = ['mf', 'ict', 'biwi', 'voca']
 
     # ------------------------------------------------------------------
     # 1. Parse rig_info JSON(s) — per-topology if available
