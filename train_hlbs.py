@@ -201,33 +201,37 @@ class HLBSTrainer:
         from utils.rig_loader import load_rig
         from models.hierarchical_lbs import HierarchicalLBS
 
-        rig = load_rig(opts.rig_path)
-        self.model = HierarchicalLBS(
-            rig=rig,
-            topology=opts.topo_key,
-            in_dim_exp=12,          # delta(3) + deform_norm(3) + src_v(3) + src_n(3)
-            hid_dim=opts.hid_dim,
-            num_layers=opts.num_layers,
-            device=str(self.device),
-            freeze_adapt=opts.freeze_adapt,
-            use_joint_trans=opts.use_joint_trans,
-            smooth_delta_W=opts.smooth_delta_W,
-            smooth_delta_W_alpha=opts.smooth_delta_W_alpha,
-        ).to(self.device)
+        if not opts.full_prediction:
+            rig = load_rig(opts.rig_path)
+            self.model = HierarchicalLBS(
+                rig=rig,
+                topology=opts.topo_key,
+                in_dim_exp=12,
+                hid_dim=opts.hid_dim,
+                num_layers=opts.num_layers,
+                device=str(self.device),
+                freeze_adapt=opts.freeze_adapt,
+                use_joint_trans=opts.use_joint_trans,
+                smooth_delta_W=opts.smooth_delta_W,
+                smooth_delta_W_alpha=opts.smooth_delta_W_alpha,
+            ).to(self.device)
+        else:
+            self.model = None  # built in train_full_prediction
 
-        if opts.freeze_adapt:
-            print("[HLBS] freeze_adapt=True: delta_W=0, delta_t=0 (Maya init only, joint transforms learned)")
-            opts.lambda_W_reg = 0.0
-            opts.lambda_t_reg = 0.0
-            opts.lambda_W_smooth = 0.0
+        if not opts.full_prediction:
+            if opts.freeze_adapt:
+                print("[HLBS] freeze_adapt=True: delta_W=0, delta_t=0 (Maya init only, joint transforms learned)")
+                opts.lambda_W_reg = 0.0
+                opts.lambda_t_reg = 0.0
+                opts.lambda_W_smooth = 0.0
 
-        if opts.ckpt and opts.continue_ckpt:
-            paths = sorted(glob.glob(os.path.join(opts.ckpt, f"model_hlbs_{opts.start_epoch:03d}.pth")))
-            if not paths:
-                paths = sorted(glob.glob(os.path.join(opts.ckpt, "model_hlbs_best.pth")))
-            if paths:
-                self.model.load_state_dict(torch.load(paths[0], map_location=self.device))
-                print(f"Resumed HLBS from: {paths[0]}")
+            if opts.ckpt and opts.continue_ckpt:
+                paths = sorted(glob.glob(os.path.join(opts.ckpt, f"model_hlbs_{opts.start_epoch:03d}.pth")))
+                if not paths:
+                    paths = sorted(glob.glob(os.path.join(opts.ckpt, "model_hlbs_best.pth")))
+                if paths:
+                    self.model.load_state_dict(torch.load(paths[0], map_location=self.device))
+                    print(f"Resumed HLBS from: {paths[0]}")
 
         # ── NFS expression encoder (optional) ─────────────────────────────
         self.nfs_encoder = None
