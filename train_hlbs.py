@@ -101,6 +101,12 @@ def Options():
     parser.add_argument("--lambda_init", type=float, default=1.0,
                         help='Init supervision loss weight')
 
+    # augmentation
+    parser.add_argument("--use_perm", dest='use_perm', action='store_true',
+                        help='Random vertex subsampling (30%% chance per batch, robustness + memory)')
+    parser.add_argument("--no_perm", dest='use_perm', action='store_false')
+    parser.set_defaults(use_perm=True)
+
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
                         help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
@@ -846,6 +852,20 @@ class HLBSTrainer:
                 src_n  = batch.template_normal
                 gt_v   = batch.vertices
                 gt_n   = batch.vertices_normal
+
+                # Random vertex subsampling (robustness + memory)
+                with torch.no_grad():
+                    N = src_v.shape[1]
+                    is_permed = False
+                    if opts.use_perm and torch.rand(1) > 0.7:
+                        N_range = N - torch.randint(100, max(N // 6, 101), (1,)).item()
+                        perm_idx = torch.randperm(N)[:N_range]
+                        src_v  = src_v[:, perm_idx]
+                        src_n  = src_n[:, perm_idx]
+                        gt_v   = gt_v[:, perm_idx]
+                        gt_n   = gt_n[:, perm_idx]
+                        is_permed = True
+
                 target_v = gt_v
 
                 delta     = gt_v - src_v
@@ -881,8 +901,8 @@ class HLBSTrainer:
                             + F.mse_loss(src_v * inv_mask, pred_neutral * inv_mask)
                         )
 
-                # ── Normal consistency loss ───────────────────────────────
-                if opts.lambda_normal > 0:
+                # ── Normal consistency loss (skip when vertex-permuted) ──────
+                if opts.lambda_normal > 0 and not is_permed:
                     from utils.mesh_utils import calc_norm_torch
                     pred_n = calc_norm_torch(pred_lbs, batch.faces, at='verts')
                     gt_n_recomp = calc_norm_torch(target_v, batch.faces, at='verts')
@@ -891,10 +911,11 @@ class HLBSTrainer:
                         normal_diff = normal_diff * t_mask.squeeze(-1)
                     loss_dict["recon-normal"] = normal_diff.mean()
 
-                # ── Phase 1: init supervision (dataset-aware) ──────────────
+                # ── Phase 1: init supervision ────────────────────────────
                 if lambda_init > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
-                    init_losses = self.model.init_loss(src_v, mesh_data=_md)
+                    _pi = perm_idx if is_permed else None
+                    init_losses = self.model.init_loss(src_v, mesh_data=_md, perm_idx=_pi)
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 

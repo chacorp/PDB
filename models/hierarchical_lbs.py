@@ -657,10 +657,11 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Phase 1 init supervision ─────────────────────────────────────────
 
-    def init_loss(self, source_vert, mesh_data=None):
+    def init_loss(self, source_vert, mesh_data=None, perm_idx=None):
         """
         Maya init supervision loss for Phase 1 warm-up.
         If mesh_data is provided, uses per-topology W target.
+        If perm_idx is provided, slices W target accordingly.
         """
         W, _ = self._get_skinning_weights(source_vert)
         _, joint_pos = self._get_bind_pose(source_vert)
@@ -674,16 +675,17 @@ class HierarchicalLBS_FullPred(nn.Module):
             if topo_key and topo_key in self._init_targets:
                 W_target = self._init_targets[topo_key]
         else:
-            # Fallback: use first available
             for k, v in self._init_targets.items():
-                if v.shape[0] == source_vert.shape[1]:  # match vertex count
+                if v.shape[0] >= source_vert.shape[1]:
                     W_target = v
                     break
 
         if W_target is not None:
             N = source_vert.shape[1]
-            if W_target.shape[0] > N:
-                W_target = W_target[:N, :]  # slice for smaller ICT regions
+            if perm_idx is not None:
+                W_target = W_target[perm_idx, :]
+            elif W_target.shape[0] > N:
+                W_target = W_target[:N, :]
             losses['L_W_init'] = F.mse_loss(W, W_target.unsqueeze(0).expand_as(W))
 
         losses['L_bind_init'] = F.mse_loss(joint_pos, self.bind_pos_target.unsqueeze(0).expand_as(joint_pos))
