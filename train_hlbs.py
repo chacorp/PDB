@@ -141,6 +141,9 @@ def Options():
     parser.add_argument("--use_data3", dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
     parser.add_argument("--data_toggle", dest='data_toggle', action='store_true')
+    parser.add_argument("--no_fullhead", dest='no_fullhead', action='store_true',
+                        help='Exclude ICT fullhead region (11248 verts) to save GPU memory')
+    parser.set_defaults(no_fullhead=False)
     parser.set_defaults(data_toggle=False)
 
     # checkpoint
@@ -756,8 +759,9 @@ class HLBSTrainer:
 
         train_ds = CBDDataset(opts, is_train=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
         valid_ds = CBDDataset(opts, is_valid=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
-        train_sampler = CBDdataSampler(train_ds.len_list, BS, shuffle=True,  balance=False, is_train=True)
-        valid_sampler = CBDdataSampler(valid_ds.len_list, BS, shuffle=True,  balance=False, is_valid=True)
+        _region_min = 1 if opts.no_fullhead else 0
+        train_sampler = CBDdataSampler(train_ds.len_list, BS, shuffle=True,  balance=False, is_train=True, region_min=_region_min)
+        valid_sampler = CBDdataSampler(valid_ds.len_list, BS, shuffle=True,  balance=False, is_valid=True, region_min=_region_min)
         _nw = opts.num_workers
         train_loader = torch.utils.data.DataLoader(
             train_ds, batch_sampler=train_sampler,
@@ -772,7 +776,8 @@ class HLBSTrainer:
         now = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         trans_tag = "-jTrans" if opts.use_joint_trans else ""
         sdw_tag = f"-sdw{opts.smooth_delta_W}a{opts.smooth_delta_W_alpha}" if opts.smooth_delta_W > 0 else ""
-        tag = f"-HLBS-FullPred-{opts.topo_key}{trans_tag}{sdw_tag}"
+        fh_tag = "-noFH" if opts.no_fullhead else ""
+        tag = f"-HLBS-FullPred-{opts.topo_key}{trans_tag}{sdw_tag}{fh_tag}"
         opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)

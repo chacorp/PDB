@@ -1413,14 +1413,16 @@ class CBDDataset(data.Dataset):
         )
 
 class CBDdataSampler(data.Sampler):
-    def __init__(self, 
-                 len_list, batch_size, shuffle=False, 
-                 balance=False, n_sampling=False, n_=4, 
-                 reverse=False, is_train=False, is_valid=False
+    def __init__(self,
+                 len_list, batch_size, shuffle=False,
+                 balance=False, n_sampling=False, n_=4,
+                 reverse=False, is_train=False, is_valid=False,
+                 region_min=0
                 ):
         self.len_list = len_list
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.region_min = region_min  # 0=include fullhead, 1=exclude fullhead
         self.reverse = reverse
         self.data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict', 'ict'])
         self.n_sampling = n_sampling
@@ -1507,7 +1509,7 @@ class CBDdataSampler(data.Sampler):
         # Same region for all samples in a batch (same as NFS MeshSampler)
         n_batches = indices.shape[0]
         bs = indices.shape[1]
-        region_per_batch = np.random.randint(0, 3, size=n_batches)
+        region_per_batch = np.random.randint(self.region_min, 3, size=n_batches)
         region = np.tile(region_per_batch[:, None], (1, bs))  # [n_batches, bs]
 
         batch = np.concatenate([indices[:,:,None], labels[:,:,None], id_mesh[:,:,None], region[:,:,None]], axis=-1)
