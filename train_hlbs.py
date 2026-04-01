@@ -101,11 +101,6 @@ def Options():
     parser.add_argument("--lambda_init", type=float, default=1.0,
                         help='Init supervision loss weight')
 
-    # augmentation
-    parser.add_argument("--use_perm", dest='use_perm', action='store_true',
-                        help='Random vertex subsampling (30%% chance per batch, robustness + memory)')
-    parser.set_defaults(use_perm=False)
-
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
                         help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
@@ -851,25 +846,6 @@ class HLBSTrainer:
                 src_n  = batch.template_normal
                 gt_v   = batch.vertices
                 gt_n   = batch.vertices_normal
-
-                # Keep originals for vis
-                src_v_orig = src_v
-                gt_v_orig  = gt_v
-
-                # Random vertex subsampling (robustness + memory)
-                with torch.no_grad():
-                    N = src_v.shape[1]
-                    is_permed = False
-                    perm_idx = None
-                    if opts.use_perm and torch.rand(1) > 0.7:
-                        N_range = N - torch.randint(100, max(N // 6, 101), (1,)).item()
-                        perm_idx = torch.randperm(N)[:N_range]
-                        src_v  = src_v[:, perm_idx]
-                        src_n  = src_n[:, perm_idx]
-                        gt_v   = gt_v[:, perm_idx]
-                        gt_n   = gt_n[:, perm_idx]
-                        is_permed = True
-
                 target_v = gt_v
 
                 delta     = gt_v - src_v
@@ -918,8 +894,7 @@ class HLBSTrainer:
                 # ── Phase 1: init supervision ────────────────────────────
                 if lambda_init > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
-                    _pi = perm_idx if is_permed else None
-                    init_losses = self.model.init_loss(src_v, mesh_data=_md, perm_idx=_pi)
+                    init_losses = self.model.init_loss(src_v, mesh_data=_md)
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
@@ -953,23 +928,22 @@ class HLBSTrainer:
                     log_text += " ".join(f"{k}: {v*inv:.6e}" for k, v in running.items())
                     logger.write(log_text + "\n")
 
-                    if not is_permed:
-                        HB = BS // 2
-                        _d = lambda t: t.cpu().detach()
-                        _s = lambda i: min(i, BS-1)
-                        faces_cpu = batch.faces.cpu()
-                        v_list = [
-                            _d(gt_v[0]),        _d(gt_v[_s(1)]),
-                            _d(gt_v[_s(HB)]),   _d(gt_v[BS-1]),
-                            _d(pred_lbs[0]),    _d(pred_lbs[_s(1)]),
-                            _d(pred_lbs[_s(HB)]), _d(pred_lbs[BS-1]),
-                        ]
-                        f_list = [faces_cpu] * len(v_list)
-                        plot_image_array(
-                            v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
-                            size=1, bg_black=False, mode='shade',
-                            logdir=f"{opts.log_dir}/img/train/mesh",
-                            name=f"{epoch:03d}_{idx:04d}", save=True)
+                    HB = BS // 2
+                    _d = lambda t: t.cpu().detach()
+                    _s = lambda i: min(i, BS-1)
+                    faces_cpu = batch.faces.cpu()
+                    v_list = [
+                        _d(gt_v[0]),        _d(gt_v[_s(1)]),
+                        _d(gt_v[_s(HB)]),   _d(gt_v[BS-1]),
+                        _d(pred_lbs[0]),    _d(pred_lbs[_s(1)]),
+                        _d(pred_lbs[_s(HB)]), _d(pred_lbs[BS-1]),
+                    ]
+                    f_list = [faces_cpu] * len(v_list)
+                    plot_image_array(
+                        v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
+                        size=1, bg_black=False, mode='shade',
+                        logdir=f"{opts.log_dir}/img/train/mesh",
+                        name=f"{epoch:03d}_{idx:04d}", save=True)
 
                 if opts.debug:
                     break
