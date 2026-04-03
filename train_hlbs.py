@@ -749,6 +749,15 @@ class HLBSTrainer:
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
+        # Resume from checkpoint if specified
+        if opts.ckpt and opts.continue_ckpt:
+            ckpt_path = os.path.join(opts.ckpt, f"model_hlbs_{opts.start_epoch:03d}.pth")
+            if not os.path.exists(ckpt_path):
+                ckpt_path = os.path.join(opts.ckpt, "model_hlbs_best.pth")
+            if os.path.exists(ckpt_path):
+                self.model.load_state_dict(torch.load(ckpt_path, map_location=self.device))
+                print(f"[FullPred] Resumed from: {ckpt_path}")
+
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=opts.lr, betas=(0.9, 0.999))
         self.scheduler = torch.optim.lr_scheduler.StepLR(
