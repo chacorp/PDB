@@ -592,18 +592,18 @@ class ICT_face_model():
         self.ict_deci = np.load(f'{base_dir}/utils/ict/ICT_decimate.npz')
         
         ## mesh faces
-        quad_Faces = torch.load(f'{base_dir}/ict_face_pt/quad_faces.pt')[:quad_f_idx] #, map_location='cuda:0')
+        quad_Faces = torch.load(f'{base_dir}/ict_face_pt/quad_faces.pt', weights_only=True)[:quad_f_idx]
         self.faces = quad_Faces[:, [[0, 1, 2],[0, 2, 3]] ].permute(1, 0, 2).reshape(-1, 3).numpy()
         self.f_num = self.faces.shape[0]
         self.v_num = v_idx
 
         ## mesh verticies (alignment)
-        neutral_verts = (torch.load(f'{base_dir}/ict_face_pt/neutral_verts.pt') * scale) - torch.tensor([0.0, 0.0, 0.5])
+        neutral_verts = (torch.load(f'{base_dir}/ict_face_pt/neutral_verts.pt', weights_only=True) * scale) - torch.tensor([0.0, 0.0, 0.5])
         self.neutral_verts = neutral_verts[:v_idx].numpy()
 
         ## blendshape basis
-        self.exp_basis= torch.load(f'{base_dir}/ict_face_pt/exp_basis.pt') * scale
-        self.id_basis = torch.load(f'{base_dir}/ict_face_pt/id_basis.pt') * scale
+        self.exp_basis= torch.load(f'{base_dir}/ict_face_pt/exp_basis.pt', weights_only=True) * scale
+        self.id_basis = torch.load(f'{base_dir}/ict_face_pt/id_basis.pt', weights_only=True) * scale
                 
         ## send to device
         #self.neutral_verts = self.neutral_verts.to(self.device)
@@ -636,7 +636,7 @@ class ICT_face_model():
         v_idx, quad_f_idx = self.region[select]
         
         qf_pth = f'{self.base_dir}/ict_face_pt/quad_faces.pt'
-        quad_Faces = torch.load(qf_pth)[:quad_f_idx]
+        quad_Faces = torch.load(qf_pth, weights_only=True)[:quad_f_idx]
         tri_faces = quad_Faces[:, [[0, 1, 2],[0, 2, 3]] ].permute(1, 0, 2).reshape(-1, 3)
         
         tri_faces = tri_faces.numpy() if mode == 'np' else tri_faces
