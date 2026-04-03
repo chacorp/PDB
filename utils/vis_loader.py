@@ -83,7 +83,7 @@ def _build_npy_path(entry, data_basedir):
     else:
         raise ValueError(f'Unknown dataset: {ds}')
 
-    if not files and '/pca/' in data_basedir:
+    if not files and '/pca' in data_basedir:
         # Fallback: try non-pca basedir (vis npy are raw, not PCA)
         fallback_basedir = data_basedir.replace('/pca', '')
         return _build_npy_path(entry, fallback_basedir)
@@ -152,7 +152,7 @@ class CheckpointVisLoader:
             else:
                 raise ValueError(f'Unknown dataset: {ds}')
 
-            if not os.path.exists(pkl_path) and '/pca/' in pkl_path:
+            if not os.path.exists(pkl_path) and '/pca' in pkl_path:
                 pkl_path = pkl_path.replace('/pca', '')
             with open(pkl_path, 'rb') as f:
                 tmpl_dict = pickle.load(f)
