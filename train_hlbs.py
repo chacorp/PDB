@@ -787,7 +787,10 @@ class HLBSTrainer:
         sdw_tag = f"-sdw{opts.smooth_delta_W}a{opts.smooth_delta_W_alpha}" if opts.smooth_delta_W > 0 else ""
         fh_tag = "-noFH" if opts.no_fullhead else ""
         tag = f"-HLBS-FullPred-{opts.topo_key}{trans_tag}{sdw_tag}{fh_tag}"
-        opts.log_dir = os.path.join(opts.log_dir, now + tag)
+        if opts.ckpt and opts.continue_ckpt:
+            opts.log_dir = opts.ckpt  # resume into same dir
+        else:
+            opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
         os.makedirs(f"{opts.log_dir}/img/train/mesh", exist_ok=True)
