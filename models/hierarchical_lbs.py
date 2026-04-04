@@ -112,6 +112,9 @@ class HierarchicalLBS(nn.Module):
         logit_W_base = rig_to_logit_W(W_init.to(device))             # [N, J]
         self.register_buffer('logit_W_base', logit_W_base)
 
+        # Multi-topology: disabled by default, enabled via enable_multi_topo()
+        self._logit_W_by_N = None
+
         # ── Per-identity adaptation networks (geometry-driven) ────────────
         # skin_weight_net: template_v [B,N,3] -> delta_W [B,N,J]
         self.skin_weight_net = LinearEncoder(
@@ -159,6 +162,16 @@ class HierarchicalLBS(nn.Module):
 
         self._rot6d = from_6D_to_rotation_matrix_torch
 
+    # ── Multi-topology support ─────────────────────────────────────────────
+
+    def enable_multi_topo(self, rig):
+        """Enable multi-topology delta mode. Call after __init__ when using 2+ datasets."""
+        self._logit_W_by_N = {}
+        dev = self.logit_W_base.device
+        for topo_name, W_t in rig.W_init.items():
+            n = W_t.shape[0]
+            self._logit_W_by_N[n] = rig_to_logit_W(W_t.to(dev))
+
     # ── Internal helpers ──────────────────────────────────────────────────
 
     def set_mesh_edges(self, faces):
@@ -201,13 +214,20 @@ class HierarchicalLBS(nn.Module):
             W : [B, N, J]  rows sum to 1
             delta_W : [B, N, J]
         """
-        B = source_vert.shape[0]
+        B, N = source_vert.shape[:2]
         if self.freeze_adapt:
-            delta_W = source_vert.new_zeros(B, self.N, self.num_joints)
+            delta_W = source_vert.new_zeros(B, N, self.num_joints)
         else:
             delta_W = self.skin_weight_net(source_vert)               # [B, N, J]
             delta_W = self._smooth_delta_W(delta_W)                   # forward smoothing
-        logit_W = self.logit_W_base.unsqueeze(0) + delta_W            # [B, N, J]
+
+        if self._logit_W_by_N is not None:
+            # Multi-topology: select base by vertex count, fallback to full pred
+            base = self._logit_W_by_N.get(N)
+            logit_W = base.unsqueeze(0) + delta_W if base is not None else delta_W
+        else:
+            # Single topology: original behavior
+            logit_W = self.logit_W_base.unsqueeze(0) + delta_W        # [B, N, J]
         return F.softmax(logit_W, dim=-1), delta_W                    # [B, N, J]
 
     def _get_adjusted_B_inv(self, delta_t: torch.Tensor) -> torch.Tensor:

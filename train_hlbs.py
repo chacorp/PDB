@@ -218,6 +218,12 @@ class HLBSTrainer:
                 smooth_delta_W=opts.smooth_delta_W,
                 smooth_delta_W_alpha=opts.smooth_delta_W_alpha,
             ).to(self.device)
+
+            # Enable multi-topology if 2+ datasets
+            n_data = sum([opts.use_data0, opts.use_data1, opts.use_data2, opts.use_data3])
+            if n_data >= 2:
+                self.model.enable_multi_topo(rig)
+                print(f"[HLBS] Multi-topology enabled ({n_data} datasets)")
         else:
             self.model = None  # built in train_full_prediction
 
