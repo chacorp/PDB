@@ -49,7 +49,7 @@ def Options():
     parser.add_argument("--rig_path", type=str, required=True,
                         help='Directory containing rig_info.json and skin_weights*.npy (from maya_rig/export_rig.py)')
     parser.add_argument("--topo_key", type=str, default='mf',
-                        choices=['mf', 'biwi', 'voca'],
+                        choices=['mf', 'biwi', 'voca', 'ict'],
                         help='Which skin weight topology to use')
     parser.add_argument("--num_identities", type=int, default=13)
     parser.add_argument("--hid_dim", type=int, default=256)
