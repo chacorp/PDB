@@ -56,19 +56,21 @@ from utils.mesh_utils import calc_norm_torch
 def Options():
     parser = argparse.ArgumentParser(description='Evaluate HierarchicalLBS')
 
-    # rig / topology
-    parser.add_argument("--rig_path", type=str, required=True)
-    parser.add_argument("--topo_key", type=str, default='mf',
-                        choices=['mf', 'biwi', 'voca'])
-    parser.add_argument("--num_identities", type=int, default=13)
-    parser.add_argument("--hid_dim", type=int, default=256)
-    parser.add_argument("--num_layers", type=int, default=4)
+    # rig / topology (defaults filled from train_opts.yml if available)
+    parser.add_argument("--rig_path", type=str, default=None)
+    parser.add_argument("--topo_key", type=str, default=None,
+                        choices=['mf', 'biwi', 'voca', 'ict'])
+    parser.add_argument("--num_identities", type=int, default=None)
+    parser.add_argument("--hid_dim", type=int, default=None)
+    parser.add_argument("--num_layers", type=int, default=None)
 
     # ablation flags (must match training)
     parser.add_argument("--freeze_adapt", dest='freeze_adapt', action='store_true')
     parser.set_defaults(freeze_adapt=False)
     parser.add_argument("--use_joint_trans", dest='use_joint_trans', action='store_true')
     parser.set_defaults(use_joint_trans=False)
+    parser.add_argument("--full_prediction", dest='full_prediction', action='store_true')
+    parser.set_defaults(full_prediction=False)
 
     # target (for smooth_gt computation)
     parser.add_argument("--target", type=str, default='gt',
@@ -125,7 +127,38 @@ def Options():
 
     parser.add_argument("--device", type=str, default="cuda:0")
 
-    return parser.parse_args()
+    opts = parser.parse_args()
+
+    # ── Auto-load model config from train_opts.yml ──────────────────────
+    train_opts_path = os.path.join(opts.ckpt, "train_opts.yml")
+    if os.path.exists(train_opts_path):
+        with open(train_opts_path) as f:
+            train_opts = yaml.safe_load(f)
+        # Model args: fill from yml only if not explicitly set via CLI
+        model_keys = ['rig_path', 'topo_key', 'num_identities', 'hid_dim',
+                      'num_layers', 'freeze_adapt', 'use_joint_trans', 'full_prediction']
+        for key in model_keys:
+            if key in train_opts and getattr(opts, key, None) is None:
+                setattr(opts, key, train_opts[key])
+        # Boolean flags: always inherit from yml (CLI store_true can't distinguish default)
+        for key in ['freeze_adapt', 'use_joint_trans', 'full_prediction']:
+            if key in train_opts and f'--{key}' not in sys.argv:
+                setattr(opts, key, train_opts[key])
+        print(f"[eval] Loaded model config from: {train_opts_path}")
+
+    # Final defaults if still None
+    if opts.rig_path is None:
+        opts.rig_path = 'maya_rig'
+    if opts.topo_key is None:
+        opts.topo_key = 'mf'
+    if opts.hid_dim is None:
+        opts.hid_dim = 256
+    if opts.num_layers is None:
+        opts.num_layers = 4
+    if opts.num_identities is None:
+        opts.num_identities = 13
+
+    return opts
 
 
 # ── Utilities ───────────────────────────────────────────────────────────────
@@ -240,19 +273,29 @@ class HLBSEvaluator:
 
         # ── Load model ──────────────────────────────────────────────────
         from utils.rig_loader import load_rig
-        from models.hierarchical_lbs import HierarchicalLBS
+        from models.hierarchical_lbs import HierarchicalLBS, HierarchicalLBS_FullPred
 
         rig = load_rig(opts.rig_path)
-        self.model = HierarchicalLBS(
-            rig=rig,
-            topology=opts.topo_key,
-            in_dim_exp=12,
-            hid_dim=opts.hid_dim,
-            num_layers=opts.num_layers,
-            device=str(self.device),
-            freeze_adapt=opts.freeze_adapt,
-            use_joint_trans=opts.use_joint_trans,
-        ).to(self.device)
+        if opts.full_prediction:
+            self.model = HierarchicalLBS_FullPred(
+                rig=rig,
+                in_dim_exp=12,
+                hid_dim=opts.hid_dim,
+                num_layers=opts.num_layers,
+                device=str(self.device),
+                use_joint_trans=opts.use_joint_trans,
+            ).to(self.device)
+        else:
+            self.model = HierarchicalLBS(
+                rig=rig,
+                topology=opts.topo_key,
+                in_dim_exp=12,
+                hid_dim=opts.hid_dim,
+                num_layers=opts.num_layers,
+                device=str(self.device),
+                freeze_adapt=opts.freeze_adapt,
+                use_joint_trans=opts.use_joint_trans,
+            ).to(self.device)
 
         # resolve checkpoint
         if opts.start_epoch < 0:
