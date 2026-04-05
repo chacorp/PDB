@@ -126,6 +126,8 @@ def Options():
                         help='Render image every N batches (1 = all frames)')
 
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--data_basedir", type=str, default="/data/sihun",
+                        help='Base directory for datasets')
 
     opts = parser.parse_args()
 
@@ -354,7 +356,7 @@ class HLBSEvaluator:
     def evaluate_self(self):
         opts = self.opts
 
-        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle)
+        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=opts.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
@@ -459,7 +461,7 @@ class HLBSEvaluator:
     def evaluate_cross(self):
         opts = self.opts
 
-        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle)
+        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=opts.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
