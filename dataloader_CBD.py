@@ -54,12 +54,13 @@ class EvalDataset(data.Dataset):
         
         _, self.voca_data_split, self.biwi_data_split, self.mf_data_split, _ = get_data_splits()
         
+        self.data_basedir = data_basedir
         self.biwi_base_path = f'{data_basedir}/BIWI_align_deci'
         self.coma_base_path = f'{data_basedir}/VOCA-COMA'
         self.mf_base_path = f'{data_basedir}/multiface_align'
 
         if toggle:
-            self.template_data_basedir = data_basedir # char 
+            self.template_data_basedir = data_basedir # char
         else:
             self.template_data_basedir = data_basedir+'/pca' # eve-s01
         
@@ -164,7 +165,12 @@ class EvalDataset(data.Dataset):
     def load_data_txt(self, txt_file):
         with open(txt_file, 'r') as f:
             tmp = f.readlines()
-            tmp = [ line.replace('\n','') for line in tmp]
+            tmp = [line.replace('\n', '') for line in tmp]
+        # Replace hardcoded basedir with current data_basedir
+        if hasattr(self, 'data_basedir') and tmp and '/data/' in tmp[0]:
+            old_base = '/'.join(tmp[0].split('/')[:3])  # e.g. /data/sihun
+            if old_base != self.data_basedir:
+                tmp = [p.replace(old_base, self.data_basedir) for p in tmp]
         return tmp
         
     def write_all_data_as_txt(self):
