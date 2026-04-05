@@ -106,6 +106,11 @@ def Options():
                         help='Target neutral normals  .npy [V, 3]')
     parser.add_argument("--tgt_obj_path", type=str, default=None,
                         help='Target neutral mesh     .obj (for face topology)')
+    parser.add_argument("--tgt_dataset", type=str, default=None,
+                        choices=['mf', 'voca', 'biwi', 'coma', 'ict'],
+                        help='Target dataset for cross-retarget (auto-loads from pkl)')
+    parser.add_argument("--tgt_identity", type=int, default=0,
+                        help='Target identity index within the dataset')
 
     # output
     parser.add_argument("--log_dir", type=str, default="eval_hlbs",
@@ -336,20 +341,81 @@ class HLBSEvaluator:
         self.tgt_neu_norm = None
         self.tgt_faces = None
         if opts.cross_retarget:
-            assert opts.tgt_vert_path and opts.tgt_norm_path and opts.tgt_obj_path, \
-                "Cross-retarget requires --tgt_vert_path, --tgt_norm_path, --tgt_obj_path"
-            self.tgt_neu_vert = torch.from_numpy(
-                np.load(opts.tgt_vert_path)).float().unsqueeze(0).to(self.device)
-            self.tgt_neu_norm = torch.from_numpy(
-                np.load(opts.tgt_norm_path)).float().unsqueeze(0).to(self.device)
-            tgt_mesh = trimesh.load(opts.tgt_obj_path, process=False)
-            if isinstance(tgt_mesh, trimesh.Scene):
-                tgt_mesh = trimesh.util.concatenate(tuple(tgt_mesh.geometry.values()))
-            self.tgt_faces = tgt_mesh.faces
-            self.tgt_faces_torch = torch.from_numpy(
-                self.tgt_faces).long().unsqueeze(0).to(self.device)
-            print(f"Target mesh: {self.tgt_neu_vert.shape[1]} verts, "
-                  f"{self.tgt_faces.shape[0]} faces")
+            if opts.tgt_dataset:
+                # Auto-load from dataset pkl
+                tgt_verts, tgt_faces, tgt_id_name = self._load_tgt_from_dataset(
+                    opts.tgt_dataset, opts.tgt_identity, opts.data_basedir)
+                tgt_normals = igl.per_vertex_normals(tgt_verts, tgt_faces).astype(np.float32)
+                self.tgt_neu_vert = torch.from_numpy(tgt_verts).float().unsqueeze(0).to(self.device)
+                self.tgt_neu_norm = torch.from_numpy(tgt_normals).float().unsqueeze(0).to(self.device)
+                self.tgt_faces = tgt_faces
+                self.tgt_faces_torch = torch.from_numpy(
+                    tgt_faces).long().unsqueeze(0).to(self.device)
+                print(f"Target: {opts.tgt_dataset}[{opts.tgt_identity}] ({tgt_id_name}) "
+                      f"— {tgt_verts.shape[0]} verts, {tgt_faces.shape[0]} faces")
+            else:
+                assert opts.tgt_vert_path and opts.tgt_norm_path and opts.tgt_obj_path, \
+                    "Cross-retarget requires --tgt_dataset or --tgt_vert_path/--tgt_norm_path/--tgt_obj_path"
+                self.tgt_neu_vert = torch.from_numpy(
+                    np.load(opts.tgt_vert_path)).float().unsqueeze(0).to(self.device)
+                self.tgt_neu_norm = torch.from_numpy(
+                    np.load(opts.tgt_norm_path)).float().unsqueeze(0).to(self.device)
+                tgt_mesh = trimesh.load(opts.tgt_obj_path, process=False)
+                if isinstance(tgt_mesh, trimesh.Scene):
+                    tgt_mesh = trimesh.util.concatenate(tuple(tgt_mesh.geometry.values()))
+                self.tgt_faces = tgt_mesh.faces
+                self.tgt_faces_torch = torch.from_numpy(
+                    self.tgt_faces).long().unsqueeze(0).to(self.device)
+                print(f"Target mesh: {self.tgt_neu_vert.shape[1]} verts, "
+                      f"{self.tgt_faces.shape[0]} faces")
+
+    # ── Target mesh loader ──────────────────────────────────────────────
+
+    @staticmethod
+    def _load_tgt_from_dataset(dataset_name, identity_idx, data_basedir):
+        """Load target neutral mesh from dataset pkl.
+
+        Returns: (verts [V,3] float32, faces [F,3] int32, identity_name str)
+
+        Available identities:
+            mf:   0-12  (13 ids, 5223 verts)
+            voca: 0-11  (12 ids, 3525 verts)
+            biwi: 0-13  (14 ids, 2560 verts)
+            coma: 0-11  (same as voca)
+            ict:  0     (single template, 11248 verts)
+        """
+        import pickle
+
+        if dataset_name == 'ict':
+            mesh = trimesh.load('utils/ict/ict_aligned_mean.obj', process=False)
+            return np.array(mesh.vertices, dtype=np.float32), \
+                   np.array(mesh.faces, dtype=np.int32), 'ict_mean'
+
+        pkl_map = {
+            'mf':   f'{data_basedir}/multiface_align/mf_templates.pkl',
+            'voca': f'{data_basedir}/VOCA-COMA/voca_templates.pkl',
+            'biwi': f'{data_basedir}/BIWI_align_deci/templates_align_deci.pkl',
+            'coma': f'{data_basedir}/VOCA-COMA/voca_templates.pkl',
+        }
+        # Try pca subdirectory fallback
+        pkl_path = pkl_map[dataset_name]
+        if not os.path.exists(pkl_path):
+            pkl_path = pkl_path.replace(data_basedir, f'{data_basedir}/pca')
+
+        with open(pkl_path, 'rb') as f:
+            templates = pickle.load(f)
+
+        faces = np.array(templates['face'], dtype=np.int32)
+        id_names = [k for k in templates if k != 'face']
+
+        if identity_idx >= len(id_names):
+            raise ValueError(
+                f"tgt_identity {identity_idx} out of range for {dataset_name} "
+                f"(max: {len(id_names)-1}). Available: {id_names}")
+
+        id_name = id_names[identity_idx]
+        verts = np.array(templates[id_name], dtype=np.float32)
+        return verts, faces, id_name
 
     # ── Self-retargeting evaluation ─────────────────────────────────────
 
