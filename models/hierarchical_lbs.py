@@ -219,7 +219,6 @@ class HierarchicalLBS(nn.Module):
             delta_W = source_vert.new_zeros(B, N, self.num_joints)
         else:
             delta_W = self.skin_weight_net(source_vert)               # [B, N, J]
-            delta_W = self._smooth_delta_W(delta_W)                   # forward smoothing
 
         if self._logit_W_by_N is not None:
             # Multi-topology: select base by vertex count, fallback to full pred
@@ -228,6 +227,10 @@ class HierarchicalLBS(nn.Module):
         else:
             # Single topology: original behavior
             logit_W = self.logit_W_base.unsqueeze(0) + delta_W        # [B, N, J]
+
+        # Smooth final logit_W (not delta_W)
+        logit_W = self._smooth_delta_W(logit_W)
+
         return F.softmax(logit_W, dim=-1), delta_W                    # [B, N, J]
 
     def _get_adjusted_B_inv(self, delta_t: torch.Tensor) -> torch.Tensor:
