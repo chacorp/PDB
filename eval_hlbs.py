@@ -391,16 +391,25 @@ class HLBSEvaluator:
             return np.array(mesh.vertices, dtype=np.float32), \
                    np.array(mesh.faces, dtype=np.int32), 'ict_mean'
 
-        pkl_map = {
+        # Repo-local pkl files (fallback when data_basedir doesn't have them)
+        local_pkl_map = {
+            'mf':   'utils/templates/mf_templates.pkl',
+            'voca': 'utils/templates/voca_templates.pkl',
+            'biwi': 'utils/templates/biwi_templates.pkl',
+            'coma': 'utils/templates/voca_templates.pkl',
+        }
+        remote_pkl_map = {
             'mf':   f'{data_basedir}/multiface_align/mf_templates.pkl',
             'voca': f'{data_basedir}/VOCA-COMA/voca_templates.pkl',
             'biwi': f'{data_basedir}/BIWI_align_deci/templates_align_deci.pkl',
             'coma': f'{data_basedir}/VOCA-COMA/voca_templates.pkl',
         }
-        # Try pca subdirectory fallback
-        pkl_path = pkl_map[dataset_name]
+        # Try remote paths first, then pca subdirectory, then repo-local
+        pkl_path = remote_pkl_map[dataset_name]
         if not os.path.exists(pkl_path):
             pkl_path = pkl_path.replace(data_basedir, f'{data_basedir}/pca')
+        if not os.path.exists(pkl_path):
+            pkl_path = local_pkl_map[dataset_name]
 
         with open(pkl_path, 'rb') as f:
             templates = pickle.load(f)
