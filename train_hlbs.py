@@ -631,7 +631,7 @@ class HLBSTrainer:
                 )
 
             # ── Valid ────────────────────────────────────────────────────────
-            if epoch % opts.val_every != 0:
+            if epoch == 0 or epoch % opts.val_every != 0:
                 continue
 
             self.model.eval()
@@ -1000,7 +1000,7 @@ class HLBSTrainer:
                 )
 
             # ── Valid ────────────────────────────────────────────────────
-            if epoch % opts.val_every != 0:
+            if epoch == 0 or epoch % opts.val_every != 0:
                 continue
 
             self.model.eval()
