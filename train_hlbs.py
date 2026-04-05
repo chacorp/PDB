@@ -120,6 +120,8 @@ def Options():
     parser.add_argument("--save_interval", type=int, default=50)
     parser.add_argument("--eval_iter", type=int, default=25,
                         help='Visualize every N epochs via vis_loader')
+    parser.add_argument("--val_every", type=int, default=5,
+                        help='Run validation every N epochs (default: 5)')
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sc_step", type=int, default=1000000)
     parser.add_argument("--sc_gamma", type=float, default=0.5)
@@ -629,6 +631,9 @@ class HLBSTrainer:
                 )
 
             # ── Valid ────────────────────────────────────────────────────────
+            if epoch % opts.val_every != 0:
+                continue
+
             self.model.eval()
             running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "recon-curvature": 0.0, "total": 0.0}
             vcnt = 0
@@ -995,6 +1000,9 @@ class HLBSTrainer:
                 )
 
             # ── Valid ────────────────────────────────────────────────────
+            if epoch % opts.val_every != 0:
+                continue
+
             self.model.eval()
             running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "total": 0.0}
             vcnt = 0
