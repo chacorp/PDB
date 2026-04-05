@@ -373,8 +373,9 @@ class HLBSTrainer:
         
         train_ds = CBDDataset(opts, is_train=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
         valid_ds = CBDDataset(opts, is_valid=True, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
-        train_sampler = CBDdataSampler(train_ds.len_list, BS, shuffle=True,  balance=False, is_train=True)
-        valid_sampler = CBDdataSampler(valid_ds.len_list, BS, shuffle=True,  balance=False, is_valid=True)
+        _region_min = 1 if opts.no_fullhead else 0
+        train_sampler = CBDdataSampler(train_ds.len_list, BS, shuffle=True,  balance=False, is_train=True, region_min=_region_min)
+        valid_sampler = CBDdataSampler(valid_ds.len_list, BS, shuffle=True,  balance=False, is_valid=True, region_min=_region_min)
         _nw = opts.num_workers
         train_loader = torch.utils.data.DataLoader(
             train_ds, batch_sampler=train_sampler,
