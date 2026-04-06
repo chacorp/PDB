@@ -905,7 +905,12 @@ class HLBSTrainer:
         trans_tag = "-jTrans" if opts.use_joint_trans else ""
         sdw_tag = f"-sdw{opts.smooth_delta_W}a{opts.smooth_delta_W_alpha}" if opts.smooth_delta_W > 0 else ""
         fh_tag = "-noFH" if opts.no_fullhead else ""
-        tag = f"-HLBS-FullPred-{opts.topo_key}{trans_tag}{sdw_tag}{fh_tag}"
+        surf_tag = ""
+        if opts.lambda_normal > 0: surf_tag += f"-nrm{opts.lambda_normal}"
+        if opts.lambda_curvature > 0: surf_tag += f"-crv{opts.lambda_curvature}"
+        wsm_tag = f"-Wsm{opts.lambda_W_smooth}" if opts.lambda_W_smooth > 0 else ""
+        cur_tag = f"-cur{opts.curriculum_epochs}" if opts.curriculum else ""
+        tag = f"-HLBS-FullPred-{opts.topo_key}{trans_tag}{sdw_tag}{fh_tag}{surf_tag}{wsm_tag}{cur_tag}"
         if opts.ckpt and opts.continue_ckpt:
             opts.log_dir = opts.ckpt  # resume into same dir
         else:
@@ -943,10 +948,8 @@ class HLBSTrainer:
         logger.write(train_ds.get_data_config())
 
         # ── Precompute mesh edges ────────────────────────────────────────
-        if opts.smooth_delta_W > 0 and self.model._mesh_edges is None:
-            _first = next(iter(train_loader))
-            _faces = _first.faces[0] if hasattr(_first.faces, '__getitem__') else _first.faces
-            self.model.set_mesh_edges(_faces)
+        if opts.smooth_delta_W > 0:
+            print(f"[FullPred] delta_W forward smoothing: iters={opts.smooth_delta_W}, alpha={opts.smooth_delta_W_alpha}")
 
         BEST_LOSS = 1e8
         BEST_EPOCH = 0
@@ -956,7 +959,35 @@ class HLBSTrainer:
         interv_val = max(1, round(len_valid / 3))
         K = opts.init_phase_epochs
 
+        # ── Curriculum: Phase 1 loader (ICT single-basis only) ──────────
+        curriculum_transitioned = False
+        if opts.curriculum:
+            ict_len_list = [x for x in train_ds.len_list if x[2].item() == 5]
+            n_ict_ids = ict_len_list[0][3]
+            pad = 53 % BS
+            ict_len_list[0] = [53 + (BS - pad if pad else 0), ict_len_list[0][1], ict_len_list[0][2], n_ict_ids]
+            train_ds.curriculum_single_basis = True
+            cur_sampler = CBDdataSampler(ict_len_list, BS, shuffle=True, balance=False, is_train=True, region_min=_region_min)
+            cur_loader = torch.utils.data.DataLoader(
+                train_ds, batch_sampler=cur_sampler,
+                collate_fn=partial(CBD_collate_wrapper, device='cpu'),
+                num_workers=_nw, persistent_workers=(_nw > 0))
+            print(f"[Curriculum] Phase 1: ICT single-basis for {opts.curriculum_epochs} epochs "
+                  f"({len(cur_loader)} batches/epoch, {n_ict_ids} identities × 53 bases)")
+
         for epoch in range(opts.start_epoch, epochs + 1):
+            # ── Curriculum phase transition ──────────────────────────────
+            if opts.curriculum and not curriculum_transitioned:
+                if epoch < opts.curriculum_epochs:
+                    active_loader = cur_loader
+                else:
+                    train_ds.curriculum_single_basis = False
+                    active_loader = train_loader
+                    if epoch == opts.curriculum_epochs:
+                        curriculum_transitioned = True
+                        print(f"[Curriculum] Phase 2: switching to full data at epoch {epoch}")
+            else:
+                active_loader = train_loader
             # Phase 1 init loss scheduling
             H = opts.init_hold_epochs
             if opts.init_mode == 'anneal':
@@ -976,7 +1007,8 @@ class HLBSTrainer:
             running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "total": 0.0}
             cnt = 0
 
-            pbar = tqdm(enumerate(train_loader), total=len_train, ncols=120,
+            _len_active = len(active_loader)
+            pbar = tqdm(enumerate(active_loader), total=_len_active, ncols=120,
                         desc=f"[{epoch:03d}] Train FullPred (phase{'1' if lambda_init > 0 else '2'})")
             for idx, batch in pbar:
                 batch = batch.to(self.device)
@@ -987,6 +1019,13 @@ class HLBSTrainer:
                 gt_v   = batch.vertices
                 gt_n   = batch.vertices_normal
                 target_v = gt_v
+
+                # Register mesh edges for this topology if not cached
+                if opts.smooth_delta_W > 0:
+                    N_cur = src_v.shape[1]
+                    if self.model._mesh_edges_by_N is None or N_cur not in self.model._mesh_edges_by_N:
+                        _faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
+                        self.model.set_mesh_edges(_faces)
 
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)
@@ -1062,7 +1101,8 @@ class HLBSTrainer:
                 pbar.set_description(
                     f"[{epoch:03d}] lbs:{loss_dict['recon-lbs']:.4e} init:{lambda_init:.2f}")
 
-                if idx % interv == 1:
+                _interv = max(1, round(_len_active / 10))
+                if idx % _interv == 1:
                     inv = 1.0 / cnt
                     log_text = f"[{epoch:03d}/{epochs:03d}][{idx:04d}][Train] "
                     log_text += " ".join(f"{k}: {v*inv:.6e}" for k, v in running.items())
@@ -1106,6 +1146,9 @@ class HLBSTrainer:
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
                 )
+                if opts.curriculum and epoch > 0:
+                    self._visualize_curriculum_bases(
+                        epoch, save_dir=f'{opts.log_dir}/img/eval_bases')
 
             # ── Valid ────────────────────────────────────────────────────
             if epoch == 0 or epoch % opts.val_every != 0:
