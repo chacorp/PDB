@@ -620,7 +620,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         J = self.num_joints
         joint_pos = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
 
-        dev, dtype = self.parent_idx.device, source_vert.dtype
+        dev, dtype = self.parent_idx.device, source_feat.dtype
         eye3    = torch.eye(3, device=dev, dtype=dtype).expand(B, J, 3, 3)
         neg_jp  = (-joint_pos).unsqueeze(-1)
         top     = torch.cat([eye3, neg_jp], dim=-1)
