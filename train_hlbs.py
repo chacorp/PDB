@@ -468,7 +468,9 @@ class HLBSTrainer:
             surf_tag = ""
             if opts.lambda_normal > 0: surf_tag += f"-nrm{opts.lambda_normal}"
             if opts.lambda_curvature > 0: surf_tag += f"-crv{opts.lambda_curvature}"
-            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}{sdw_tag}{nfs_tag}{surf_tag}"
+            wsm_tag = f"-Wsm{opts.lambda_W_smooth}" if opts.lambda_W_smooth > 0 else ""
+            cur_tag = f"-cur{opts.curriculum_epochs}" if opts.curriculum else ""
+            tag = f"-HLBS-{opts.topo_key}-s{opts.smooth_n_iter}{freeze_tag}{trans_tag}{sdw_tag}{nfs_tag}{surf_tag}{wsm_tag}{cur_tag}"
             opts.log_dir = os.path.join(opts.log_dir, now + tag)
 
         os.makedirs(opts.log_dir, exist_ok=True)
@@ -530,11 +532,7 @@ class HLBSTrainer:
         interv_val = max(1, round(len_valid / 3))
 
         # Precompute mesh edges for delta_W forward smoothing (if enabled)
-        if opts.smooth_delta_W > 0 and self.model._mesh_edges is None:
-            # Get faces from first batch
-            _first = next(iter(train_loader))
-            _faces = _first.faces[0] if hasattr(_first.faces, '__getitem__') else _first.faces
-            self.model.set_mesh_edges(_faces)
+        if opts.smooth_delta_W > 0:
             print(f"[HLBS] delta_W forward smoothing: iters={opts.smooth_delta_W}, alpha={opts.smooth_delta_W_alpha}")
 
         # ── Curriculum: Phase 1 loader (ICT single-basis only) ──────────
@@ -586,6 +584,13 @@ class HLBSTrainer:
                 gt_v   = batch.vertices
                 gt_n   = batch.vertices_normal
                 smt_v  = batch.smooth_vertices
+
+                # Register mesh edges for this topology if not cached
+                if opts.smooth_delta_W > 0:
+                    N_cur = src_v.shape[1]
+                    if self.model._mesh_edges_by_N is None or N_cur not in self.model._mesh_edges_by_N:
+                        _faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
+                        self.model.set_mesh_edges(_faces)
 
                 target_v = smt_v if opts.target == 'smooth_gt' else gt_v
 

@@ -77,6 +77,7 @@ class HierarchicalLBS(nn.Module):
         self.smooth_delta_W_iters = smooth_delta_W
         self.smooth_delta_W_alpha = smooth_delta_W_alpha
         self._mesh_edges = None
+        self._mesh_edges_by_N = None
         J = len(rig.joint_names)
         self.num_joints = J
         self.joint_names = rig.joint_names
@@ -175,7 +176,7 @@ class HierarchicalLBS(nn.Module):
     # ── Internal helpers ──────────────────────────────────────────────────
 
     def set_mesh_edges(self, faces):
-        """Precompute mesh edges for delta_W smoothing. Call once per topology."""
+        """Precompute mesh edges for delta_W smoothing. Caches per vertex count."""
         import numpy as _np
         f_np = faces.cpu().numpy() if isinstance(faces, torch.Tensor) else faces
         if f_np.ndim == 1:
@@ -183,15 +184,21 @@ class HierarchicalLBS(nn.Module):
         e = _np.concatenate([f_np[:, [0,1]], f_np[:, [1,2]], f_np[:, [0,2]]], axis=0)
         e = _np.sort(e, axis=1)
         e = _np.unique(e, axis=0)
-        self._mesh_edges = torch.tensor(e, dtype=torch.long, device=self.logit_W_base.device)
+        n_verts = int(e.max()) + 1
+        if self._mesh_edges_by_N is None:
+            self._mesh_edges_by_N = {}
+        self._mesh_edges_by_N[n_verts] = torch.tensor(e, dtype=torch.long, device=self.logit_W_base.device)
+        self._mesh_edges = self._mesh_edges_by_N[n_verts]
 
     def _smooth_delta_W(self, delta_W: torch.Tensor) -> torch.Tensor:
         """Laplacian smoothing on delta_W: (1-α)*self + α*mean(neighbors)."""
-        if self._mesh_edges is None or self.smooth_delta_W_iters <= 0:
+        if self._mesh_edges_by_N is None or self.smooth_delta_W_iters <= 0:
             return delta_W
-        edges = self._mesh_edges
-        alpha = self.smooth_delta_W_alpha
         B, N, J = delta_W.shape
+        edges = self._mesh_edges_by_N.get(N)
+        if edges is None:
+            return delta_W  # No edges for this topology, skip
+        alpha = self.smooth_delta_W_alpha
         for _ in range(self.smooth_delta_W_iters):
             src_idx = torch.cat([edges[:, 0], edges[:, 1]], dim=0)
             tgt_idx = torch.cat([edges[:, 1], edges[:, 0]], dim=0)
@@ -507,6 +514,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         self.smooth_W_iters = smooth_W
         self.smooth_W_alpha = smooth_W_alpha
         self._mesh_edges = None
+        self._mesh_edges_by_N = None
 
         J = len(rig.joint_names)
         self.num_joints = J
