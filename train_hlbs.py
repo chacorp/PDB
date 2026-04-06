@@ -650,16 +650,20 @@ class HLBSTrainer:
                         _uniform_laplacian(target_v, batch.faces))
 
                 # ── Regularization + smoothness ───────────────────────────
-                # Lazily build mesh edges for smoothness loss
-                if opts.lambda_W_smooth > 0 and self._edges is None:
-                    f_raw = batch.faces.cpu()
-                    f_np = f_raw[0].numpy() if f_raw.dim() == 3 else f_raw.numpy()
-                    e = np.concatenate([f_np[:, [0,1]], f_np[:, [1,2]], f_np[:, [0,2]]], axis=0)
-                    e = np.sort(e, axis=1)
-                    e = np.unique(e, axis=0)
-                    self._edges = torch.tensor(e, dtype=torch.long, device=self.device)
-
-                edges = self._edges if opts.lambda_W_smooth > 0 else None
+                # Lazily build mesh edges per topology for smoothness loss
+                edges = None
+                if opts.lambda_W_smooth > 0:
+                    N_cur = src_v.shape[1]
+                    if not hasattr(self, '_edges_by_N'):
+                        self._edges_by_N = {}
+                    if N_cur not in self._edges_by_N:
+                        f_raw = batch.faces.cpu()
+                        f_np = f_raw[0].numpy() if f_raw.dim() == 3 else f_raw.numpy()
+                        e = np.concatenate([f_np[:, [0,1]], f_np[:, [1,2]], f_np[:, [0,2]]], axis=0)
+                        e = np.sort(e, axis=1)
+                        e = np.unique(e, axis=0)
+                        self._edges_by_N[N_cur] = torch.tensor(e, dtype=torch.long, device=self.device)
+                    edges = self._edges_by_N[N_cur]
                 src_feat = torch.cat([src_v, src_n], dim=-1)
                 regs = self.model.reg_loss(src_feat, edges=edges)
                 loss_dict["lbs-W-reg"]    = regs["L_W_reg"]
