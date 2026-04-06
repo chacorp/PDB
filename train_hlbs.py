@@ -376,7 +376,7 @@ class HLBSTrainer:
 
         ict_model = ICT_face_model()
         # Use first identity
-        iden_vecs = np.load('ict_face_pt/iden_vecs.npy')
+        iden_vecs = np.load('ict_face_pt/random_identity_vecs.npy')
         id_coeff = iden_vecs[0]
 
         v_gt_list, v_pred_list = [], []
