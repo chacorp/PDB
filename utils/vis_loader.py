@@ -302,7 +302,7 @@ class CheckpointVisLoader:
                 delta     = vertices_v - template_v
                 src_in    = torch.cat([template_v, template_n], dim=-1)
                 deform_in = torch.cat([delta, vertices_n, src_in], dim=-1)
-                pred_lbs  = model_lbs(template_v, deform_in)              # [1, N, 3]
+                pred_lbs  = model_lbs(template_v, deform_in, source_normal=template_n)  # [1, N, 3]
                 t_mask    = plateau_hat_points(template_v)
             else:
                 # ── LBS forward (stage_disp: old NGBC interface) ──

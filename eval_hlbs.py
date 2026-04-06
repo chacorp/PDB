@@ -468,7 +468,7 @@ class HLBSEvaluator:
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
-                pred_lbs  = self.model(src_v, deform_in)
+                pred_lbs  = self.model(src_v, deform_in, source_normal=src_n)
 
                 # build mesh operators once
                 if L_sp is None:

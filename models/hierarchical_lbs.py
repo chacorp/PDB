@@ -116,19 +116,19 @@ class HierarchicalLBS(nn.Module):
         self._logit_W_by_N = None
 
         # ── Per-identity adaptation networks (geometry-driven) ────────────
-        # skin_weight_net: template_v [B,N,3] -> delta_W [B,N,J]
+        # skin_weight_net: [template_v, template_n] [B,N,6] -> delta_W [B,N,J]
         self.skin_weight_net = LinearEncoder(
-            in_dim=3,
+            in_dim=6,
             out_dim=J,
             hid_dim=hid_dim,
             num_layers=num_layers,
             out_type='vertices',
         ).to(device)
 
-        # bind_pose_net: template_v [B,N,3] -> delta_t [B,J,3]
+        # bind_pose_net: [template_v, template_n] [B,N,6] -> delta_t [B,J,3]
         # out_type='global' → mean pool over N → [B,1,J*3], reshape to [B,J,3]
         self.bind_pose_net = LinearEncoder(
-            in_dim=3,
+            in_dim=6,
             out_dim=J * 3,
             hid_dim=hid_dim,
             num_layers=num_layers,
@@ -206,19 +206,19 @@ class HierarchicalLBS(nn.Module):
             delta_W = (1 - alpha) * delta_W + alpha * neighbor_mean
         return delta_W
 
-    def _get_skinning_weights(self, source_vert: torch.Tensor) -> torch.Tensor:
+    def _get_skinning_weights(self, source_feat: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            source_vert : [B, N, 3]
+            source_feat : [B, N, 6]  (template_v + template_n)
         Returns:
             W : [B, N, J]  rows sum to 1
             delta_W : [B, N, J]
         """
-        B, N = source_vert.shape[:2]
+        B, N = source_feat.shape[:2]
         if self.freeze_adapt:
-            delta_W = source_vert.new_zeros(B, N, self.num_joints)
+            delta_W = source_feat.new_zeros(B, N, self.num_joints)
         else:
-            delta_W = self.skin_weight_net(source_vert)               # [B, N, J]
+            delta_W = self.skin_weight_net(source_feat)               # [B, N, J]
 
         if self._logit_W_by_N is not None:
             # Multi-topology: select base by vertex count, fallback to full pred
@@ -288,6 +288,7 @@ class HierarchicalLBS(nn.Module):
         self,
         source_vert: torch.Tensor,
         deform_in: torch.Tensor,
+        source_normal: torch.Tensor = None,
         return_z_exp: bool = False,
         z_exp_override: torch.Tensor = None,
     ):
@@ -295,6 +296,7 @@ class HierarchicalLBS(nn.Module):
         Args:
             source_vert   : [B, N, 3]  template/neutral mesh vertices
             deform_in     : [B, N, C]  expression input features
+            source_normal : [B, N, 3]  template/neutral mesh normals
             return_z_exp  : if True, return (rigid_v, z_exp)
             z_exp_override: [B, L] if provided, skip internal encoder and use this
 
@@ -307,11 +309,12 @@ class HierarchicalLBS(nn.Module):
         device = source_vert.device
 
         # 1. Per-identity skin weights and bind-pose offset from template geometry
-        W, delta_W = self._get_skinning_weights(source_vert)           # [B,N,J], [B,N,J]
+        source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
+        W, delta_W = self._get_skinning_weights(source_feat)           # [B,N,J], [B,N,J]
         if self.freeze_adapt:
             delta_t = source_vert.new_zeros(B, J, 3)
         else:
-            delta_t = self.bind_pose_net(source_vert)                  # [B,1,J*3]
+            delta_t = self.bind_pose_net(source_feat)                  # [B,1,J*3]
             delta_t = delta_t.squeeze(1).reshape(B, J, 3)             # [B,J,3]
 
         # 2. Expression latent (per frame)
@@ -420,11 +423,12 @@ class HierarchicalLBS(nn.Module):
         T_world   = self._chain_hierarchy(T_local)                     # [B, J, 4, 4]
 
         # ── Identity from TARGET ────────────────────────────────────────
-        W_tgt, _ = self._get_skinning_weights(tgt_neu_vert)            # [B, N_t, J]
+        tgt_feat = torch.cat([tgt_neu_vert, tgt_neu_norm], dim=-1)     # [B, N_t, 6]
+        W_tgt, _ = self._get_skinning_weights(tgt_feat)                # [B, N_t, J]
         if self.freeze_adapt:
             delta_t_tgt = tgt_neu_vert.new_zeros(B, J, 3)
         else:
-            delta_t_tgt = self.bind_pose_net(tgt_neu_vert).squeeze(1).reshape(B, J, 3)
+            delta_t_tgt = self.bind_pose_net(tgt_feat).squeeze(1).reshape(B, J, 3)
 
         B_inv_tgt = self._get_adjusted_B_inv(delta_t_tgt)              # [B, J, 4, 4]
         G = torch.bmm(
@@ -444,23 +448,23 @@ class HierarchicalLBS(nn.Module):
 
     # ── Regularization ────────────────────────────────────────────────────
 
-    def reg_loss(self, source_vert: torch.Tensor, edges=None) -> dict:
+    def reg_loss(self, source_feat: torch.Tensor, edges=None) -> dict:
         """
         Compute regularization losses on delta_W, delta_t, and optionally W smoothness.
 
         Args:
-            source_vert : [B, N, 3]  template vertices
+            source_feat : [B, N, 6]  template vertices + normals
             edges       : [E, 2] long tensor of mesh edges (optional).
                           Smoothness = mean over edges of ||W_i - W_j||^2
                           (Dirichlet energy: penalizes adjacent vertices with different weights)
         Returns:
             dict with 'L_W_reg', 'L_t_reg', 'L_W_smooth'
         """
-        B, _, _ = source_vert.shape
+        B, _, _ = source_feat.shape
         J = self.num_joints
 
-        W, delta_W = self._get_skinning_weights(source_vert)           # [B, N, J]
-        delta_t = self.bind_pose_net(source_vert).squeeze(1).reshape(B, J, 3)
+        W, delta_W = self._get_skinning_weights(source_feat)           # [B, N, J]
+        delta_t = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
 
         L_W_reg    = (delta_W ** 2).mean()
         L_t_reg    = (delta_t ** 2).mean()
@@ -470,7 +474,7 @@ class HierarchicalLBS(nn.Module):
             W_j = W[:, edges[:, 1], :]          # [B, E, J]
             L_W_smooth = ((W_i - W_j) ** 2).mean()
         else:
-            L_W_smooth = source_vert.new_zeros(())
+            L_W_smooth = source_feat.new_zeros(())
 
         return {'L_W_reg': L_W_reg, 'L_t_reg': L_t_reg, 'L_W_smooth': L_W_smooth}
 
@@ -541,12 +545,12 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         # ── Full prediction networks ─────────────────────────────────────
         self.skin_weight_net = LinearEncoder(
-            in_dim=3, out_dim=J, hid_dim=hid_dim,
+            in_dim=6, out_dim=J, hid_dim=hid_dim,
             num_layers=num_layers, out_type='vertices',
         ).to(device)
 
         self.bind_pose_net = LinearEncoder(
-            in_dim=3, out_dim=J * 3, hid_dim=hid_dim,
+            in_dim=6, out_dim=J * 3, hid_dim=hid_dim,
             num_layers=num_layers, out_type='global',
         ).to(device)
 
@@ -598,15 +602,15 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Core ─────────────────────────────────────────────────────────────
 
-    def _get_skinning_weights(self, source_vert):
-        logit_W = self.skin_weight_net(source_vert)                     # [B, N, J]
+    def _get_skinning_weights(self, source_feat):
+        logit_W = self.skin_weight_net(source_feat)                     # [B, N, J]
         logit_W = self._smooth_logit_W(logit_W)
         return F.softmax(logit_W, dim=-1), logit_W
 
-    def _get_bind_pose(self, source_vert):
-        B = source_vert.shape[0]
+    def _get_bind_pose(self, source_feat):
+        B = source_feat.shape[0]
         J = self.num_joints
-        joint_pos = self.bind_pose_net(source_vert).squeeze(1).reshape(B, J, 3)
+        joint_pos = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
 
         dev, dtype = self.parent_idx.device, source_vert.dtype
         eye3    = torch.eye(3, device=dev, dtype=dtype).expand(B, J, 3, 3)
@@ -634,13 +638,14 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────
 
-    def forward(self, source_vert, deform_in, return_z_exp=False, z_exp_override=None):
+    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None):
         B, N, _ = source_vert.shape
         J = self.num_joints
         device = source_vert.device
 
-        W, _ = self._get_skinning_weights(source_vert)
-        B_inv_id, _ = self._get_bind_pose(source_vert)
+        source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
+        W, _ = self._get_skinning_weights(source_feat)
+        B_inv_id, _ = self._get_bind_pose(source_feat)
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
@@ -735,8 +740,9 @@ class HierarchicalLBS_FullPred(nn.Module):
         T_world   = self._chain_hierarchy(T_local)
 
         # ── Identity from TARGET ────────────────────────────────────────
-        W_tgt, _ = self._get_skinning_weights(tgt_neu_vert)
-        B_inv_tgt, _ = self._get_bind_pose(tgt_neu_vert)
+        tgt_feat = torch.cat([tgt_neu_vert, tgt_neu_norm], dim=-1)
+        W_tgt, _ = self._get_skinning_weights(tgt_feat)
+        B_inv_tgt, _ = self._get_bind_pose(tgt_feat)
 
         G = torch.bmm(
             T_world.reshape(B * J, 4, 4),
@@ -755,14 +761,15 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Phase 1 init supervision ─────────────────────────────────────────
 
-    def init_loss(self, source_vert, mesh_data=None, perm_idx=None):
+    def init_loss(self, source_vert, source_normal=None, mesh_data=None, perm_idx=None):
         """
         Maya init supervision loss for Phase 1 warm-up.
         If mesh_data is provided, uses per-topology W target.
         If perm_idx is provided, slices W target accordingly.
         """
-        W, _ = self._get_skinning_weights(source_vert)
-        _, joint_pos = self._get_bind_pose(source_vert)
+        source_feat = torch.cat([source_vert, source_normal], dim=-1)
+        W, _ = self._get_skinning_weights(source_feat)
+        _, joint_pos = self._get_bind_pose(source_feat)
         losses = {}
 
         # Find appropriate W target
@@ -791,9 +798,9 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Regularization ───────────────────────────────────────────────────
 
-    def reg_loss(self, source_vert, edges=None):
-        W, _ = self._get_skinning_weights(source_vert)
-        L_W_smooth = source_vert.new_zeros(())
+    def reg_loss(self, source_feat, edges=None):
+        W, _ = self._get_skinning_weights(source_feat)
+        L_W_smooth = source_feat.new_zeros(())
         if edges is not None:
             W_i = W[:, edges[:, 0], :]
             W_j = W[:, edges[:, 1], :]

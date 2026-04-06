@@ -397,7 +397,7 @@ class HLBSTrainer:
             delta = deformed_t - template_t
             src_in = torch.cat([template_t, template_n], dim=-1)
             deform_in = torch.cat([delta, deformed_n, src_in], dim=-1)
-            pred = self.model(template_t, deform_in)
+            pred = self.model(template_t, deform_in, source_normal=template_n)
 
             faces_cpu = torch.tensor(faces_np).long()
             v_gt_list.append(deformed_t[0].cpu())
@@ -598,7 +598,7 @@ class HLBSTrainer:
                 if self.nfs_encoder is not None:
                     z_exp_ext = self._nfs_encode_exp(gt_v, gt_n)      # [B, hid_dim]
 
-                pred_lbs = self.model(src_v, deform_in, z_exp_override=z_exp_ext)  # [B, N, 3]
+                pred_lbs = self.model(src_v, deform_in, source_normal=src_n, z_exp_override=z_exp_ext)  # [B, N, 3]
 
                 if opts.no_t_mask:
                     loss_dict = {"recon-lbs": F.mse_loss(target_v, pred_lbs)}
@@ -618,7 +618,7 @@ class HLBSTrainer:
                 if opts.lambda_neu > 0:
                     delta_zero   = torch.zeros_like(src_v)
                     neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                    pred_neutral = self.model(src_v, neu_deform_in)
+                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n)
                     if opts.no_t_mask:
                         loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
                     else:
@@ -655,7 +655,8 @@ class HLBSTrainer:
                     self._edges = torch.tensor(e, dtype=torch.long, device=self.device)
 
                 edges = self._edges if opts.lambda_W_smooth > 0 else None
-                regs = self.model.reg_loss(src_v, edges=edges)
+                src_feat = torch.cat([src_v, src_n], dim=-1)
+                regs = self.model.reg_loss(src_feat, edges=edges)
                 loss_dict["lbs-W-reg"]    = regs["L_W_reg"]
                 loss_dict["lbs-t-reg"]    = regs["L_t_reg"]
                 if opts.lambda_W_smooth > 0:
@@ -756,7 +757,7 @@ class HLBSTrainer:
                     if self.nfs_encoder is not None:
                         z_exp_ext = self._nfs_encode_exp(gt_v, gt_n)
 
-                    pred_lbs  = self.model(src_v, deform_in, z_exp_override=z_exp_ext)
+                    pred_lbs  = self.model(src_v, deform_in, source_normal=src_n, z_exp_override=z_exp_ext)
 
                     target_v_val = smt_v if opts.target == 'smooth_gt' else gt_v
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * loss_lambda["recon-lbs"]
@@ -767,7 +768,7 @@ class HLBSTrainer:
                     if opts.lambda_neu > 0:
                         delta_zero    = torch.zeros_like(src_v)
                         neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                        pred_neutral  = self.model(src_v, neu_deform_in)
+                        pred_neutral  = self.model(src_v, neu_deform_in, source_normal=src_n)
                         val_neu = F.mse_loss(src_v, pred_neutral).item() * loss_lambda["recon-neu"]
                         running_val["recon-neu"] += val_neu
                         running_val["total"]     += val_neu
@@ -982,7 +983,7 @@ class HLBSTrainer:
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
 
-                pred_lbs = self.model(src_v, deform_in)
+                pred_lbs = self.model(src_v, deform_in, source_normal=src_n)
 
                 # ── Recon loss ───────────────────────────────────────────
                 if opts.no_t_mask:
@@ -1002,7 +1003,7 @@ class HLBSTrainer:
                 if opts.lambda_neu > 0:
                     delta_zero = torch.zeros_like(src_v)
                     neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                    pred_neutral = self.model(src_v, neu_deform_in)
+                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n)
                     if opts.no_t_mask:
                         loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
                     else:
@@ -1024,7 +1025,7 @@ class HLBSTrainer:
                 # ── Phase 1: init supervision ────────────────────────────
                 if lambda_init > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
-                    init_losses = self.model.init_loss(src_v, mesh_data=_md)
+                    init_losses = self.model.init_loss(src_v, source_normal=src_n, mesh_data=_md)
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
@@ -1119,7 +1120,7 @@ class HLBSTrainer:
                     delta     = gt_v - src_v
                     src_in    = torch.cat([src_v, src_n], dim=-1)
                     deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
-                    pred_lbs  = self.model(src_v, deform_in)
+                    pred_lbs  = self.model(src_v, deform_in, source_normal=src_n)
 
                     target_v_val = gt_v
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * opts.lambda_vert
@@ -1129,7 +1130,7 @@ class HLBSTrainer:
                     if opts.lambda_neu > 0:
                         delta_zero = torch.zeros_like(src_v)
                         neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                        pred_neutral = self.model(src_v, neu_deform_in)
+                        pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n)
                         val_neu = F.mse_loss(src_v, pred_neutral).item() * opts.lambda_neu
                         running_val["recon-neu"] += val_neu
                         running_val["total"]     += val_neu
