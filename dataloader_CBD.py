@@ -1053,7 +1053,7 @@ class CBDDataset(data.Dataset):
             # Single-basis mode: activate one basis at a time
             basis_idx = index % 53
             exp_coeff = np.zeros(53)
-            exp_coeff[basis_idx] = np.random.uniform(1.0, 1.5)
+            exp_coeff[basis_idx] = np.random.uniform(1.5, 2.0)
         elif self.mode=='train':
             if np.random.random(1) > 0.5:
                 exp_coeff = np.random.random(53)
