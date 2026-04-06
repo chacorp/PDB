@@ -142,6 +142,14 @@ def Options():
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3", dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
+    # curriculum
+    parser.add_argument("--curriculum", dest='curriculum', action='store_true',
+                        help='Curriculum learning: Phase 1 = ICT single-basis only, '
+                             'Phase 2 = full data (ICT + MF)')
+    parser.set_defaults(curriculum=False)
+    parser.add_argument("--curriculum_epochs", type=int, default=30,
+                        help='Number of epochs for curriculum Phase 1 (single-basis ICT)')
+
     parser.add_argument("--data_toggle", dest='data_toggle', action='store_true')
     parser.add_argument("--no_fullhead", dest='no_fullhead', action='store_true',
                         help='Exclude ICT fullhead region (11248 verts) to save GPU memory')
@@ -356,6 +364,60 @@ class HLBSTrainer:
         z_ge = self.nfs_exp_encoder(nfs_input)                         # [B, 128]
         return self.nfs_z_adapter(z_ge)                                # [B, hid_dim]
 
+    @torch.no_grad()
+    def _visualize_curriculum_bases(self, epoch, save_dir):
+        """Visualize all 53 ICT expression bases: GT vs pred for each basis."""
+        from utils.keys import ICT_KEYS
+        from utils.remesh_utils import ICT_face_model
+        import igl
+
+        os.makedirs(save_dir, exist_ok=True)
+        self.model.eval()
+
+        ict_model = ICT_face_model()
+        # Use first identity
+        iden_vecs = np.load('ict_face_pt/iden_vecs.npy')
+        id_coeff = iden_vecs[0]
+
+        v_gt_list, v_pred_list = [], []
+        for basis_idx in range(53):
+            exp_coeff = np.zeros(53)
+            exp_coeff[basis_idx] = 1.0
+
+            v_num, faces_np = ict_model.get_random_v_and_f(select=0)  # fullhead
+            deformed, template, _ = ict_model.apply_coeffs(id_coeff, exp_coeff, return_all=True, region=0)
+            deformed = deformed[0]
+            template = template[0]
+
+            template_t = torch.tensor(template).float().unsqueeze(0).to(self.device)
+            deformed_t = torch.tensor(deformed).float().unsqueeze(0).to(self.device)
+            template_n = torch.tensor(igl.per_vertex_normals(template, faces_np)).float().unsqueeze(0).to(self.device)
+            deformed_n = torch.tensor(igl.per_vertex_normals(deformed, faces_np)).float().unsqueeze(0).to(self.device)
+
+            delta = deformed_t - template_t
+            src_in = torch.cat([template_t, template_n], dim=-1)
+            deform_in = torch.cat([delta, deformed_n, src_in], dim=-1)
+            pred = self.model(template_t, deform_in)
+
+            faces_cpu = torch.tensor(faces_np).long()
+            v_gt_list.append(deformed_t[0].cpu())
+            v_pred_list.append(pred[0].cpu())
+
+        # Plot in groups of 8 (GT row + pred row)
+        for start in range(0, 53, 8):
+            end = min(start + 8, 53)
+            v_list = [v_gt_list[i] for i in range(start, end)]
+            v_list += [v_pred_list[i] for i in range(start, end)]
+            f_list = [faces_cpu] * len(v_list)
+            names = [ICT_KEYS[i] for i in range(start, end)]
+            plot_image_array(
+                v_list, f_list, rot_list=[[0, 0, 0]] * len(v_list),
+                size=1, bg_black=False, mode='shade',
+                logdir=save_dir,
+                name=f"{epoch:03d}_bases_{start:02d}-{end-1:02d}", save=True)
+
+        self.model.train()
+
     def train(self, epochs):
         opts = self.opts
         BS = opts.batch_size
@@ -475,13 +537,45 @@ class HLBSTrainer:
             self.model.set_mesh_edges(_faces)
             print(f"[HLBS] delta_W forward smoothing: iters={opts.smooth_delta_W}, alpha={opts.smooth_delta_W_alpha}")
 
+        # ── Curriculum: Phase 1 loader (ICT single-basis only) ──────────
+        curriculum_transitioned = False
+        if opts.curriculum:
+            # Filter len_list to ICT only (mesh_data == 5)
+            ict_len_list = [x for x in train_ds.len_list if x[2].item() == 5]
+            # Override expression count: 53 bases × identities
+            n_ict_ids = ict_len_list[0][3]
+            pad = 53 % BS
+            ict_len_list[0] = [53 + (BS - pad if pad else 0), ict_len_list[0][1], ict_len_list[0][2], n_ict_ids]
+            train_ds.curriculum_single_basis = True
+            cur_sampler = CBDdataSampler(ict_len_list, BS, shuffle=True, balance=False, is_train=True, region_min=_region_min)
+            cur_loader = torch.utils.data.DataLoader(
+                train_ds, batch_sampler=cur_sampler,
+                collate_fn=partial(CBD_collate_wrapper, device='cpu'),
+                num_workers=_nw, persistent_workers=(_nw > 0))
+            print(f"[Curriculum] Phase 1: ICT single-basis for {opts.curriculum_epochs} epochs "
+                  f"({len(cur_loader)} batches/epoch, {n_ict_ids} identities × 53 bases)")
+
         for epoch in range(opts.start_epoch, epochs + 1):
+            # ── Curriculum phase transition ──────────────────────────────
+            if opts.curriculum and not curriculum_transitioned:
+                if epoch < opts.curriculum_epochs:
+                    active_loader = cur_loader
+                else:
+                    # Switch to full data
+                    train_ds.curriculum_single_basis = False
+                    active_loader = train_loader
+                    if epoch == opts.curriculum_epochs:
+                        curriculum_transitioned = True
+                        print(f"[Curriculum] Phase 2: switching to full data at epoch {epoch}")
+            else:
+                active_loader = train_loader
             # ── Train ────────────────────────────────────────────────────────
             self.model.train()
             running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "recon-curvature": 0.0, "lbs-W-reg": 0.0, "lbs-t-reg": 0.0, "lbs-W-smooth": 0.0, "total": 0.0}
             cnt = 0
 
-            pbar = tqdm(enumerate(train_loader), total=len_train, ncols=120,
+            _len_active = len(active_loader)
+            pbar = tqdm(enumerate(active_loader), total=_len_active, ncols=120,
                         desc=f"[{epoch:03d}] Train HLBS")
             for idx, batch in pbar:
                 batch = batch.to(self.device)
@@ -578,7 +672,8 @@ class HLBSTrainer:
                 cnt += 1
                 pbar.set_description(f"[{epoch:03d}] lbs: {loss_dict['recon-lbs']:.5e}")
 
-                if idx % interv == 1:
+                _interv = max(1, round(_len_active / 10))
+                if idx % _interv == 1:
                     inv = 1.0 / cnt
                     log_text = f"[{epoch:03d}/{epochs:03d}][{idx:04d}][Train] "
                     log_text += " ".join(f"{k}: {v*inv:.6e}" for k, v in running.items())
@@ -629,6 +724,9 @@ class HLBSTrainer:
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
                 )
+                if opts.curriculum and epoch > 0:
+                    self._visualize_curriculum_bases(
+                        epoch, save_dir=f'{opts.log_dir}/img/eval_bases')
 
             # ── Valid ────────────────────────────────────────────────────────
             if epoch == 0 or epoch % opts.val_every != 0:
