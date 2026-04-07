@@ -320,7 +320,11 @@ class HLBSEvaluator:
         # eval_hlbs/{ckpt_basename}-eval/e050-self/mf_ROM/
         epoch_tag = "best" if opts.start_epoch < 0 else f"{opts.start_epoch:03d}"
         ckpt_basename = os.path.basename(os.path.normpath(opts.ckpt))
-        mode_tag = "cross" if opts.cross_retarget else "self"
+        if opts.cross_retarget:
+            tgt_tag = f"{opts.tgt_dataset}_id{opts.tgt_identity}" if opts.tgt_dataset else "custom"
+            mode_tag = f"cross-{tgt_tag}"
+        else:
+            mode_tag = "self"
         self.out_dir = os.path.join(
             opts.log_dir, f"{ckpt_basename}-eval",
             f"e{epoch_tag}-{mode_tag}", opts.data_selection)
