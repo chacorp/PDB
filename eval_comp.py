@@ -645,15 +645,18 @@ class CompEvaluator:
                     tgt_template, tgt_faces_np,
                     tgt_dfn_info, tgt_img, tgt_operators)
             else:
-                # NFR: use inference() with precomputed dfn_info/img/operators
+                # NFR: on-the-fly inference with precomputed dfn_info/img where available
                 src_mesh = self._build_src_mesh(src_v[0].numpy(), faces_np)
                 tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
 
-                src_pre = (src_dfn_info, src_img) if src_dfn_info is not None else None
-                if is_cross:
+                src_pre = (src_dfn_info, src_img) if (src_dfn_info is not None and src_img is not None) else None
+                if is_cross and self.tgt_dfn_info is not None:
                     tgt_pre = (self.tgt_dfn_info, self.tgt_img, self.tgt_operators)
+                elif not is_cross and src_pre is not None:
+                    # self-retarget: operators must be computed on-the-fly (mesh standardization)
+                    tgt_pre = None
                 else:
-                    tgt_pre = (src_dfn_info, src_img, src_operators) if src_dfn_info is not None else None
+                    tgt_pre = None
 
                 pred = self.model.inference(
                     vertices=gt_v.to(self.device),

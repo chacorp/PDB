@@ -717,7 +717,15 @@ def get_mesh_operators(mesh):
     N_VERTEX = mesh.vertices.shape[0]
     transf = Transfer(mesh, deepcopy(mesh))
     lu_solver = SuperLU(transf.lu)
-    idxs, vals = coalesce(from_dlpack(transf.idxs.toDlpack()).long(), from_dlpack(transf.vals.toDlpack()), m=N_FACE *3, n=N_VERTEX)
+    # Use torch.as_tensor for CuPy→PyTorch conversion (DLPack compat fix for CuPy>=13)
+    try:
+        _idxs = from_dlpack(transf.idxs.toDlpack()).long()
+        _vals = from_dlpack(transf.vals.toDlpack())
+    except Exception:
+        import cupy as cp
+        _idxs = torch.as_tensor(transf.idxs, device='cuda').long()
+        _vals = torch.as_tensor(transf.vals, device='cuda')
+    idxs, vals = coalesce(_idxs, _vals, m=N_FACE *3, n=N_VERTEX)
     idxs, vals = transpose(idxs, vals, m=N_FACE *3, n=N_VERTEX)
     rhs = transf.cupy_A.T
     return lu_solver, idxs, vals, rhs
