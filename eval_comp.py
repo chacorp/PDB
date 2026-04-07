@@ -237,9 +237,9 @@ def _load_tgt_from_dataset(dataset_name, identity_idx, data_basedir='/data/sihun
     if dataset_name == 'ict':
         from utils.remesh_utils import ICT_face_model
         ict_model = ICT_face_model()
-        iden_vecs = np.load('data/ICT_live_100/iden_vecs.npy')
+        iden_vecs = torch.load('ict_face_pt/ict_id_vecs_test.pt', weights_only=False).numpy()
         if identity_idx >= len(iden_vecs):
-            raise ValueError(f"tgt_identity {identity_idx} out of range for ICT (max: {len(iden_vecs)-1})")
+            raise ValueError(f"tgt_identity {identity_idx} out of range for ICT test (max: {len(iden_vecs)-1})")
         id_coeff = iden_vecs[identity_idx]
         id_disps = ict_model.get_id_disp(id_coeff).squeeze()
         neutral = ict_model.neutral_verts
