@@ -235,10 +235,17 @@ def _load_tgt_from_dataset(dataset_name, identity_idx, data_basedir='/data/sihun
     }
 
     if dataset_name == 'ict':
-        mesh = trimesh.load('utils/ict/ict_aligned_mean.obj', process=False)
-        verts = np.array(mesh.vertices, dtype=np.float32)
-        faces = np.array(mesh.faces, dtype=np.int32)
-        return verts, faces, 'ict_mean'
+        from utils.remesh_utils import ICT_face_model
+        ict_model = ICT_face_model()
+        iden_vecs = np.load('data/ICT_live_100/iden_vecs.npy')
+        if identity_idx >= len(iden_vecs):
+            raise ValueError(f"tgt_identity {identity_idx} out of range for ICT (max: {len(iden_vecs)-1})")
+        id_coeff = iden_vecs[identity_idx]
+        id_disps = ict_model.get_id_disp(id_coeff).squeeze()
+        neutral = ict_model.neutral_verts
+        verts = (neutral + id_disps).astype(np.float32)
+        faces = ict_model.faces.astype(np.int32)
+        return verts, faces, f'ict_{identity_idx:03d}'
 
     pkl_path = remote_pkl_map[dataset_name]
     if not os.path.exists(pkl_path):
