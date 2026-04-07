@@ -210,12 +210,10 @@ class deformation_gradient(torch.autograd.Function):
         ctx.shape = shape
         ctx.set_materialize_grads(False)
         ctx.batch_size = batch_size
-        # rhs = ATarea.T @ S: ATarea stored as (3F×V), need (V×3F) @ (3F×3B) → (V×3B)
-        t_idxs, t_vals = transpose(idxs, vals, m=shape[0], n=shape[1])
-        b = spmm(t_idxs, t_vals, m=shape[1], n=shape[0], matrix=input)
-        b = cupy.from_dlpack(b).astype(cupy.float32)  # torch → cupy, ensure float32
+        b = spmm(idxs, vals, m=shape[0], n=shape[1], matrix=input)
+        b = cupy.from_dlpack(b).astype(cupy.float32)
         cupy_output = ctx.solver.solve(b)
-        output = torch.from_dlpack(cupy_output)   # cupy → torch (new DLPack protocol)
+        output = torch.from_dlpack(cupy_output)
         output = output.reshape(-1, batch_size, 3)
         output = output.transpose(0, 1)
         # print(f'forward time: {time.time() - t:.4f}s')
