@@ -645,11 +645,13 @@ class CompEvaluator:
                     tgt_template, tgt_faces_np,
                     tgt_dfn_info, tgt_img, tgt_operators)
             else:
-                pred = self._forward_nfr_precompute(
-                    gt_v, src_v[0].numpy(), faces_np,
-                    src_dfn_info, src_img,
-                    tgt_template, tgt_faces_np,
-                    tgt_dfn_info, tgt_img, tgt_operators)
+                # NFR: use on-the-fly inference (Poisson solve needs exact internal pipeline)
+                src_mesh = self._build_src_mesh(src_v[0].numpy(), faces_np)
+                tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
+                pred = self.model.inference(
+                    vertices=gt_v.to(self.device),
+                    src_mesh=src_mesh,
+                    tgt_mesh=tgt_mesh_nfr)
 
             pred = pred.cpu()
 
