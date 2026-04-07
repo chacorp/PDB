@@ -533,7 +533,7 @@ class CompEvaluator:
         local_feat = tgt_vert_feat  # [1, V, 134]
         style_emb = None
         inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
-                  style_emb, tgt_verts_t[0], tgt_faces_t, tgt_operators)
+                  style_emb, tgt_verts_t, tgt_faces_t, tgt_operators)
 
         pred_outputs, _ = model.decode(inputs, batch_process=True)
         return pred_outputs
