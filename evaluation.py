@@ -166,10 +166,11 @@ class NFR_helper():
                             img_feat=128, 
                             img_only_mlp=False, 
                             img_warp=False)
-        ckpt = torch.load(
-            f'{abs_path}/experiments/ICT_augment_cnn_ext_dfn4_grad/ICT_augment_cnn_ext_dfn4_grad_0.pth', 
-            map_location='cuda:0'
-        )
+        # Try ckpts_comparison first, fallback to original path
+        _nfr_ckpt = f'{abs_path}/ckpts_comparison/experiments/ICT_augment_cnn_ext_dfn4_grad/ICT_augment_cnn_ext_dfn4_grad_0.pth'
+        if not os.path.exists(_nfr_ckpt):
+            _nfr_ckpt = f'{abs_path}/experiments/ICT_augment_cnn_ext_dfn4_grad/ICT_augment_cnn_ext_dfn4_grad_0.pth'
+        ckpt = torch.load(_nfr_ckpt, map_location='cuda:0')
         # ckpt.keys() == dict_keys(['epoch', 'model', 'optim', 'lr_sched', 'args'])
         model = nfr_utils.load_state_dict(model, ckpt['model'])
 

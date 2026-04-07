@@ -87,6 +87,8 @@ def Options():
     parser.add_argument("--data_selection", type=str, default='mf_ROM',
                         choices=['voca', 'biwi', 'mf_SEN', 'coma', 'mf_ROM', 'ict', 'ict-cap'],
                         help='Dataset to evaluate on')
+    parser.add_argument("--src_identity", type=int, default=-1,
+                        help='Source identity index (-1 = all identities)')
     parser.add_argument("--data_toggle", dest='data_toggle', action='store_true')
     parser.set_defaults(data_toggle=False)
     parser.add_argument("--batch_size", type=int, default=1)
