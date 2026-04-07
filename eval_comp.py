@@ -409,6 +409,7 @@ class CompEvaluator:
 
         # ── Load target precomputes ─────────────────────────────────
         self._precompute_cache = {}
+        self._nfr_cache = {}  # NFR per-identity cache (dfn_info, img, operators)
         self.tgt_dfn_info = None
         self.tgt_img = None
         self.tgt_operators = None
@@ -648,18 +649,30 @@ class CompEvaluator:
                     tgt_template, tgt_faces_np,
                     tgt_dfn_info, tgt_img, tgt_operators)
             else:
-                # NFR: on-the-fly inference with precomputed dfn_info/img where available
+                # NFR: use inference() with cached precomputes per identity
                 src_mesh = self._build_src_mesh(src_v[0].numpy(), faces_np)
                 tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
 
-                src_pre = (src_dfn_info, src_img) if (src_dfn_info is not None and src_img is not None) else None
-                if is_cross and self.tgt_dfn_info is not None:
-                    tgt_pre = (self.tgt_dfn_info, self.tgt_img, self.tgt_operators)
-                elif not is_cross and src_pre is not None:
-                    # self-retarget: operators must be computed on-the-fly (mesh standardization)
-                    tgt_pre = None
+                # Cache NFR precomputes per src identity (dfn_info + img computed once)
+                import utils.nfr_utils as nfr_utils
+                _nfr_src_key = src_id_name or 'default_src'
+                if _nfr_src_key not in self._nfr_cache:
+                    _src_dfn = nfr_utils.get_dfn_info(src_mesh, map_location=str(self.device))
+                    _src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                    self._nfr_cache[_nfr_src_key] = (_src_dfn, _src_img)
+                src_pre = self._nfr_cache[_nfr_src_key]
+
+                # Cache NFR target precomputes (dfn_info + img + operators)
+                if is_cross:
+                    _nfr_tgt_key = f"tgt_{opts.tgt_dataset}_{opts.tgt_identity}"
                 else:
-                    tgt_pre = None
+                    _nfr_tgt_key = _nfr_src_key + '_tgt'
+                if _nfr_tgt_key not in self._nfr_cache:
+                    _tgt_dfn = nfr_utils.get_dfn_info(tgt_mesh_nfr, map_location=str(self.device))
+                    _tgt_img = self.model.renderer.render_img(tgt_mesh_nfr).float().to(self.device)
+                    _tgt_ops = self.model.get_mesh_operators(tgt_mesh_nfr)
+                    self._nfr_cache[_nfr_tgt_key] = (_tgt_dfn, _tgt_img, _tgt_ops)
+                tgt_pre = self._nfr_cache[_nfr_tgt_key]
 
                 pred = self.model.inference(
                     vertices=gt_v.to(self.device),
