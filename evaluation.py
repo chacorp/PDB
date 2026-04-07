@@ -302,8 +302,7 @@ class NFR_helper():
             tgt_faces = torch.from_numpy(tgt_mesh.faces).to(self.device)
 
         pred_outputs=[]
-        pbar = tqdm(src_vertices)
-        for src_v in pbar:
+        for src_v in src_vertices:
             inputs_v = self.get_inputs(src_v[None], src_faces)# [1, V, 3+3]
 
             ## get expression
