@@ -42,9 +42,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from utils.matplotlib_rnd import plot_image_array
 from dataloader_CBD import EvalDataset, CBD_collate_wrapper_eval
 from utils.exp_utils import plateau_hat_points
-from utils.mesh_utils import calc_norm_torch
+from utils.remesh_utils import calc_norm_torch
 import utils.nfr_utils as nfr_utils
-from utils.mesh_utils import get_mesh_operators
+# get_mesh_operators imported lazily to avoid pytorch3d top-level import
 
 
 # ── Precompute paths ────────────────────────────────────────────────────────
