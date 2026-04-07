@@ -259,10 +259,12 @@ class NFR_helper():
         return pred_vertices, g_pred, z_iden
     
     @torch.no_grad()
-    def inference(self, 
+    def inference(self,
                   vertices,
                   src_mesh,
-                  tgt_mesh
+                  tgt_mesh,
+                  src_precompute=None,
+                  tgt_precompute=None,
                 ):
         """
         ## Note: B (batch_size) is always 1
@@ -270,23 +272,32 @@ class NFR_helper():
             vertices (torch.tensor): animation of src mesh (time & vertex positions) [T, V, 3]
             src_mesh (trimesh.Trimesh): src face mesh with neutral face
             tgt_mesh (trimesh.Trimesh): tgt face mesh  with neutral face
+            src_precompute (tuple): optional (dfn_info, img) for source
+            tgt_precompute (tuple): optional (dfn_info, img, operators) for target
         Return:
             pred_outputs (torch.tensor): [B, V, 3]
         """
         for _ in tqdm(range(1),desc='computing mesh operator'): # for checking time
-            src_img = self.renderer.render_img(src_mesh).float().to(self.device)
-            src_img_feat = self.get_img_feat(src_img)[None]
+            if src_precompute is not None:
+                src_dfn_info, src_img = src_precompute
+            else:
+                src_img = self.renderer.render_img(src_mesh).float().to(self.device)
+                src_dfn_info = nfr_utils.get_dfn_info(src_mesh, map_location=self.device)
 
-            src_dfn_info = nfr_utils.get_dfn_info(src_mesh, map_location=self.device) # neurtral face
-            tgt_dfn_info = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
+            if tgt_precompute is not None:
+                tgt_dfn_info, tgt_img, tgt_operators = tgt_precompute
+            else:
+                tgt_dfn_info = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
+                tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
+                tgt_operators = self.get_mesh_operators(tgt_mesh)
+
+            src_img_feat = self.get_img_feat(src_img)[None]
 
             src_vertices = vertices.to(self.device).float() # vertex with expression
             src_faces = torch.from_numpy(src_mesh.faces).to(self.device)
 
             tgt_verts = torch.from_numpy(tgt_mesh.vertices).to(self.device).float()
             tgt_faces = torch.from_numpy(tgt_mesh.faces).to(self.device)
-            tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
-            tgt_operators = self.get_mesh_operators(tgt_mesh)
 
         pred_outputs=[]
         pbar = tqdm(src_vertices)
