@@ -84,8 +84,11 @@ def load_precompute(dataset_name, id_name, device='cuda:0'):
 
     operators = None
     if os.path.exists(ops_path):
-        with open(ops_path, 'rb') as f:
-            operators = pickle.load(f)
+        try:
+            with open(ops_path, 'rb') as f:
+                operators = pickle.load(f)
+        except (ModuleNotFoundError, ImportError) as e:
+            print(f"[WARN] Could not load operators ({e}), will be None")
 
     return dfn_info, img, operators
 
