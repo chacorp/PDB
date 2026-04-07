@@ -43,7 +43,7 @@ from utils.matplotlib_rnd import plot_image_array
 from dataloader_CBD import EvalDataset, CBD_collate_wrapper_eval
 from utils.exp_utils import plateau_hat_points
 from utils.remesh_utils import calc_norm_torch
-import utils.nfr_utils as nfr_utils
+# nfr_utils imported lazily where needed (has pytorch3d top-level import)
 # get_mesh_operators imported lazily to avoid pytorch3d top-level import
 
 
@@ -261,12 +261,11 @@ def _load_tgt_from_dataset(dataset_name, identity_idx, data_basedir='/data/sihun
 
 # ── Model loading ──────────────────────────────────────────────────────────
 
-def load_nfs_model(opts):
-    """Load NFS model using the Trainer class from evaluation.py."""
+def _make_nfs_opts(opts):
+    """Build NFS-compatible opts namespace."""
     config = opts.config
     opts_yaml = yaml.load(open(config), Loader=yaml.FullLoader)
     nfs_opts = argparse.Namespace(**opts_yaml)
-
     nfs_opts.NFR = False
     nfs_opts.dec_type = opts.dec_type
     nfs_opts.design = opts.design
@@ -279,23 +278,49 @@ def load_nfs_model(opts):
     nfs_opts.stage1 = True
     nfs_opts.scale_exp = 1.0
     nfs_opts.ict_face_only = False
+    return nfs_opts
 
-    from evaluation import Trainer
-    trainer = Trainer(nfs_opts)
-    trainer.model.eval()
-    return trainer.model
+
+def load_nfs_model(opts):
+    """Load NFS model directly (avoids evaluation.py's pytorch3d imports)."""
+    from models.NFS import NFS
+
+    nfs_opts = _make_nfs_opts(opts)
+    device = opts.device
+
+    model = NFS(nfs_opts, None, print_param=True).to(device)
+
+    # Load checkpoint
+    ckpt_path = glob.glob(os.path.join(opts.ckpt, "*_best.pth"))
+    if not ckpt_path:
+        ckpt_path = sorted(glob.glob(os.path.join(opts.ckpt, "*.pth")))
+    if not ckpt_path:
+        raise FileNotFoundError(f"No checkpoint found in {opts.ckpt}")
+    ckpt_path = ckpt_path[0]
+
+    print(f"Loading... {ckpt_path}")
+    ckpt_dict = torch.load(ckpt_path, map_location=device)
+
+    # Remove DiffusionNet precomputes from state dict
+    del_keys = ['mass', 'L_ind', 'L_val', 'evals', 'evecs', 'grad_X', 'grad_Y', 'faces']
+    ckpt_dict = {k: v for k, v in ckpt_dict.items()
+                 if not any(dk in k for dk in del_keys)}
+    model.load_state_dict(ckpt_dict, strict=False)
+    model.eval()
+    return model
 
 
 def load_nfr_model(opts):
-    """Load NFR model using the NFR_helper from evaluation.py."""
+    """Load NFR model (requires pytorch3d — imported lazily)."""
+    from evaluation import NFR_helper
+
     config = opts.config
     opts_yaml = yaml.load(open(config), Loader=yaml.FullLoader)
     nfr_opts = argparse.Namespace(**opts_yaml)
-
     nfr_opts.NFR = True
     nfr_opts.dec_type = 'jacob'
     nfr_opts.design = 'nfr'
-    nfr_opts.ckpt = ''  # dummy, NFR_helper loads its own
+    nfr_opts.ckpt = ''
     nfr_opts.device = opts.device
     nfr_opts.data_rand_trans = False
     nfr_opts.data_rand_scale = False
@@ -305,7 +330,6 @@ def load_nfr_model(opts):
     nfr_opts.scale_exp = 1.0
     nfr_opts.ict_face_only = False
 
-    from evaluation import NFR_helper
     model = NFR_helper(nfr_opts, opts.device)
     return model
 
@@ -595,6 +619,7 @@ class CompEvaluator:
                     src_ds_key, src_id_name)
             else:
                 # Fallback: compute on-the-fly
+                import utils.nfr_utils as nfr_utils
                 src_dfn_info = nfr_utils.get_dfn_info(src_mesh, map_location=str(self.device))
                 src_img = None
                 src_operators = None
