@@ -44,6 +44,50 @@ from dataloader_CBD import EvalDataset, CBD_collate_wrapper_eval
 from utils.exp_utils import plateau_hat_points
 from utils.mesh_utils import calc_norm_torch
 import utils.nfr_utils as nfr_utils
+from utils.mesh_utils import get_mesh_operators
+
+
+# ── Precompute paths ────────────────────────────────────────────────────────
+
+PRECOMPUTE_PATHS = {
+    'mf':   '/data/sihun/multiface_align/precomputes',
+    'voca': '/data/sihun/VOCA-COMA/precomputes',
+    'coma': '/data/sihun/VOCA-COMA/precomputes',
+    'biwi': '/data/sihun/BIWI_align_deci/precomputes',
+    'ict':  '/data/sihun/ICT-audio2face/ICT/precompute-synth-fullhead',
+}
+
+
+def load_precompute(dataset_name, id_name, device='cuda:0'):
+    """Load precomputed dfn_info, img, operators for a given identity.
+    Returns: (dfn_info, img_tensor, operators)
+    """
+    base = PRECOMPUTE_PATHS.get(dataset_name)
+    if base is None:
+        raise ValueError(f"No precompute path for dataset '{dataset_name}'")
+
+    # ICT uses numeric index naming
+    prefix = os.path.join(base, id_name)
+
+    dfn_path = f"{prefix}_dfn_info.pkl"
+    img_path = f"{prefix}_img.npy"
+    ops_path = f"{prefix}_operators.pkl"
+
+    if not os.path.exists(dfn_path):
+        raise FileNotFoundError(f"Precompute not found: {dfn_path}")
+
+    with open(dfn_path, 'rb') as f:
+        dfn_info = pickle.load(f)
+    dfn_info = [x.to(device).float() if isinstance(x, torch.Tensor) else x for x in dfn_info]
+
+    img = torch.tensor(np.load(img_path)).float().to(device)
+
+    operators = None
+    if os.path.exists(ops_path):
+        with open(ops_path, 'rb') as f:
+            operators = pickle.load(f)
+
+    return dfn_info, img, operators
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -336,46 +380,165 @@ class CompEvaluator:
             else:
                 raise ValueError("Cross-retarget requires --tgt_dataset or --tgt_obj_path")
 
+        # ── Load target precomputes ─────────────────────────────────
+        self._precompute_cache = {}
+        self.tgt_dfn_info = None
+        self.tgt_img = None
+        self.tgt_operators = None
+        self.tgt_id_name = None
+
+        if opts.cross_retarget and opts.tgt_dataset:
+            tgt_id_name = self._get_tgt_id_name()
+            self.tgt_id_name = tgt_id_name
+            self.tgt_dfn_info, self.tgt_img, self.tgt_operators = load_precompute(
+                opts.tgt_dataset, tgt_id_name, device=str(self.device))
+            print(f"Loaded target precomputes: {opts.tgt_dataset}/{tgt_id_name}")
+
         print(f"Output: {self.out_dir}")
+
+    def _get_tgt_id_name(self):
+        """Resolve target identity name for precompute lookup."""
+        opts = self.opts
+        if opts.tgt_dataset == 'ict':
+            return f"{opts.tgt_identity:03d}"
+        # Load template pkl to get id name list
+        _, _, tgt_id_name = _load_tgt_from_dataset(
+            opts.tgt_dataset, opts.tgt_identity, opts.data_basedir)
+        return tgt_id_name
+
+    def _get_src_id_name(self, dataset, batch_idx):
+        """Extract source identity name from dataset file paths."""
+        opts = self.opts
+        ds = opts.data_selection
+
+        if ds in ('mf_ROM', 'mf_SEN'):
+            datalist = getattr(dataset, f'{ds}_datalist', None)
+            if datalist and batch_idx < len(datalist):
+                # e.g. /data/.../vertices_npy/m--2019...-GHS/sentence01/000001.npy
+                parts = datalist[batch_idx].split('/')
+                for p in parts:
+                    if p.startswith('m--'):
+                        return p
+        elif ds == 'coma':
+            datalist = getattr(dataset, 'coma_datalist', None)
+            if datalist and batch_idx < len(datalist):
+                parts = datalist[batch_idx].split('/')
+                for p in parts:
+                    if p.startswith('FaceTalk'):
+                        return p
+        elif ds == 'voca':
+            datalist = getattr(dataset, 'voca_datalist', None)
+            if datalist and batch_idx < len(datalist):
+                parts = datalist[batch_idx].split('/')
+                for p in parts:
+                    if p.startswith('FaceTalk'):
+                        return p
+        elif ds == 'biwi':
+            datalist = getattr(dataset, 'biwi_datalist', None)
+            if datalist and batch_idx < len(datalist):
+                parts = datalist[batch_idx].split('/')
+                for p in parts:
+                    if p in ['F1','F2','F3','F4','F5','F6','F7','F8','M1','M2','M3','M4','M5','M6']:
+                        return p
+        elif ds in ('ict',):
+            return f"{batch_idx // getattr(dataset, 'ict_exp_len', 1):03d}"
+
+        return None
 
     def _build_src_mesh(self, template_np, faces_np):
         """Build trimesh from template vertices and faces."""
         return trimesh.Trimesh(vertices=template_np, faces=faces_np, process=False)
 
-    @torch.no_grad()
-    def _forward_nfs(self, gt_vertices, src_mesh, tgt_mesh):
-        """NFS forward: encode expression from source, decode on target.
-        Args:
-            gt_vertices: [T, V, 3] torch tensor (source animation)
-            src_mesh: trimesh (source neutral)
-            tgt_mesh: trimesh (target neutral)
-        Returns:
-            pred: [T, V_tgt, 3] torch tensor
-        """
-        pred = self.model.inference(
-            gt_vertices,
-            src_mesh,
-            tgt_mesh,
-            batch_process=True,
-        )
-        return pred
+    def _resolve_id_name(self, dataset_name, batch):
+        """Extract identity name from batch for precompute lookup."""
+        if hasattr(batch, 'id_name'):
+            return batch.id_name
+        # Fallback: use data_selection mapping
+        return None
+
+    def _load_precomputes_for_dataset(self, dataset_name, id_name):
+        """Load precomputes, caching by (dataset, id_name)."""
+        key = (dataset_name, id_name)
+        if key not in self._precompute_cache:
+            self._precompute_cache[key] = load_precompute(
+                dataset_name, id_name, device=str(self.device))
+        return self._precompute_cache[key]
 
     @torch.no_grad()
-    def _forward_nfr(self, gt_vertices, src_mesh, tgt_mesh):
-        """NFR forward: encode expression from source, decode on target.
+    def _forward_nfs_precompute(self, gt_vertices, src_template, src_faces,
+                                 src_dfn_info, src_img, src_operators,
+                                 tgt_template, tgt_faces,
+                                 tgt_dfn_info, tgt_img, tgt_operators):
+        """NFS forward using precomputed data.
         Args:
-            gt_vertices: [T, V, 3] torch tensor (source animation)
-            src_mesh: trimesh (source neutral)
-            tgt_mesh: trimesh (target neutral)
+            gt_vertices: [B, V, 3] source animation vertices
+            src_template: [V, 3] source neutral
+            src_faces: [F, 3] tensor
+            src_dfn_info, src_img, src_operators: source precomputes
+            tgt_*: target precomputes (same as src for self-retarget)
         Returns:
-            pred: [T, V_tgt, 3] torch tensor
+            pred: [B, V_tgt, 3]
         """
-        pred = self.model.inference(
-            vertices=gt_vertices,
-            src_mesh=src_mesh,
-            tgt_mesh=tgt_mesh,
-        )
-        return pred
+        model = self.model
+        device = self.device
+
+        # Target: encode identity + segmentation
+        tgt_img_feat = model.get_img_feat(tgt_img)  # [1, 1, 128]
+        tgt_verts_t = torch.tensor(tgt_template).float().unsqueeze(0).to(device)
+        tgt_faces_t = torch.tensor(tgt_faces).long().to(device)
+        tgt_vert_feat = model.get_local_feature(tgt_verts_t, tgt_faces_t, tgt_img_feat).float()
+
+        model.mesh_id_encoder.update_precomputes(tgt_dfn_info)
+        pred_id_coeff = model.encode_id(tgt_vert_feat, tgt_dfn_info)
+        pred_seg_coeff = model.encode_seg(tgt_vert_feat, tgt_dfn_info)
+
+        # Source: encode expression per frame
+        src_img_feat = model.get_img_feat(src_img)  # [1, 1, 128]
+        src_faces_t = torch.tensor(src_faces).long().to(device)
+        gt_v = gt_vertices.to(device).float()
+
+        vert_feat_exp_list = []
+        for t in range(gt_v.shape[0]):
+            vf = model.get_local_feature(gt_v[t:t+1], src_faces_t, src_img_feat).float()
+            vert_feat_exp_list.append(vf)
+        vert_feat_exp = torch.cat(vert_feat_exp_list, dim=0)  # [T, V, 134]
+
+        pred_exp_coeff = model.encode_exp(vert_feat_exp, src_dfn_info, batch_process=True)
+
+        # Decode on target
+        local_feat = tgt_vert_feat  # [1, V, 134]
+        style_emb = None
+        inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
+                  style_emb, tgt_verts_t[0], tgt_faces_t, tgt_operators)
+
+        pred_outputs, _ = model.decode(inputs, batch_process=True)
+        return pred_outputs
+
+    @torch.no_grad()
+    def _forward_nfr_precompute(self, gt_vertices, src_template, src_faces,
+                                 src_dfn_info, src_img,
+                                 tgt_template, tgt_faces,
+                                 tgt_dfn_info, tgt_img, tgt_operators):
+        """NFR forward using precomputed data."""
+        model = self.model
+        device = self.device
+
+        src_faces_t = torch.tensor(src_faces).long().to(device)
+        tgt_verts_t = torch.tensor(tgt_template).float().to(device)
+        tgt_faces_t = torch.tensor(tgt_faces).long().to(device)
+        gt_v = gt_vertices.to(device).float()
+
+        pred_outputs = []
+        for src_v in gt_v:
+            inputs_v = model.get_inputs(src_v[None], src_faces_t)
+            model.model.update_precomputes(src_dfn_info)
+            pred_exp = model.model.encode(inputs_v, src_img.to(device),
+                                          N_F=src_faces.shape[0])
+            tmp, _, _ = model.calc_new_mesh(
+                tgt_verts_t, tgt_faces_t, pred_exp,
+                tgt_operators, tgt_dfn_info, tgt_img)
+            pred_outputs.append(tmp)
+        return torch.cat(pred_outputs)
 
     def evaluate(self):
         opts = self.opts
@@ -417,21 +580,51 @@ class CompEvaluator:
             B = gt_v.shape[0]
             faces_np = faces[0].numpy() if faces.dim() == 3 else faces.numpy()
 
-            # Build source mesh from template
+            # Resolve source identity name from datalist
+            src_id_name = self._get_src_id_name(dataset, idx)
+
+            # Build source mesh
             src_mesh = self._build_src_mesh(src_v[0].numpy(), faces_np)
 
-            if is_cross:
-                tgt_mesh = self.tgt_mesh
-                tgt_faces_np = self.tgt_faces
+            # Determine source dataset key for precomputes
+            src_ds_key = opts.data_selection.replace('_ROM', '').replace('_SEN', '')  # mf_ROM -> mf
+
+            # Load source precomputes
+            if src_id_name:
+                src_dfn_info, src_img, src_operators = self._load_precomputes_for_dataset(
+                    src_ds_key, src_id_name)
             else:
-                tgt_mesh = src_mesh
+                # Fallback: compute on-the-fly
+                src_dfn_info = nfr_utils.get_dfn_info(src_mesh, map_location=str(self.device))
+                src_img = None
+                src_operators = None
+
+            if is_cross:
+                tgt_faces_np = self.tgt_faces
+                tgt_template = self.tgt_verts
+                tgt_dfn_info = self.tgt_dfn_info
+                tgt_img = self.tgt_img
+                tgt_operators = self.tgt_operators
+            else:
                 tgt_faces_np = faces_np
+                tgt_template = src_v[0].numpy()
+                tgt_dfn_info = src_dfn_info
+                tgt_img = src_img
+                tgt_operators = src_operators
 
             # Forward
             if opts.model == 'nfs':
-                pred = self._forward_nfs(gt_v.to(self.device), src_mesh, tgt_mesh)
+                pred = self._forward_nfs_precompute(
+                    gt_v, src_v[0].numpy(), faces_np,
+                    src_dfn_info, src_img, src_operators,
+                    tgt_template, tgt_faces_np,
+                    tgt_dfn_info, tgt_img, tgt_operators)
             else:
-                pred = self._forward_nfr(gt_v.to(self.device), src_mesh, tgt_mesh)
+                pred = self._forward_nfr_precompute(
+                    gt_v, src_v[0].numpy(), faces_np,
+                    src_dfn_info, src_img,
+                    tgt_template, tgt_faces_np,
+                    tgt_dfn_info, tgt_img, tgt_operators)
 
             pred = pred.cpu()
 
