@@ -277,7 +277,9 @@ class NFR_helper():
         Return:
             pred_outputs (torch.tensor): [B, V, 3]
         """
-        for _ in tqdm(range(1),desc='computing mesh operator'): # for checking time
+        _need_compute = src_precompute is None or tgt_precompute is None
+        _iter = tqdm(range(1), desc='computing mesh operator') if _need_compute else range(1)
+        for _ in _iter:
             if src_precompute is not None:
                 src_dfn_info, src_img = src_precompute
             else:
