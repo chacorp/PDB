@@ -671,6 +671,10 @@ class CompEvaluator:
             dfn_path = os.path.join(test_dir, f'{id_name}_dfn_info.pt')
             dfn_data = torch.load(dfn_path, weights_only=False)
 
+            # Load per-frame gradient operators
+            grad_path = os.path.join(test_dir, f'{id_name}_grad.pt')
+            grad_data = torch.load(grad_path, weights_only=False) if os.path.exists(grad_path) else None
+
             # Load per-frame images
             imgs_path = os.path.join(test_dir, f'{id_name}_imgs.npy')
             per_frame_imgs = np.load(imgs_path)  # [T, 256, 256, 3]
@@ -685,7 +689,7 @@ class CompEvaluator:
 
             pbar = tqdm(range(T), ncols=120, desc=f"  {id_name}")
             for t in pbar:
-                # Build per-frame dfn_info as list: [mass, L, evals, evecs, (gradX, gradY,) faces]
+                # Build per-frame dfn_info as list: [mass, L, evals, evecs, gradX, gradY, faces]
                 N_V = gt_verts.shape[1]
                 L_idx = dfn_data['L_idx'].to(device).long()
                 L_val = dfn_data['L_val'][t].to(device).float()
@@ -697,10 +701,16 @@ class CompEvaluator:
                     dfn_data['evals'][t].to(device).float(),
                     dfn_data['evecs'][t].to(device).float(),
                 ]
-                # Add gradX, gradY if available
-                if 'gradX' in dfn_data:
-                    frame_dfn.append(dfn_data['gradX'][t].to(device).float())
-                    frame_dfn.append(dfn_data['gradY'][t].to(device).float())
+                # Build gradX, gradY sparse tensors from grad.pt
+                if grad_data is not None:
+                    grad_ind = grad_data['ind'].to(device).long()
+                    grad_shape = grad_data['shape']  # (N_V, N_V)
+                    gradX = torch.sparse_coo_tensor(grad_ind, grad_data['X'][t].to(device).float(),
+                                                     size=grad_shape, device=device)
+                    gradY = torch.sparse_coo_tensor(grad_ind, grad_data['Y'][t].to(device).float(),
+                                                     size=grad_shape, device=device)
+                    frame_dfn.append(gradX)
+                    frame_dfn.append(gradY)
                 frame_dfn.append(torch.tensor(gt_faces).long())
 
                 # Per-frame image
