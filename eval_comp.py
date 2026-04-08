@@ -589,7 +589,7 @@ class CompEvaluator:
 
     @torch.no_grad()
     def _evaluate_nfr_onthefly(self):
-        """NFR eval: on-the-fly inference() — collect all frames, call once per identity."""
+        """NFR eval: collect all frames per identity, use precomputed dfn_info/operators/img."""
         opts = self.opts
         device = self.device
         is_cross = opts.cross_retarget and self.tgt_mesh is not None
@@ -641,11 +641,27 @@ class CompEvaluator:
             tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
             tgt_faces_np = self.tgt_faces if is_cross else faces_np
 
-            print(f"NFR on-the-fly inference: {id_name} ({T} frames)...")
+            # Load precomputed dfn_info, operators, img for source
+            src_ds_key = opts.data_selection.replace('_ROM', '').replace('_SEN', '')
+            src_dfn_info, src_img, src_operators = self._load_precomputes_for_dataset(
+                src_ds_key, id_name)
+            src_pre = (src_dfn_info, src_img) if src_dfn_info is not None else None
+
+            # Target precomputes
+            if is_cross:
+                tgt_pre = (self.tgt_dfn_info, self.tgt_img, self.tgt_operators)
+            elif src_operators is not None:
+                tgt_pre = (src_dfn_info, src_img, src_operators)
+            else:
+                tgt_pre = None
+
+            print(f"NFR inference: {id_name} ({T} frames)...")
             pred_all = self.model.inference(
                 vertices=gt_all.to(device),
                 src_mesh=src_mesh,
                 tgt_mesh=tgt_mesh_nfr,
+                src_precompute=src_pre,
+                tgt_precompute=tgt_pre,
             ).cpu()
 
             if not is_cross:
