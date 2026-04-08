@@ -809,14 +809,27 @@ class HierarchicalLBS_FullPred(nn.Module):
     # Target joint indices for constrained regions (eye + eyebrow)
     _CONSTRAINED_JOINTS = [8, 10, 12, 13, 14, 15, 17, 18, 21, 22, 23, 24, 26, 27, 28]
 
-    def _build_regional_weight_constraints(self, alpha=0.5):
+    def _build_regional_weight_constraints(self, alpha=0.5, adaptive=True):
         """Build per-joint min threshold and dominant vertex masks from Maya init.
         Call once after model creation. Only uses ICT topology.
+
+        If adaptive=True, alpha is scaled per joint based on dominant vertex count:
+          alpha_j = alpha + (1 - alpha) * (1 - n_dom_j / max_n_dom)
+        Joints with fewer dominant vertices get higher alpha (stronger constraint).
         """
         W_maya = self._init_targets.get('ict')
         if W_maya is None:
             print("[WARN] No ICT init target for regional weight constraints")
             return
+
+        # First pass: collect dominant vertex counts
+        dom_counts = {}
+        for j in self._CONSTRAINED_JOINTS:
+            dom_mask = W_maya[:, j] > 0.01
+            if dom_mask.sum() > 0:
+                dom_counts[j] = dom_mask.sum().item()
+
+        max_n_dom = max(dom_counts.values()) if dom_counts else 1
 
         self._rwc = {}
         for j in self._CONSTRAINED_JOINTS:
@@ -824,14 +837,26 @@ class HierarchicalLBS_FullPred(nn.Module):
             if dom_mask.sum() == 0:
                 continue
             mean_w = W_maya[dom_mask, j].mean().item()
-            threshold = alpha * mean_w
+
+            if adaptive:
+                n_dom = dom_counts[j]
+                alpha_j = alpha + (1.0 - alpha) * (1.0 - n_dom / max_n_dom)
+            else:
+                alpha_j = alpha
+
+            threshold = alpha_j * mean_w
             self._rwc[j] = {
                 'dom_verts': dom_mask,                               # [N_ict] bool
                 'threshold': threshold,
                 'mean_maya': mean_w,
+                'alpha': alpha_j,
             }
         print(f"[HLBS] Regional weight constraints built for {len(self._rwc)} joints "
-              f"(alpha={alpha})")
+              f"(base_alpha={alpha}, adaptive={adaptive})")
+        for j, info in self._rwc.items():
+            print(f"  [{j:2d}] {self.joint_names[j]:>40s}  "
+                  f"alpha={info['alpha']:.3f}  thr={info['threshold']:.4f}  "
+                  f"maya_mean={info['mean_maya']:.4f}")
 
     def regional_weight_constraint_loss(self, source_vert, source_normal=None,
                                          mesh_data=None, perm_idx=None):
