@@ -106,6 +106,9 @@ def Options():
                         help='Regional weight constraint loss weight (0=disabled)')
     parser.add_argument("--rwc_alpha", type=float, default=0.5,
                         help='Min threshold = alpha * mean(Maya weight) per constrained joint')
+    parser.add_argument("--rwc_adaptive", dest='rwc_adaptive', action='store_true',
+                        help='Adaptive alpha: joints with fewer dominant vertices get stronger constraint')
+    parser.set_defaults(rwc_adaptive=False)
 
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
@@ -871,7 +874,7 @@ class HLBSTrainer:
 
         # Build regional weight constraints
         if opts.lambda_rwc > 0:
-            self.model._build_regional_weight_constraints(alpha=opts.rwc_alpha)
+            self.model._build_regional_weight_constraints(alpha=opts.rwc_alpha, adaptive=opts.rwc_adaptive)
 
         # Resume from checkpoint if specified
         if opts.ckpt and opts.continue_ckpt:
