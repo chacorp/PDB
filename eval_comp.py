@@ -642,6 +642,13 @@ class CompEvaluator:
         neutral_dfn = nfr_utils.get_dfn_info(src_mesh, map_location=str(device))
         print("Mesh operators + neutral dfn_info ready.")
 
+        # Precompute target dfn_info + img for cross-retarget
+        tgt_dfn_info_cached = None
+        tgt_img_cached = None
+        if is_cross:
+            tgt_dfn_info_cached = nfr_utils.get_dfn_info(tgt_mesh_nfr, map_location=str(device))
+            tgt_img_cached = self.model.renderer.render_img(tgt_mesh_nfr).float().to(device)
+
         # ── Process each identity ────────────────────────────────────
         L_sp = None
         edges = None
@@ -684,8 +691,12 @@ class CompEvaluator:
 
             # Encode + decode per frame using precomputed dfn_info + img
             pred_all = []
-            tgt_verts_t = torch.tensor(neutral_verts).float().to(device)
-            tgt_faces_t = torch.tensor(neutral_faces).long().to(device)
+            if is_cross:
+                tgt_verts_t = torch.tensor(self.tgt_verts).float().to(device)
+                tgt_faces_t = torch.tensor(self.tgt_faces).long().to(device)
+            else:
+                tgt_verts_t = torch.tensor(neutral_verts).float().to(device)
+                tgt_faces_t = torch.tensor(neutral_faces).long().to(device)
 
             pbar = tqdm(range(T), ncols=120, desc=f"  {id_name}")
             for t in pbar:
@@ -727,10 +738,16 @@ class CompEvaluator:
                 nfr_model.update_precomputes(frame_dfn)
                 pred_exp = nfr_model.encode(inputs_v, img_t.to(device), N_F=gt_faces.shape[0])
 
-                # Decode using calc_new_mesh (uses neutral dfn_info for target identity)
+                # Decode using calc_new_mesh (target identity dfn_info + img)
+                if is_cross:
+                    _decode_dfn = tgt_dfn_info_cached
+                    _decode_img = tgt_img_cached
+                else:
+                    _decode_dfn = neutral_dfn
+                    _decode_img = neutral_img
                 tmp, _, _ = self.model.calc_new_mesh(
                     tgt_verts_t, tgt_faces_t, pred_exp,
-                    operators, neutral_dfn, neutral_img)
+                    operators, _decode_dfn, _decode_img)
                 pred_all.append(tmp.cpu())
 
             pred_all = torch.cat(pred_all, dim=0)  # [T, V, 3]
