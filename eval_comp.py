@@ -631,14 +631,16 @@ class CompEvaluator:
         if neutral_img.dim() == 3:
             neutral_img = neutral_img.unsqueeze(0)  # [1, H, W, 3]
 
-        # Compute mesh operators once from neutral mesh
+        # Compute mesh operators + neutral dfn_info once
         print("Computing mesh operators from neutral mesh...")
+        import utils.nfr_utils as nfr_utils
         from utils.mesh_utils import get_mesh_operators
         src_mesh = trimesh.Trimesh(vertices=neutral_verts, faces=neutral_faces, process=False)
         tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
         tgt_faces_np = self.tgt_faces if is_cross else neutral_faces
         operators = get_mesh_operators(tgt_mesh_nfr)
-        print("Mesh operators ready.")
+        neutral_dfn = nfr_utils.get_dfn_info(src_mesh, map_location=str(device))
+        print("Mesh operators + neutral dfn_info ready.")
 
         # ── Process each identity ────────────────────────────────────
         L_sp = None
@@ -675,9 +677,6 @@ class CompEvaluator:
 
             # NFR model internals
             nfr_model = self.model.model  # latent_space model
-            normalizer = self.model.normalizer
-            myfunc = self.model.myfunc
-            lu_solver, idxs, vals, rhs = operators
 
             # Encode + decode per frame using precomputed dfn_info + img
             pred_all = []
@@ -716,21 +715,23 @@ class CompEvaluator:
                 nfr_model.update_precomputes(frame_dfn)
                 pred_exp = nfr_model.encode(inputs_v, img_t.to(device), N_F=gt_faces.shape[0])
 
-                # Decode using calc_new_mesh
+                # Decode using calc_new_mesh (uses neutral dfn_info for target identity)
                 tmp, _, _ = self.model.calc_new_mesh(
                     tgt_verts_t, tgt_faces_t, pred_exp,
-                    operators, frame_dfn, neutral_img)
+                    operators, neutral_dfn, neutral_img)
                 pred_all.append(tmp.cpu())
 
             pred_all = torch.cat(pred_all, dim=0)  # [T, V, 3]
             gt_all = gt_verts[:T]
+            template = torch.tensor(neutral_verts).float()
+            faces_np_std = neutral_faces
 
             # Step 3: compute metrics per frame
             if not is_cross:
                 if L_sp is None:
-                    L_sp = _build_cot_laplacian(template.numpy(), faces_np)
-                    edges = _build_edges(faces_np)
-                faces_t = torch.tensor(faces_np, dtype=torch.long)
+                    L_sp = _build_cot_laplacian(neutral_verts, faces_np_std)
+                    edges = _build_edges(faces_np_std)
+                faces_t = torch.tensor(faces_np_std, dtype=torch.long)
 
                 for t in range(T):
                     gt_v = gt_all[t:t+1]   # [1, V, 3]
@@ -763,10 +764,10 @@ class CompEvaluator:
                     f_cpu = torch.tensor(tgt_faces_np, dtype=torch.long)
                     if is_cross:
                         v_list = [gt_v_t, pred_t]
-                        f_list = [torch.tensor(faces_np, dtype=torch.long), f_cpu]
+                        f_list = [torch.tensor(faces_np_std, dtype=torch.long), f_cpu]
                     else:
                         v_list = [gt_v_t, template, pred_t]
-                        f_list = [torch.tensor(faces_np, dtype=torch.long)] * 3
+                        f_list = [torch.tensor(faces_np_std, dtype=torch.long)] * 3
                     plot_image_array(
                         v_list, f_list,
                         rot_list=[[0, 0, 0]] * len(v_list),
