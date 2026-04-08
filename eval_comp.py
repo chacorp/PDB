@@ -583,7 +583,170 @@ class CompEvaluator:
             pred_outputs.append(tmp)
         return torch.cat(pred_outputs)
 
+    @torch.no_grad()
+    def _evaluate_nfr(self):
+        """NFR evaluation: collect all frames per identity, run inference() once."""
+        opts = self.opts
+
+        dataset = EvalDataset(
+            data_name=opts.data_selection,
+            toggle=opts.data_toggle,
+            data_basedir=opts.data_basedir,
+        )
+        dataloader = torch.utils.data.DataLoader(
+            dataset, batch_size=1,
+            collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
+            num_workers=0,
+        )
+
+        is_cross = opts.cross_retarget and self.tgt_mesh is not None
+
+        # Step 1: collect all frames, grouped by identity
+        print("Collecting frames...")
+        id_frames = {}  # id_name -> { 'gt_v': [...], 'src_v': ..., 'faces': ... }
+        for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), ncols=120, desc="Loading"):
+            batch = batch.to('cpu')
+            src_id_name = self._get_src_id_name(dataset, idx) or 'default'
+            if src_id_name not in id_frames:
+                id_frames[src_id_name] = {
+                    'gt_v': [],
+                    'template': batch.template[0],  # [V, 3] same for all frames of this id
+                    'faces': batch.faces[0] if batch.faces.dim() == 3 else batch.faces,
+                }
+            id_frames[src_id_name]['gt_v'].append(batch.vertices[0])  # [V, 3]
+
+        # Step 2: run inference once per identity
+        L_sp = None
+        edges = None
+        total = {
+            "mse": 0.0, "mse_in": 0.0, "mse_out": 0.0,
+            "l2": 0.0, "lap": 0.0, "norm_cos": 0.0, "edge_dist": 0.0,
+            "l2_max_sum": 0.0,
+        }
+        all_pv = []
+        n_frames = 0
+        frame_idx = 0
+
+        for id_name, data in id_frames.items():
+            gt_all = torch.stack(data['gt_v'], dim=0)  # [T, V, 3]
+            template = data['template']                  # [V, 3]
+            faces = data['faces']
+            faces_np = faces.numpy()
+            T = gt_all.shape[0]
+
+            src_mesh = self._build_src_mesh(template.numpy(), faces_np)
+            tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
+            tgt_faces_np = self.tgt_faces if is_cross else faces_np
+
+            print(f"NFR inference: {id_name} ({T} frames)...")
+            pred_all = self.model.inference(
+                vertices=gt_all.to(self.device),
+                src_mesh=src_mesh,
+                tgt_mesh=tgt_mesh_nfr,
+            ).cpu()  # [T, V_tgt, 3]
+
+            # Step 3: compute metrics per frame
+            if not is_cross:
+                if L_sp is None:
+                    L_sp = _build_cot_laplacian(template.numpy(), faces_np)
+                    edges = _build_edges(faces_np)
+                faces_t = torch.tensor(faces_np, dtype=torch.long)
+
+                for t in range(T):
+                    gt_v = gt_all[t:t+1]   # [1, V, 3]
+                    pred = pred_all[t:t+1]  # [1, V, 3]
+
+                    total["mse"] += F.mse_loss(gt_v, pred).item()
+
+                    if not opts.no_t_mask:
+                        t_mask = plateau_hat_points(template.unsqueeze(0))
+                        inv_mask = 1.0 - t_mask
+                        total["mse_in"] += F.mse_loss(gt_v * t_mask, pred * t_mask).item()
+                        total["mse_out"] += F.mse_loss(gt_v * inv_mask, pred * inv_mask).item()
+
+                    pv_l2 = torch.sqrt(((gt_v - pred) ** 2).sum(dim=-1))
+                    total["l2"] += pv_l2.mean().item()
+                    total["l2_max_sum"] += pv_l2.max(dim=-1).values.mean().item()
+                    all_pv.append(pv_l2.numpy())
+
+                    total["lap"] += _laplacian_error(L_sp, pred, gt_v)
+                    total["norm_cos"] += _normal_consistency(pred, gt_v, faces_t)
+                    total["edge_dist"] += _edge_length_distortion(pred, gt_v, edges)
+
+                    n_frames += 1
+
+            # Visualization
+            if not opts.no_vis:
+                for t in range(T):
+                    gt_v_t = gt_all[t]
+                    pred_t = pred_all[t]
+                    f_cpu = torch.tensor(tgt_faces_np, dtype=torch.long)
+                    if is_cross:
+                        v_list = [gt_v_t, pred_t]
+                        f_list = [torch.tensor(faces_np, dtype=torch.long), f_cpu]
+                    else:
+                        v_list = [gt_v_t, template, pred_t]
+                        f_list = [torch.tensor(faces_np, dtype=torch.long)] * 3
+                    plot_image_array(
+                        v_list, f_list,
+                        rot_list=[[0, 0, 0]] * len(v_list),
+                        size=1, bg_black=False, mode='shade',
+                        logdir=self.img_dir,
+                        name=f"{frame_idx:06d}", save=True)
+
+                    if opts.save_vert:
+                        np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"),
+                                pred_t.numpy())
+                    if opts.save_gt and not is_cross:
+                        np.save(os.path.join(self.gt_dir, f"{frame_idx:06d}.npy"),
+                                gt_v_t.numpy())
+                    if opts.save_obj:
+                        obj_dir = os.path.join(self.out_dir, "obj")
+                        os.makedirs(obj_dir, exist_ok=True)
+                        _write_obj(os.path.join(obj_dir, f"pred_{frame_idx:06d}.obj"),
+                                   pred_t.numpy(), tgt_faces_np)
+                    frame_idx += 1
+
+        # Aggregate
+        if not is_cross and n_frames > 0:
+            inv = 1.0 / n_frames
+            all_pv = np.concatenate(all_pv, axis=0).flatten()
+            results = {
+                "model": "nfr",
+                "data_selection": opts.data_selection,
+                "src_identity": opts.src_identity,
+                "MSE": total["mse"] * inv,
+                "MSE_inner": total["mse_in"] * inv,
+                "MSE_outer": total["mse_out"] * inv,
+                "L2_mean": total["l2"] * inv,
+                "L2_max_mean": total["l2_max_sum"] * inv,
+                "L2_median": float(np.median(all_pv)),
+                "L2_p95": float(np.percentile(all_pv, 95)),
+                "L2_p99": float(np.percentile(all_pv, 99)),
+                "L2_max": float(np.max(all_pv)),
+                "Laplacian_err": total["lap"] * inv,
+                "Normal_cos_dist": total["norm_cos"] * inv,
+                "Edge_len_distortion": total["edge_dist"] * inv,
+                "num_frames": n_frames,
+            }
+            results_path = os.path.join(self.out_dir, "results.json")
+            with open(results_path, 'w') as f:
+                json.dump(results, f, indent=4)
+            print(f"\nResults saved: {results_path}")
+            for k, v in results.items():
+                if isinstance(v, float):
+                    print(f"  {k}: {v:.6e}")
+            np.save(os.path.join(self.out_dir, "per_vertex_l2.npy"), all_pv)
+        else:
+            print(f"\nCross-retarget done ({frame_idx} frames). Outputs: {self.out_dir}")
+
+        if opts.make_video and not opts.no_vis:
+            video_name = f"eval_nfr_{'cross' if is_cross else 'self'}.mp4"
+            images_to_video(self.img_dir, os.path.join(self.out_dir, video_name))
+
     def evaluate(self):
+        if self.opts.model == 'nfr':
+            return self._evaluate_nfr()
         opts = self.opts
 
         dataset = EvalDataset(
@@ -656,45 +819,12 @@ class CompEvaluator:
                 tgt_img = src_img
                 tgt_operators = src_operators
 
-            # Forward
-            if opts.model == 'nfs':
-                pred = self._forward_nfs_precompute(
-                    gt_v, src_v[0].numpy(), faces_np,
-                    src_dfn_info, src_img, src_operators,
-                    tgt_template, tgt_faces_np,
-                    tgt_dfn_info, tgt_img, tgt_operators)
-            else:
-                # NFR: use inference() with cached precomputes per identity
-                src_mesh = self._build_src_mesh(src_v[0].numpy(), faces_np)
-                tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
-
-                # Cache NFR precomputes per src identity (dfn_info + img computed once)
-                import utils.nfr_utils as nfr_utils
-                _nfr_src_key = src_id_name or 'default_src'
-                if _nfr_src_key not in self._nfr_cache:
-                    _src_dfn = nfr_utils.get_dfn_info(src_mesh, map_location=str(self.device))
-                    _src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
-                    self._nfr_cache[_nfr_src_key] = (_src_dfn, _src_img)
-                src_pre = self._nfr_cache[_nfr_src_key]
-
-                # Cache NFR target precomputes (dfn_info + img + operators)
-                if is_cross:
-                    _nfr_tgt_key = f"tgt_{opts.tgt_dataset}_{opts.tgt_identity}"
-                else:
-                    _nfr_tgt_key = _nfr_src_key + '_tgt'
-                if _nfr_tgt_key not in self._nfr_cache:
-                    _tgt_dfn = nfr_utils.get_dfn_info(tgt_mesh_nfr, map_location=str(self.device))
-                    _tgt_img = self.model.renderer.render_img(tgt_mesh_nfr).float().to(self.device)
-                    _tgt_ops = self.model.get_mesh_operators(tgt_mesh_nfr)
-                    self._nfr_cache[_nfr_tgt_key] = (_tgt_dfn, _tgt_img, _tgt_ops)
-                tgt_pre = self._nfr_cache[_nfr_tgt_key]
-
-                pred = self.model.inference(
-                    vertices=gt_v.to(self.device),
-                    src_mesh=src_mesh,
-                    tgt_mesh=tgt_mesh_nfr,
-                    src_precompute=src_pre,
-                    tgt_precompute=tgt_pre)
+            # Forward (NFS only — NFR handled by _evaluate_nfr)
+            pred = self._forward_nfs_precompute(
+                gt_v, src_v[0].numpy(), faces_np,
+                src_dfn_info, src_img, src_operators,
+                tgt_template, tgt_faces_np,
+                tgt_dfn_info, tgt_img, tgt_operators)
 
             pred = pred.cpu()
 
