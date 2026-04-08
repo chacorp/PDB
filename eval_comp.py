@@ -152,6 +152,8 @@ def Options():
     parser.add_argument("--no_vis", dest='no_vis', action='store_true')
     parser.set_defaults(no_vis=False)
 
+    parser.add_argument("--max_frames", type=int, default=-1,
+                        help='Max frames to evaluate (-1 = all)')
     parser.add_argument("--device", type=str, default="cuda:0")
 
     return parser.parse_args()
@@ -604,7 +606,10 @@ class CompEvaluator:
         # Step 1: collect all frames, grouped by identity
         print("Collecting frames...")
         id_frames = {}  # id_name -> { 'gt_v': [...], 'src_v': ..., 'faces': ... }
+        _total_collected = 0
         for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), ncols=120, desc="Loading"):
+            if opts.max_frames > 0 and _total_collected >= opts.max_frames:
+                break
             batch = batch.to('cpu')
             src_id_name = self._get_src_id_name(dataset, idx) or 'default'
             if src_id_name not in id_frames:
@@ -614,6 +619,7 @@ class CompEvaluator:
                     'faces': batch.faces[0] if batch.faces.dim() == 3 else batch.faces,
                 }
             id_frames[src_id_name]['gt_v'].append(batch.vertices[0])  # [V, 3]
+            _total_collected += 1
 
         # Step 2: run inference once per identity
         L_sp = None
@@ -778,6 +784,8 @@ class CompEvaluator:
                     desc=f"Eval {opts.model.upper()} {'cross' if is_cross else 'self'}")
 
         for idx, batch in pbar:
+            if opts.max_frames > 0 and frame_idx >= opts.max_frames:
+                break
             batch = batch.to('cpu')
             gt_v = batch.vertices       # [B, V, 3]
             src_v = batch.template      # [B, V, 3]
