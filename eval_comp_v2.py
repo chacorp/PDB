@@ -471,6 +471,7 @@ class Pipeline():
                             pred_outputs, _ = self.model.decode(inputs, batch_process=True)
 
                             losses_val = stack_mse(batch, pred_outputs, losses_val, denom)
+                            pbar.set_description(f"NFS self | MSE: {losses_val['MSE']:.5e}")
 
                             pred_outputs_np = pred_outputs.detach().cpu().numpy()
 
