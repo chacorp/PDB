@@ -87,6 +87,13 @@ def load_precompute(dataset_name, id_name, device='cuda:0'):
         try:
             with open(ops_path, 'rb') as f:
                 operators = pickle.load(f)
+            # Move tensor components to device
+            lu_solver, idxs, vals, rhs = operators
+            if isinstance(idxs, torch.Tensor):
+                idxs = idxs.to(device)
+            if isinstance(vals, torch.Tensor):
+                vals = vals.to(device)
+            operators = (lu_solver, idxs, vals, rhs)
         except (ModuleNotFoundError, ImportError) as e:
             print(f"[WARN] Could not load operators ({e}), will be None")
 
