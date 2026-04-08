@@ -452,7 +452,8 @@ class HLBSEvaluator:
     def evaluate_self(self):
         opts = self.opts
 
-        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
+        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir,
+                              ict_cap_id_num=opts.src_identity if opts.src_identity >= 0 else 2)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=opts.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
@@ -557,7 +558,8 @@ class HLBSEvaluator:
     def evaluate_cross(self):
         opts = self.opts
 
-        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir)
+        dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir,
+                              ict_cap_id_num=opts.src_identity if opts.src_identity >= 0 else 2)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=opts.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
