@@ -340,27 +340,33 @@ def load_nfs_model(opts):
 
 
 def load_nfr_model(opts):
-    """Load NFR model (requires pytorch3d — imported lazily)."""
-    from evaluation import NFR_helper
+    """Load NFR model — matches vis_CBD.py's loading exactly."""
+    from evaluation import Trainer as EvalTrainer
 
+    # Load yml (same as vis_CBD)
     config = opts.config
     opts_yaml = yaml.load(open(config), Loader=yaml.FullLoader)
+
+    # Merge CLI args into yml (same as vis_CBD: opts_yaml.update(opts_))
+    opts_yaml.update(vars(opts))
     nfr_opts = argparse.Namespace(**opts_yaml)
+
+    # NFR-specific overrides (same as vis_CBD lines 906-914)
     nfr_opts.NFR = True
-    nfr_opts.dec_type = 'jacob'
-    nfr_opts.design = 'nfr'
-    nfr_opts.ckpt = ''
-    nfr_opts.device = opts.device
-    nfr_opts.data_rand_trans = False
-    nfr_opts.data_rand_scale = False
-    nfr_opts.learn_rig_emb = False
-    nfr_opts.use_decimate = False
+    nfr_opts.ckpt = '/NFR'
+    nfr_opts.img_feat_dim = 128
+    nfr_opts.feature_type = "cents&norms"
     nfr_opts.stage1 = True
     nfr_opts.scale_exp = 1.0
     nfr_opts.ict_face_only = False
+    nfr_opts.design = "nfr"
+    nfr_opts.dec_type = "jacob"
+    nfr_opts.use_t_mask = True
+    nfr_opts.continue_ckpt = False
+    nfr_opts.version = 0
 
-    model = NFR_helper(nfr_opts, opts.device)
-    return model
+    trainer = EvalTrainer(nfr_opts)
+    return trainer.model
 
 
 # ── Evaluator ──────────────────────────────────────────────────────────────
