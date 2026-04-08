@@ -415,6 +415,8 @@ class Pipeline():
 
                     pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                     for index, batch in pbar:
+                        if opts.max_frames > 0 and index >= opts.max_frames:
+                            break
                         if index==0:
                             src_verts = batch.template[0].cpu().numpy()
                             src_faces = batch.faces[0].cpu().numpy()
@@ -477,12 +479,24 @@ class Pipeline():
 
                             CurrBS=pred_outputs_np.shape[0]
                             for b_idx in range(CurrBS):
-                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
-                                np.save(save_out_name, pred_outputs_np[b_idx])
-
+                                if opts.save_vert:
+                                    save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
+                                    np.save(save_out_name, pred_outputs_np[b_idx])
                                 if self.opts.save_gt:
                                     save_gt_name = GT_log_dir+f'/{index*CurrBS+b_idx:06d}.npy'
                                     np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
+                                if not opts.no_vis:
+                                    _faces_cpu = batch.faces[0].cpu()
+                                    v_list = [batch.vertices[b_idx].cpu(), batch.template[0].cpu(),
+                                              torch.tensor(pred_outputs_np[b_idx])]
+                                    f_list = [_faces_cpu] * 3
+                                    plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*3,
+                                                     size=1, bg_black=False, mode='shade',
+                                                     logdir=f"{self.opts.log_dir}/img",
+                                                     name=f"{index*CurrBS+b_idx:06d}", save=True)
+                    if opts.make_video:
+                        images_to_video(f"{self.opts.log_dir}/img",
+                                        os.path.join(self.opts.log_dir, "eval_nfs_self.mp4"))
                 else:
                     print('cross-retargeting! (src != tgt)')
                     tgt_m = trimesh.Trimesh(vertices=tgt_v, faces=tgt_f)
@@ -503,6 +517,8 @@ class Pipeline():
 
                     pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                     for index, batch in pbar:
+                        if opts.max_frames > 0 and index >= opts.max_frames:
+                            break
                         if index==0:
                             src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                             src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
@@ -537,9 +553,20 @@ class Pipeline():
 
                             CurrBS=pred_outputs_np.shape[0]
                             for b_idx in range(CurrBS):
-                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
-                                np.save(save_out_name, pred_outputs_np[b_idx])
-                                
+                                if opts.save_vert:
+                                    np.save(self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy', pred_outputs_np[b_idx])
+                                if not opts.no_vis:
+                                    _faces_cpu = batch.faces[0].cpu()
+                                    _tgt_faces_cpu = torch.tensor(tgt_f).long() if isinstance(tgt_f, np.ndarray) else tgt_faces.cpu()
+                                    v_list = [batch.vertices[b_idx].cpu(), torch.tensor(pred_outputs_np[b_idx])]
+                                    f_list = [_faces_cpu, _tgt_faces_cpu]
+                                    plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*2,
+                                                     size=1, bg_black=False, mode='shade',
+                                                     logdir=f"{self.opts.log_dir}/img",
+                                                     name=f"{index*CurrBS+b_idx:06d}", save=True)
+                    if opts.make_video:
+                        images_to_video(f"{self.opts.log_dir}/img",
+                                        os.path.join(self.opts.log_dir, "eval_nfs_cross.mp4"))
             # else:
             #     ## from NFR checkpoint
             #     if SELF_RETARGET:
