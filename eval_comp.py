@@ -685,13 +685,15 @@ class CompEvaluator:
 
             pbar = tqdm(range(T), ncols=120, desc=f"  {id_name}")
             for t in pbar:
-                # Build per-frame dfn_info
+                # Build per-frame dfn_info as list: [mass, L, evals, evecs, (gradX, gradY,) faces]
+                N_V = gt_verts.shape[1]
+                L_idx = dfn_data['L_idx'].to(device).long()
+                L_val = dfn_data['L_val'][t].to(device).float()
+                L_sparse = torch.sparse_coo_tensor(L_idx, L_val, size=(N_V, N_V), device=device).float()
+
                 frame_dfn = [
                     dfn_data['mass'][t].to(device).float(),
-                    torch.sparse_coo_tensor(
-                        dfn_data['L_idx'], dfn_data['L_val'][t],
-                        size=(gt_verts.shape[1], gt_verts.shape[1])
-                    ).to(device).float(),
+                    L_sparse,
                     dfn_data['evals'][t].to(device).float(),
                     dfn_data['evecs'][t].to(device).float(),
                 ]
