@@ -41,7 +41,7 @@ def calculate_jacobians(neutral_mesh, vertices):
 
 
 class Transfer:
-    def __init__(self, source: Mesh, target: Mesh, project: bool=False, area: bool=True, device='cuda:0', use_chol=False):
+    def __init__(self, source: Mesh, target: Mesh, project: bool=False, area: bool=True, device='cuda:0', use_chol=False, eps=1e-12):
         self.source = source
         self.target = target
         self.do_project = project
@@ -57,9 +57,13 @@ class Transfer:
             self.area = None
 
         if area:
-           
+
             self.ATareaA = (self.A.T @ self.area @ self.A).tocsc()
-            self.lu = sparse_lu(self.ATareaA)
+            eps_eye = sparse.diags((eps*torch.ones(self.ATareaA.shape[0])).tolist())
+            regularized_ATareaA = self.ATareaA + eps_eye
+            self.lu = sparse_lu(regularized_ATareaA)
+            #self.lu = sparse_lu(self.ATareaA)
+
             self.solver = cupy_SuperLU(self.lu)
 
 
@@ -201,11 +205,10 @@ class deformation_gradient(torch.autograd.Function):
         ctx.vals = vals
         ctx.shape = shape
         ctx.set_materialize_grads(False)
-        ctx.batch_size = batch_size
         b = spmm(idxs, vals, m=shape[0], n=shape[1], matrix=input)
-        b = cupy.from_dlpack(b).astype(cupy.float32)
+        b = cupy.from_dlpack(to_dlpack(b))
         cupy_output = ctx.solver.solve(b)
-        output = torch.from_dlpack(cupy_output)
+        output = from_dlpack(cupy_output.toDlpack())
         output = output.reshape(-1, batch_size, 3)
         output = output.transpose(0, 1)
         # print(f'forward time: {time.time() - t:.4f}s')
@@ -219,19 +222,19 @@ class deformation_gradient(torch.autograd.Function):
 
     
         grad_output = grad_output.permute(1, 0, 2).reshape(grad_output.shape[1], -1)
-        grad = torch.from_dlpack(ctx.solver.solve(cupy.from_dlpack(grad_output).astype(cupy.float32)))
+        grad = from_dlpack(ctx.solver.solve(cupy.from_dlpack(to_dlpack(grad_output))).toDlpack())
         if grad.isnan().any():
             print(grad)
             raise ValueError('Nan found after solving for gradient!')
         # raise ValueError
-        # dL/d_input = ATarea (3F×V) @ grad_rhs (V×3B) → (3F×3B)
-        grad = spmm(ctx.idxs, ctx.vals, m=ctx.shape[0], n=ctx.shape[1], matrix=grad)
+        ctx.idxs, ctx.vals = transpose(ctx.idxs, ctx.vals, m=ctx.shape[0], n=ctx.shape[1])
+        grad = spmm(ctx.idxs, ctx.vals, m=ctx.shape[1], n=ctx.shape[0], matrix=grad)
         if grad.isnan().any():
             print(grad)
             raise ValueError('Nan found after spmm with rhs!')
-        grad = grad.reshape(grad.shape[0], ctx.batch_size, 3)   # [3F, B, 3]
-        grad = grad.transpose(0, 1)                              # [B, 3F, 3]
-        grad = grad.reshape(grad.shape[0], -1, 9)               # [B, F, 9]
+        grad = grad.reshape(grad.shape[0], -1, 3)
+        grad = grad.transpose(0, 1)
+        grad = grad.reshape(grad.shape[0], -1, 3, 3)
         
         # Some clean up
         mempool = cupy.get_default_memory_pool()
