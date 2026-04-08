@@ -595,117 +595,98 @@ class CompEvaluator:
         return torch.cat(pred_outputs)
 
     @torch.no_grad()
-    def _evaluate_nfr_onthefly(self):
-        """NFR eval: per-frame loop matching vis_CBD.py exactly (on-the-fly operators, no inference())."""
+    def _evaluate_nfr_visCBD(self):
+        """NFR eval: copied verbatim from vis_CBD.py NFR path."""
         import utils.nfr_utils as nfr_utils
         opts = self.opts
-        device = self.device
+        device = opts.device  # string "cuda:0", same as vis_CBD
+
         is_cross = opts.cross_retarget and self.tgt_mesh is not None
 
-        dataset = EvalDataset(
+        # Dataset + dataloader (same as vis_CBD)
+        src_dataset = EvalDataset(
             data_name=opts.data_selection,
             toggle=opts.data_toggle,
             data_basedir=opts.data_basedir,
         )
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=1,
-            collate_fn=partial(CBD_collate_wrapper_eval, device=str(device)),
-            num_workers=0,
+        src_dataloader = torch.utils.data.DataLoader(
+            src_dataset, batch_size=1,
+            collate_fn=partial(CBD_collate_wrapper_eval, device=device),
         )
+        len_dataloader = len(src_dataloader)
 
+        # Target mesh setup for cross-retarget
+        tgt_v, tgt_f = None, None
+        tgt_verts, tgt_faces = None, None
+        tgt_dfn_info, tgt_img, tgt_operators = None, None, None
+        if is_cross:
+            tgt_v = self.tgt_verts
+            tgt_f = self.tgt_faces
+            tgt_m = trimesh.Trimesh(vertices=tgt_v, faces=tgt_f, process=False)
+            tgt_dfn_info = nfr_utils.get_dfn_info(tgt_m, map_location=device)
+            tgt_verts = torch.tensor(tgt_v).float().to(device)
+            tgt_faces = torch.tensor(tgt_f).long().to(device)
+            tgt_img = self.model.renderer.render_img(tgt_m).float().to(device)
+            tgt_operators = self.model.get_mesh_operators(tgt_m)
+
+        SELF_RETARGET = not is_cross
+
+        # Metrics
         L_sp, edges = None, None
         total = {"mse": 0.0, "mse_in": 0.0, "mse_out": 0.0, "l2": 0.0, "lap": 0.0,
                  "norm_cos": 0.0, "edge_dist": 0.0, "l2_max_sum": 0.0}
         all_pv = []
         n_frames, frame_idx = 0, 0
 
-        # Setup variables (computed once on first frame, reused)
-        src_m = None
-        src_verts = None
-        src_faces = None
-        src_img = None
-        src_dfn_info = None
-        src_operators = None
-
-        # Cross-retarget: compute target once
-        tgt_verts = None
-        tgt_faces_t = None
-        tgt_dfn_info = None
-        tgt_img = None
-        tgt_operators = None
-        tgt_faces_np = None
-        if is_cross:
-            tgt_m = self.tgt_mesh
-            tgt_verts = torch.tensor(self.tgt_verts).float().to(device)
-            tgt_faces_t = torch.tensor(self.tgt_faces).long().to(device)
-            tgt_faces_np = self.tgt_faces
-            tgt_dfn_info = nfr_utils.get_dfn_info(tgt_m, map_location=str(device))
-            tgt_img = self.model.renderer.render_img(tgt_m).float().to(device)
-            tgt_operators = self.model.get_mesh_operators(tgt_m)
-
-        len_dataloader = len(dataloader)
-        pbar = tqdm(enumerate(dataloader), total=len_dataloader, ncols=120,
-                    desc=f"Eval NFR {'cross' if is_cross else 'self'}")
-
-        for index, batch in pbar:
-            if opts.max_frames > 0 and frame_idx >= opts.max_frames:
-                break
-
-            # First frame or identity change: compute src setup once
-            if index == 0:
-                src_verts = batch.template[0]
-                src_faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
-                src_m = trimesh.Trimesh(
-                    vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy())
-                src_img = self.model.renderer.render_img(src_m).float().to(device)
-                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=str(device))
-                src_operators = self.model.get_mesh_operators(src_m)
-                if not is_cross:
-                    tgt_verts = src_verts
-                    tgt_faces_t = src_faces
-                    tgt_faces_np = src_faces.cpu().numpy()
-                    tgt_dfn_info = src_dfn_info
-                    tgt_img = src_img
-                    tgt_operators = src_operators
-            else:
-                if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+        # ── vis_CBD.py NFR loop (verbatim) ──────────────────────────
+        if SELF_RETARGET:
+            print('self-retargeting! (src == tgt)')
+            pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+            for index, batch in pbar:
+                if opts.max_frames > 0 and frame_idx >= opts.max_frames:
+                    break
+                if index == 0:
                     src_verts = batch.template[0]
-                    src_faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
+                    src_faces = batch.faces[0]
                     src_m = trimesh.Trimesh(
-                        vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy())
+                        vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                    )
                     src_img = self.model.renderer.render_img(src_m).float().to(device)
-                    src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=str(device))
+                    src_img_feat = self.model.get_img_feat(src_img)[None]
+                    src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                     src_operators = self.model.get_mesh_operators(src_m)
-                    if not is_cross:
-                        tgt_verts = src_verts
-                        tgt_faces_t = src_faces
-                        tgt_faces_np = src_faces.cpu().numpy()
-                        tgt_dfn_info = src_dfn_info
-                        tgt_img = src_img
-                        tgt_operators = src_operators
+                else:
+                    if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                        src_verts = batch.template[0]
+                        src_faces = batch.faces[0]
+                        src_m = trimesh.Trimesh(
+                            vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+                        )
+                        src_img = self.model.renderer.render_img(src_m).float().to(device)
+                        src_img_feat = self.model.get_img_feat(src_img)[None]
+                        src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                        src_operators = self.model.get_mesh_operators(src_m)
 
-            # Per-frame encode + decode (exactly like vis_CBD.py)
-            inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0] if batch.faces.dim() == 3 else batch.faces)
-            self.model.model.update_precomputes(src_dfn_info)
-            pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
-            pred_outputs, _, _ = self.model.calc_new_mesh(
-                tgt_verts, tgt_faces_t, pred_exp, tgt_operators, tgt_dfn_info, tgt_img)
+                with torch.no_grad():
+                    inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0])
+                    self.model.model.update_precomputes(src_dfn_info)
+                    pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
+                    pred_outputs, _, _ = self.model.calc_new_mesh(
+                        src_verts, src_faces, pred_exp, src_operators, src_dfn_info, src_img
+                    )
+                    pred_outputs_np = pred_outputs.detach().cpu().numpy()
 
-            pred = pred_outputs.cpu()
-            gt_v = batch.vertices.cpu()
-            B = gt_v.shape[0]
-
-            # Metrics (self-retarget only)
-            if not is_cross:
+                # Metrics
+                gt_v = batch.vertices.cpu()
+                pred = pred_outputs.cpu()
+                B = gt_v.shape[0]
                 if L_sp is None:
-                    L_sp = _build_cot_laplacian(src_verts.cpu().numpy(),
-                                                 src_faces.cpu().numpy() if isinstance(src_faces, torch.Tensor) else src_faces)
-                    _fnp = src_faces.cpu().numpy() if isinstance(src_faces, torch.Tensor) else src_faces
+                    _fnp = src_faces.cpu().numpy()
+                    L_sp = _build_cot_laplacian(src_verts.cpu().numpy(), _fnp)
                     edges = _build_edges(_fnp)
-                faces_t = torch.tensor(tgt_faces_np, dtype=torch.long)
+                faces_t = torch.tensor(src_faces.cpu().numpy(), dtype=torch.long)
                 for b in range(B):
-                    _gt = gt_v[b:b+1]
-                    _pr = pred[b:b+1]
+                    _gt, _pr = gt_v[b:b+1], pred[b:b+1]
                     total["mse"] += F.mse_loss(_gt, _pr).item()
                     if not opts.no_t_mask:
                         t_mask = plateau_hat_points(src_verts.unsqueeze(0).cpu())
@@ -721,30 +702,67 @@ class CompEvaluator:
                     total["edge_dist"] += _edge_length_distortion(_pr, _gt, edges)
                     n_frames += 1
 
-            # Visualization
-            if not opts.no_vis:
-                for b in range(B):
-                    f_cpu = torch.tensor(tgt_faces_np, dtype=torch.long)
-                    _src_f = src_faces.cpu() if isinstance(src_faces, torch.Tensor) else torch.tensor(src_faces)
-                    if is_cross:
-                        v_list = [gt_v[b], pred[b]]
-                        f_list = [_src_f, f_cpu]
-                    else:
-                        v_list = [gt_v[b], src_verts.cpu(), pred[b]]
-                        f_list = [_src_f] * 3
-                    plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
-                                    size=1, bg_black=False, mode='shade',
-                                    logdir=self.img_dir, name=f"{frame_idx:06d}", save=True)
-                    if opts.save_vert:
-                        np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"), pred[b].numpy())
-                    if opts.save_gt and not is_cross:
-                        np.save(os.path.join(self.gt_dir, f"{frame_idx:06d}.npy"), gt_v[b].numpy())
-                    frame_idx += 1
+                # Vis
+                if not opts.no_vis:
+                    CurrBS = pred_outputs_np.shape[0]
+                    for b_idx in range(CurrBS):
+                        _faces_cpu = batch.faces[0].cpu()
+                        v_list = [batch.vertices[b_idx].cpu(), batch.template[0].cpu(),
+                                  torch.tensor(pred_outputs_np[b_idx])]
+                        f_list = [_faces_cpu] * 3
+                        plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*3,
+                                         size=1, bg_black=False, mode='shade',
+                                         logdir=self.img_dir, name=f"{frame_idx:06d}", save=True)
+                        if opts.save_vert:
+                            np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"), pred_outputs_np[b_idx])
+                        if opts.save_gt:
+                            np.save(os.path.join(self.gt_dir, f"{frame_idx:06d}.npy"), gt_v[b_idx].numpy())
+                        frame_idx += 1
+                pbar.set_description(f"NFR self | mse: {total['mse']/max(n_frames,1):.5e}")
+        else:
+            print('cross-retargeting!')
+            pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+            for index, batch in pbar:
+                if opts.max_frames > 0 and frame_idx >= opts.max_frames:
+                    break
+                if index == 0:
+                    src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                    src_img = self.model.renderer.render_img(src_m).float().to(device)
+                    src_img_feat = self.model.get_img_feat(src_img)[None]
+                    src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                else:
+                    if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                        src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                        src_img = self.model.renderer.render_img(src_m).float().to(device)
+                        src_img_feat = self.model.get_img_feat(src_img)[None]
+                        src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
 
-            pbar.set_description(f"Eval NFR | mse: {total['mse']/max(n_frames,1):.5e}")
+                with torch.no_grad():
+                    inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0])
+                    self.model.model.update_precomputes(src_dfn_info)
+                    pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
+                    pred_outputs, _, _ = self.model.calc_new_mesh(
+                        tgt_verts, tgt_faces, pred_exp, tgt_operators, tgt_dfn_info, tgt_img
+                    )
+                    pred_outputs_np = pred_outputs.detach().cpu().numpy()
 
-        # Aggregate
-        if not is_cross and n_frames > 0:
+                if not opts.no_vis:
+                    CurrBS = pred_outputs_np.shape[0]
+                    for b_idx in range(CurrBS):
+                        _faces_cpu = batch.faces[0].cpu()
+                        _tgt_faces_cpu = torch.tensor(tgt_f).long() if isinstance(tgt_f, np.ndarray) else tgt_faces.cpu()
+                        v_list = [batch.vertices[b_idx].cpu(), torch.tensor(pred_outputs_np[b_idx])]
+                        f_list = [_faces_cpu, _tgt_faces_cpu]
+                        plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
+                                         size=1, bg_black=False, mode='shade',
+                                         logdir=self.img_dir, name=f"{frame_idx:06d}", save=True)
+                        if opts.save_vert:
+                            np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"), pred_outputs_np[b_idx])
+                        frame_idx += 1
+                pbar.set_description(f"NFR cross | frame: {frame_idx}")
+
+        # ── Aggregate results ───────────────────────────────────────
+        if SELF_RETARGET and n_frames > 0:
             inv = 1.0 / n_frames
             all_pv = np.concatenate(all_pv, axis=0).flatten()
             results = {
@@ -767,7 +785,7 @@ class CompEvaluator:
         else:
             print(f"\nCross-retarget done ({frame_idx} frames). Outputs: {self.out_dir}")
         if opts.make_video and not opts.no_vis:
-            images_to_video(self.img_dir, os.path.join(self.out_dir, f"eval_nfr_{'cross' if is_cross else 'self'}.mp4"))
+            images_to_video(self.img_dir, os.path.join(self.out_dir, f"eval_nfr_{'cross' if SELF_RETARGET else 'cross'}.mp4"))
 
             if not is_cross:
                 if L_sp is None:
@@ -837,262 +855,8 @@ class CompEvaluator:
 
     @torch.no_grad()
     def _evaluate_nfr(self):
-        """NFR evaluation using precomputed data from NFR_pytorch/data/."""
-        opts = self.opts
-        device = self.device
-
-        is_cross = opts.cross_retarget and self.tgt_mesh is not None
-
-        # ── Load NFR precomputed data ────────────────────────────────
-        # Currently supports MF self-retarget with precomputed data
-        nfr_data_root = getattr(opts, 'nfr_data_root', None)
-        if nfr_data_root is None:
-            print("[NFR] Using precomputed dfn_info/operators/img")
-            return self._evaluate_nfr_onthefly()
-
-        # Find identity dirs in test/
-        test_dir = os.path.join(nfr_data_root, 'test')
-        pm_files = sorted(glob.glob(os.path.join(test_dir, '*_processed_matrix.pkl')))
-        if not pm_files:
-            raise FileNotFoundError(f"No processed_matrix.pkl in {test_dir}")
-
-        # Load neutral mesh (standardized)
-        neutral_objs = sorted(glob.glob(os.path.join(nfr_data_root, '*_neutral.obj')))
-        if not neutral_objs:
-            raise FileNotFoundError(f"No neutral.obj in {nfr_data_root}")
-        neutral_mesh = trimesh.load(neutral_objs[0], process=False)
-        neutral_verts = np.array(neutral_mesh.vertices, dtype=np.float32)
-        neutral_faces = np.array(neutral_mesh.faces, dtype=np.int32)
-        print(f"NFR neutral mesh: {neutral_verts.shape[0]} verts, {neutral_faces.shape[0]} faces")
-
-        # Load neutral image
-        neutral_img_path = neutral_objs[0].replace('_neutral.obj', '_neutral_img.npy')
-        neutral_img = torch.tensor(np.load(neutral_img_path)).float().to(device)
-        if neutral_img.dim() == 3:
-            neutral_img = neutral_img.unsqueeze(0)  # [1, H, W, 3]
-
-        # Compute mesh operators + neutral dfn_info once
-        print("Computing mesh operators from neutral mesh...")
-        import utils.nfr_utils as nfr_utils
-        from utils.mesh_utils import get_mesh_operators
-        src_mesh = trimesh.Trimesh(vertices=neutral_verts, faces=neutral_faces, process=False)
-        tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
-        tgt_faces_np = self.tgt_faces if is_cross else neutral_faces
-        operators = get_mesh_operators(tgt_mesh_nfr)
-        neutral_dfn = nfr_utils.get_dfn_info(src_mesh, map_location=str(device))
-        print("Mesh operators + neutral dfn_info ready.")
-
-        # Precompute target dfn_info + img for cross-retarget
-        tgt_dfn_info_cached = None
-        tgt_img_cached = None
-        if is_cross:
-            tgt_dfn_info_cached = nfr_utils.get_dfn_info(tgt_mesh_nfr, map_location=str(device))
-            tgt_img_cached = self.model.renderer.render_img(tgt_mesh_nfr).float().to(device)
-
-        # ── Process each identity ────────────────────────────────────
-        L_sp = None
-        edges = None
-        total = {
-            "mse": 0.0, "mse_in": 0.0, "mse_out": 0.0,
-            "l2": 0.0, "lap": 0.0, "norm_cos": 0.0, "edge_dist": 0.0,
-            "l2_max_sum": 0.0,
-        }
-        all_pv = []
-        n_frames = 0
-        frame_idx = 0
-
-        for pm_path in pm_files:
-            id_name = os.path.basename(pm_path).replace('_processed_matrix.pkl', '')
-            print(f"NFR inference: {id_name}...")
-
-            # Load precomputed data
-            pm = pickle.load(open(pm_path, 'rb'))
-            gt_verts = torch.tensor(pm['verts']).float()   # [T, V, 3]
-            gt_faces = pm['face']                           # [F, 3]
-            T = gt_verts.shape[0]
-            if opts.max_frames > 0:
-                T = min(T, opts.max_frames)
-                gt_verts = gt_verts[:T]
-
-            # Load per-frame dfn_info
-            dfn_path = os.path.join(test_dir, f'{id_name}_dfn_info.pt')
-            dfn_data = torch.load(dfn_path, weights_only=False)
-
-            # Load per-frame gradient operators
-            grad_path = os.path.join(test_dir, f'{id_name}_grad.pt')
-            grad_data = torch.load(grad_path, weights_only=False) if os.path.exists(grad_path) else None
-
-            # Load per-frame images
-            imgs_path = os.path.join(test_dir, f'{id_name}_imgs.npy')
-            per_frame_imgs = np.load(imgs_path)  # [T, 256, 256, 3]
-
-            # NFR model internals
-            nfr_model = self.model.model  # latent_space model
-
-            # Encode + decode per frame using precomputed dfn_info + img
-            pred_all = []
-            if is_cross:
-                tgt_verts_t = torch.tensor(self.tgt_verts).float().to(device)
-                tgt_faces_t = torch.tensor(self.tgt_faces).long().to(device)
-            else:
-                tgt_verts_t = torch.tensor(neutral_verts).float().to(device)
-                tgt_faces_t = torch.tensor(neutral_faces).long().to(device)
-
-            pbar = tqdm(range(T), ncols=120, desc=f"  {id_name}")
-            for t in pbar:
-                # Build per-frame dfn_info as list: [mass, L, evals, evecs, gradX, gradY, faces]
-                N_V = gt_verts.shape[1]
-                L_idx = dfn_data['L_idx'].to(device).long()
-                L_val = dfn_data['L_val'][t].to(device).float()
-                L_sparse = torch.sparse_coo_tensor(L_idx, L_val, size=(N_V, N_V), device=device).float()
-
-                frame_dfn = [
-                    dfn_data['mass'][t].to(device).float(),
-                    L_sparse,
-                    dfn_data['evals'][t].to(device).float(),
-                    dfn_data['evecs'][t].to(device).float(),
-                ]
-                # Build gradX, gradY sparse tensors from grad.pt
-                if grad_data is not None:
-                    grad_ind = grad_data['ind'].to(device).long()
-                    grad_shape = grad_data['shape']  # (N_V, N_V)
-                    gradX = torch.sparse_coo_tensor(grad_ind, grad_data['X'][t].to(device).float(),
-                                                     size=grad_shape, device=device)
-                    gradY = torch.sparse_coo_tensor(grad_ind, grad_data['Y'][t].to(device).float(),
-                                                     size=grad_shape, device=device)
-                    frame_dfn.append(gradX)
-                    frame_dfn.append(gradY)
-                frame_dfn.append(torch.tensor(gt_faces).long())
-
-                # Per-frame image
-                img_t = torch.tensor(per_frame_imgs[t]).float().unsqueeze(0).to(device)
-
-                # Per-frame expressed vertices
-                v_t = gt_verts[t].to(device)
-                v_normal = torch.tensor(
-                    igl.per_vertex_normals(v_t.cpu().numpy(), gt_faces)
-                ).float().to(device)
-                inputs_v = torch.cat([v_t, v_normal], dim=-1).unsqueeze(0)  # [1, V, 6]
-
-                # Encode expression
-                nfr_model.update_precomputes(frame_dfn)
-                pred_exp = nfr_model.encode(inputs_v, img_t.to(device), N_F=gt_faces.shape[0])
-
-                # Decode using calc_new_mesh (target identity dfn_info + img)
-                if is_cross:
-                    _decode_dfn = tgt_dfn_info_cached
-                    _decode_img = tgt_img_cached
-                else:
-                    _decode_dfn = neutral_dfn
-                    _decode_img = neutral_img
-                tmp, _, _ = self.model.calc_new_mesh(
-                    tgt_verts_t, tgt_faces_t, pred_exp,
-                    operators, _decode_dfn, _decode_img)
-                pred_all.append(tmp.cpu())
-
-            pred_all = torch.cat(pred_all, dim=0)  # [T, V, 3]
-            gt_all = gt_verts[:T]
-            template = torch.tensor(neutral_verts).float()
-            faces_np_std = neutral_faces
-
-            # Step 3: compute metrics per frame
-            if not is_cross:
-                if L_sp is None:
-                    L_sp = _build_cot_laplacian(neutral_verts, faces_np_std)
-                    edges = _build_edges(faces_np_std)
-                faces_t = torch.tensor(faces_np_std, dtype=torch.long)
-
-                for t in range(T):
-                    gt_v = gt_all[t:t+1]   # [1, V, 3]
-                    pred = pred_all[t:t+1]  # [1, V, 3]
-
-                    total["mse"] += F.mse_loss(gt_v, pred).item()
-
-                    if not opts.no_t_mask:
-                        t_mask = plateau_hat_points(template.unsqueeze(0))
-                        inv_mask = 1.0 - t_mask
-                        total["mse_in"] += F.mse_loss(gt_v * t_mask, pred * t_mask).item()
-                        total["mse_out"] += F.mse_loss(gt_v * inv_mask, pred * inv_mask).item()
-
-                    pv_l2 = torch.sqrt(((gt_v - pred) ** 2).sum(dim=-1))
-                    total["l2"] += pv_l2.mean().item()
-                    total["l2_max_sum"] += pv_l2.max(dim=-1).values.mean().item()
-                    all_pv.append(pv_l2.numpy())
-
-                    total["lap"] += _laplacian_error(L_sp, pred, gt_v)
-                    total["norm_cos"] += _normal_consistency(pred, gt_v, faces_t)
-                    total["edge_dist"] += _edge_length_distortion(pred, gt_v, edges)
-
-                    n_frames += 1
-
-            # Visualization
-            if not opts.no_vis:
-                for t in range(T):
-                    gt_v_t = gt_all[t]
-                    pred_t = pred_all[t]
-                    f_cpu = torch.tensor(tgt_faces_np, dtype=torch.long)
-                    if is_cross:
-                        v_list = [gt_v_t, pred_t]
-                        f_list = [torch.tensor(faces_np_std, dtype=torch.long), f_cpu]
-                    else:
-                        v_list = [gt_v_t, template, pred_t]
-                        f_list = [torch.tensor(faces_np_std, dtype=torch.long)] * 3
-                    plot_image_array(
-                        v_list, f_list,
-                        rot_list=[[0, 0, 0]] * len(v_list),
-                        size=1, bg_black=False, mode='shade',
-                        logdir=self.img_dir,
-                        name=f"{frame_idx:06d}", save=True)
-
-                    if opts.save_vert:
-                        np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"),
-                                pred_t.numpy())
-                    if opts.save_gt and not is_cross:
-                        np.save(os.path.join(self.gt_dir, f"{frame_idx:06d}.npy"),
-                                gt_v_t.numpy())
-                    if opts.save_obj:
-                        obj_dir = os.path.join(self.out_dir, "obj")
-                        os.makedirs(obj_dir, exist_ok=True)
-                        _write_obj(os.path.join(obj_dir, f"pred_{frame_idx:06d}.obj"),
-                                   pred_t.numpy(), tgt_faces_np)
-                    frame_idx += 1
-
-        # Aggregate
-        if not is_cross and n_frames > 0:
-            inv = 1.0 / n_frames
-            all_pv = np.concatenate(all_pv, axis=0).flatten()
-            results = {
-                "model": "nfr",
-                "data_selection": opts.data_selection,
-                "src_identity": opts.src_identity,
-                "MSE": total["mse"] * inv,
-                "MSE_inner": total["mse_in"] * inv,
-                "MSE_outer": total["mse_out"] * inv,
-                "L2_mean": total["l2"] * inv,
-                "L2_max_mean": total["l2_max_sum"] * inv,
-                "L2_median": float(np.median(all_pv)),
-                "L2_p95": float(np.percentile(all_pv, 95)),
-                "L2_p99": float(np.percentile(all_pv, 99)),
-                "L2_max": float(np.max(all_pv)),
-                "Laplacian_err": total["lap"] * inv,
-                "Normal_cos_dist": total["norm_cos"] * inv,
-                "Edge_len_distortion": total["edge_dist"] * inv,
-                "num_frames": n_frames,
-            }
-            results_path = os.path.join(self.out_dir, "results.json")
-            with open(results_path, 'w') as f:
-                json.dump(results, f, indent=4)
-            print(f"\nResults saved: {results_path}")
-            for k, v in results.items():
-                if isinstance(v, float):
-                    print(f"  {k}: {v:.6e}")
-            np.save(os.path.join(self.out_dir, "per_vertex_l2.npy"), all_pv)
-        else:
-            print(f"\nCross-retarget done ({frame_idx} frames). Outputs: {self.out_dir}")
-
-        if opts.make_video and not opts.no_vis:
-            video_name = f"eval_nfr_{'cross' if is_cross else 'self'}.mp4"
-            images_to_video(self.img_dir, os.path.join(self.out_dir, video_name))
+        """NFR evaluation — uses vis_CBD.py path (confirmed jitter-free)."""
+        return self._evaluate_nfr_visCBD()
 
     def evaluate(self):
         if self.opts.model == 'nfr':
