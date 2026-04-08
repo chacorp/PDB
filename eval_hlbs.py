@@ -89,6 +89,8 @@ def Options():
                         help='Dataset to evaluate on')
     parser.add_argument("--src_identity", type=int, default=-1,
                         help='Source identity index (-1 = all identities)')
+    parser.add_argument("--exp_num", type=int, default=0,
+                        help='Expression sequence number for ict-cap (0 or 1)')
     parser.add_argument("--data_toggle", dest='data_toggle', action='store_true')
     parser.set_defaults(data_toggle=False)
     parser.add_argument("--batch_size", type=int, default=1)
@@ -453,7 +455,8 @@ class HLBSEvaluator:
         opts = self.opts
 
         dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir,
-                              ict_cap_id_num=opts.src_identity if opts.src_identity >= 0 else 2)
+                              ict_cap_id_num=opts.src_identity if opts.src_identity >= 0 else 2,
+                              ict_cap_exp_num=opts.exp_num)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=opts.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
@@ -559,7 +562,8 @@ class HLBSEvaluator:
         opts = self.opts
 
         dataset = EvalDataset(data_name=opts.data_selection, toggle=opts.data_toggle, data_basedir=opts.data_basedir,
-                              ict_cap_id_num=opts.src_identity if opts.src_identity >= 0 else 2)
+                              ict_cap_id_num=opts.src_identity if opts.src_identity >= 0 else 2,
+                              ict_cap_exp_num=opts.exp_num)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=opts.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
