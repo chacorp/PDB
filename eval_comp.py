@@ -609,10 +609,10 @@ class CompEvaluator:
 
         is_cross = opts.cross_retarget and self.tgt_mesh is not None
 
-        # Dataset + dataloader (same as vis_CBD)
+        # Dataset + dataloader (same as vis_CBD: toggle=False)
         src_dataset = EvalDataset(
             data_name=opts.data_selection,
-            toggle=opts.data_toggle,
+            toggle=False,
             data_basedir=opts.data_basedir,
         )
         src_dataloader = torch.utils.data.DataLoader(
@@ -791,73 +791,7 @@ class CompEvaluator:
         else:
             print(f"\nCross-retarget done ({frame_idx} frames). Outputs: {self.out_dir}")
         if opts.make_video and not opts.no_vis:
-            images_to_video(self.img_dir, os.path.join(self.out_dir, f"eval_nfr_{'cross' if SELF_RETARGET else 'cross'}.mp4"))
-
-            if not is_cross:
-                if L_sp is None:
-                    L_sp = _build_cot_laplacian(template.numpy(), faces_np)
-                    edges = _build_edges(faces_np)
-                faces_t = torch.tensor(faces_np, dtype=torch.long)
-                for t in range(T):
-                    gt_v = gt_all[t:t+1]
-                    pred = pred_all[t:t+1]
-                    total["mse"] += F.mse_loss(gt_v, pred).item()
-                    if not opts.no_t_mask:
-                        t_mask = plateau_hat_points(template.unsqueeze(0))
-                        inv_mask = 1.0 - t_mask
-                        total["mse_in"] += F.mse_loss(gt_v * t_mask, pred * t_mask).item()
-                        total["mse_out"] += F.mse_loss(gt_v * inv_mask, pred * inv_mask).item()
-                    pv_l2 = torch.sqrt(((gt_v - pred) ** 2).sum(dim=-1))
-                    total["l2"] += pv_l2.mean().item()
-                    total["l2_max_sum"] += pv_l2.max(dim=-1).values.mean().item()
-                    all_pv.append(pv_l2.numpy())
-                    total["lap"] += _laplacian_error(L_sp, pred, gt_v)
-                    total["norm_cos"] += _normal_consistency(pred, gt_v, faces_t)
-                    total["edge_dist"] += _edge_length_distortion(pred, gt_v, edges)
-                    n_frames += 1
-
-            if not opts.no_vis:
-                for t in range(T):
-                    f_cpu = torch.tensor(tgt_faces_np, dtype=torch.long)
-                    if is_cross:
-                        v_list = [gt_all[t], pred_all[t]]
-                        f_list = [torch.tensor(faces_np, dtype=torch.long), f_cpu]
-                    else:
-                        v_list = [gt_all[t], template, pred_all[t]]
-                        f_list = [torch.tensor(faces_np, dtype=torch.long)] * 3
-                    plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
-                                    size=1, bg_black=False, mode='shade',
-                                    logdir=self.img_dir, name=f"{frame_idx:06d}", save=True)
-                    if opts.save_vert:
-                        np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"), pred_all[t].numpy())
-                    if opts.save_gt and not is_cross:
-                        np.save(os.path.join(self.gt_dir, f"{frame_idx:06d}.npy"), gt_all[t].numpy())
-                    frame_idx += 1
-
-        if not is_cross and n_frames > 0:
-            inv = 1.0 / n_frames
-            all_pv = np.concatenate(all_pv, axis=0).flatten()
-            results = {
-                "model": "nfr", "data_selection": opts.data_selection,
-                "src_identity": opts.src_identity,
-                "MSE": total["mse"]*inv, "MSE_inner": total["mse_in"]*inv,
-                "MSE_outer": total["mse_out"]*inv, "L2_mean": total["l2"]*inv,
-                "L2_max_mean": total["l2_max_sum"]*inv,
-                "L2_median": float(np.median(all_pv)), "L2_p95": float(np.percentile(all_pv, 95)),
-                "L2_p99": float(np.percentile(all_pv, 99)), "L2_max": float(np.max(all_pv)),
-                "Laplacian_err": total["lap"]*inv, "Normal_cos_dist": total["norm_cos"]*inv,
-                "Edge_len_distortion": total["edge_dist"]*inv, "num_frames": n_frames,
-            }
-            with open(os.path.join(self.out_dir, "results.json"), 'w') as f:
-                json.dump(results, f, indent=4)
-            print(f"\nResults saved: {self.out_dir}/results.json")
-            for k, v in results.items():
-                if isinstance(v, float): print(f"  {k}: {v:.6e}")
-            np.save(os.path.join(self.out_dir, "per_vertex_l2.npy"), all_pv)
-        else:
-            print(f"\nCross-retarget done ({frame_idx} frames). Outputs: {self.out_dir}")
-        if opts.make_video and not opts.no_vis:
-            images_to_video(self.img_dir, os.path.join(self.out_dir, f"eval_nfr_{'cross' if is_cross else 'self'}.mp4"))
+            images_to_video(self.img_dir, os.path.join(self.out_dir, f"eval_nfr_{'self' if SELF_RETARGET else 'cross'}.mp4"))
 
     @torch.no_grad()
     def _evaluate_nfr(self):
