@@ -412,6 +412,11 @@ class Pipeline():
             if opts.NFR==False:
                 if SELF_RETARGET:
                     print('self-retargeting! (src == tgt)')
+                    L_sp, edges_m = None, None
+                    total_m = {"mse": 0.0, "mse_in": 0.0, "mse_out": 0.0, "l2": 0.0, "lap": 0.0,
+                               "norm_cos": 0.0, "edge_dist": 0.0, "l2_max_sum": 0.0}
+                    all_pv_m = []
+                    n_frames_m = 0
 
                     pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                     for index, batch in pbar:
@@ -473,7 +478,34 @@ class Pipeline():
                             pred_outputs, _ = self.model.decode(inputs, batch_process=True)
 
                             losses_val = stack_mse(batch, pred_outputs, losses_val, denom)
-                            pbar.set_description(f"NFS self | MSE: {losses_val['MSE']:.5e}")
+
+                            # Full metrics
+                            gt_v = batch.vertices.cpu()
+                            pred_cpu = pred_outputs.cpu()
+                            if L_sp is None:
+                                _fnp = batch.faces[0].cpu().numpy()
+                                _tnp = batch.template[0].cpu().numpy()
+                                L_sp = _build_cot_laplacian(_tnp, _fnp)
+                                edges_m = _build_edges(_fnp)
+                            faces_t_m = torch.tensor(batch.faces[0].cpu().numpy(), dtype=torch.long)
+                            B = gt_v.shape[0]
+                            for b in range(B):
+                                _gt, _pr = gt_v[b:b+1], pred_cpu[b:b+1]
+                                total_m["mse"] += F.mse_loss(_gt, _pr).item()
+                                if opts.use_t_mask:
+                                    t_mask = plateau_hat_points(batch.template[0:1].cpu())
+                                    inv_mask = 1.0 - t_mask
+                                    total_m["mse_in"] += F.mse_loss(_gt * t_mask, _pr * t_mask).item()
+                                    total_m["mse_out"] += F.mse_loss(_gt * inv_mask, _pr * inv_mask).item()
+                                pv_l2 = torch.sqrt(((_gt - _pr) ** 2).sum(dim=-1))
+                                total_m["l2"] += pv_l2.mean().item()
+                                total_m["l2_max_sum"] += pv_l2.max(dim=-1).values.mean().item()
+                                all_pv_m.append(pv_l2.numpy())
+                                total_m["lap"] += _laplacian_error(L_sp, _pr, _gt)
+                                total_m["norm_cos"] += _normal_consistency(_pr, _gt, faces_t_m)
+                                total_m["edge_dist"] += _edge_length_distortion(_pr, _gt, edges_m)
+                                n_frames_m += 1
+                            pbar.set_description(f"NFS self | MSE: {total_m['mse']/max(n_frames_m,1):.5e}")
 
                             pred_outputs_np = pred_outputs.detach().cpu().numpy()
 
@@ -494,6 +526,30 @@ class Pipeline():
                                                      size=1, bg_black=False, mode='shade',
                                                      logdir=f"{self.opts.log_dir}/img",
                                                      name=f"{index*CurrBS+b_idx:06d}", save=True)
+                    # Save metrics
+                    if n_frames_m > 0:
+                        inv = 1.0 / n_frames_m
+                        all_pv_np = np.concatenate(all_pv_m, axis=0).flatten()
+                        results = {
+                            "model": "nfs", "mode": "self",
+                            "MSE": total_m["mse"]*inv, "MSE_inner": total_m["mse_in"]*inv,
+                            "MSE_outer": total_m["mse_out"]*inv, "L2_mean": total_m["l2"]*inv,
+                            "L2_max_mean": total_m["l2_max_sum"]*inv,
+                            "L2_median": float(np.median(all_pv_np)),
+                            "L2_p95": float(np.percentile(all_pv_np, 95)),
+                            "L2_p99": float(np.percentile(all_pv_np, 99)),
+                            "L2_max": float(np.max(all_pv_np)),
+                            "Laplacian_err": total_m["lap"]*inv,
+                            "Normal_cos_dist": total_m["norm_cos"]*inv,
+                            "Edge_len_distortion": total_m["edge_dist"]*inv,
+                            "num_frames": n_frames_m,
+                        }
+                        with open(os.path.join(self.opts.log_dir, "results.json"), 'w') as f:
+                            json.dump(results, f, indent=4)
+                        print(f"\nResults saved: {self.opts.log_dir}/results.json")
+                        for k, v in results.items():
+                            if isinstance(v, float): print(f"  {k}: {v:.6e}")
+                        np.save(os.path.join(self.opts.log_dir, "per_vertex_l2.npy"), all_pv_np)
                     if opts.make_video:
                         images_to_video(f"{self.opts.log_dir}/img",
                                         os.path.join(self.opts.log_dir, "eval_nfs_self.mp4"))
