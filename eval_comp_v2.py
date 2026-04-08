@@ -419,8 +419,8 @@ class Pipeline():
                             src_verts = batch.template[0].cpu().numpy()
                             src_faces = batch.faces[0].cpu().numpy()
                             src_m = trimesh.Trimesh(vertices=src_verts, faces=src_faces)
-                            # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                            # src_operators = get_mesh_operators(src_m)
+                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                            src_operators = get_mesh_operators(src_m)
                             src_img = self.model.renderer.render_img(src_m).float().to(device)
                             src_img_feat = self.model.get_img_feat(src_img.float().to(device))
                             src_vert_feat = self.model.get_local_feature(
@@ -439,8 +439,8 @@ class Pipeline():
                                 src_verts = batch.template[0].cpu().numpy()
                                 src_faces = batch.faces[0].cpu().numpy()
                                 src_m = trimesh.Trimesh(vertices=src_verts, faces=src_faces)
-                                # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                                # src_operators = get_mesh_operators(src_m)
+                                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                                src_operators = get_mesh_operators(src_m)
                                 src_img = self.model.renderer.render_img(src_m).float().to(device)
                                 src_img_feat = self.model.get_img_feat(src_img)
                                 src_vert_feat = self.model.get_local_feature(
@@ -504,14 +504,14 @@ class Pipeline():
                     for index, batch in pbar:
                         if index==0:
                             src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-                            # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                             src_img = self.model.renderer.render_img(src_m).float().to(device)
                             src_img_feat = self.model.get_img_feat(src_img)
                         else:
                             if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
                                 pbar.set_description('src chng!?')
                                 src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-                                # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+                                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                                 src_img = self.model.renderer.render_img(src_m).float().to(device)
                                 src_img_feat = self.model.get_img_feat(src_img)
 
