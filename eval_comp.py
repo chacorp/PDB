@@ -54,7 +54,7 @@ PRECOMPUTE_PATHS = {
     'voca': '/data/sihun/VOCA-COMA/precomputes',
     'coma': '/data/sihun/VOCA-COMA/precomputes',
     'biwi': '/data/sihun/BIWI_align_deci/precomputes',
-    'ict':  '/data/sihun/ICT-audio2face/ICT/precompute-synth-fullhead',
+    'ict':  '/data/sihun/ICT-audio2face/ICT/precompute-real-fullhead',
 }
 
 
@@ -596,7 +596,8 @@ class CompEvaluator:
 
     @torch.no_grad()
     def _evaluate_nfr_onthefly(self):
-        """NFR eval: collect all frames per identity, use precomputed dfn_info/operators/img."""
+        """NFR eval: per-frame loop matching vis_CBD.py exactly (on-the-fly operators, no inference())."""
+        import utils.nfr_utils as nfr_utils
         opts = self.opts
         device = self.device
         is_cross = opts.cross_retarget and self.tgt_mesh is not None
@@ -608,68 +609,165 @@ class CompEvaluator:
         )
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=1,
-            collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
+            collate_fn=partial(CBD_collate_wrapper_eval, device=str(device)),
             num_workers=0,
         )
 
-        # Collect frames grouped by identity
-        print("Collecting frames...")
-        id_frames = {}
-        _total = 0
-        for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), ncols=120, desc="Loading"):
-            if opts.max_frames > 0 and _total >= opts.max_frames:
-                break
-            batch = batch.to('cpu')
-            src_id = self._get_src_id_name(dataset, idx) or 'default'
-            if src_id not in id_frames:
-                id_frames[src_id] = {
-                    'gt_v': [],
-                    'template': batch.template[0],
-                    'faces': batch.faces[0] if batch.faces.dim() == 3 else batch.faces,
-                }
-            id_frames[src_id]['gt_v'].append(batch.vertices[0])
-            _total += 1
-
-        # Run inference once per identity
         L_sp, edges = None, None
         total = {"mse": 0.0, "mse_in": 0.0, "mse_out": 0.0, "l2": 0.0, "lap": 0.0,
                  "norm_cos": 0.0, "edge_dist": 0.0, "l2_max_sum": 0.0}
         all_pv = []
         n_frames, frame_idx = 0, 0
 
-        for id_name, data in id_frames.items():
-            gt_all = torch.stack(data['gt_v'], dim=0)
-            template = data['template']
-            faces = data['faces']
-            faces_np = faces.numpy()
-            T = gt_all.shape[0]
+        # Setup variables (computed once on first frame, reused)
+        src_m = None
+        src_verts = None
+        src_faces = None
+        src_img = None
+        src_dfn_info = None
+        src_operators = None
 
-            src_mesh = self._build_src_mesh(template.numpy(), faces_np)
-            tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
-            tgt_faces_np = self.tgt_faces if is_cross else faces_np
+        # Cross-retarget: compute target once
+        tgt_verts = None
+        tgt_faces_t = None
+        tgt_dfn_info = None
+        tgt_img = None
+        tgt_operators = None
+        tgt_faces_np = None
+        if is_cross:
+            tgt_m = self.tgt_mesh
+            tgt_verts = torch.tensor(self.tgt_verts).float().to(device)
+            tgt_faces_t = torch.tensor(self.tgt_faces).long().to(device)
+            tgt_faces_np = self.tgt_faces
+            tgt_dfn_info = nfr_utils.get_dfn_info(tgt_m, map_location=str(device))
+            tgt_img = self.model.renderer.render_img(tgt_m).float().to(device)
+            tgt_operators = self.model.get_mesh_operators(tgt_m)
 
-            # Load precomputed dfn_info, operators, img for source
-            src_ds_key = opts.data_selection.replace('_ROM', '').replace('_SEN', '')
-            src_dfn_info, src_img, src_operators = self._load_precomputes_for_dataset(
-                src_ds_key, id_name)
-            src_pre = (src_dfn_info, src_img) if src_dfn_info is not None else None
+        len_dataloader = len(dataloader)
+        pbar = tqdm(enumerate(dataloader), total=len_dataloader, ncols=120,
+                    desc=f"Eval NFR {'cross' if is_cross else 'self'}")
 
-            # Target precomputes
-            if is_cross:
-                tgt_pre = (self.tgt_dfn_info, self.tgt_img, self.tgt_operators)
-            elif src_operators is not None:
-                tgt_pre = (src_dfn_info, src_img, src_operators)
+        for index, batch in pbar:
+            if opts.max_frames > 0 and frame_idx >= opts.max_frames:
+                break
+
+            # First frame or identity change: compute src setup once
+            if index == 0:
+                src_verts = batch.template[0]
+                src_faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
+                src_m = trimesh.Trimesh(
+                    vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy())
+                src_img = self.model.renderer.render_img(src_m).float().to(device)
+                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=str(device))
+                src_operators = self.model.get_mesh_operators(src_m)
+                if not is_cross:
+                    tgt_verts = src_verts
+                    tgt_faces_t = src_faces
+                    tgt_faces_np = src_faces.cpu().numpy()
+                    tgt_dfn_info = src_dfn_info
+                    tgt_img = src_img
+                    tgt_operators = src_operators
             else:
-                tgt_pre = None
+                if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                    src_verts = batch.template[0]
+                    src_faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
+                    src_m = trimesh.Trimesh(
+                        vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy())
+                    src_img = self.model.renderer.render_img(src_m).float().to(device)
+                    src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=str(device))
+                    src_operators = self.model.get_mesh_operators(src_m)
+                    if not is_cross:
+                        tgt_verts = src_verts
+                        tgt_faces_t = src_faces
+                        tgt_faces_np = src_faces.cpu().numpy()
+                        tgt_dfn_info = src_dfn_info
+                        tgt_img = src_img
+                        tgt_operators = src_operators
 
-            print(f"NFR inference: {id_name} ({T} frames)...")
-            pred_all = self.model.inference(
-                vertices=gt_all.to(device),
-                src_mesh=src_mesh,
-                tgt_mesh=tgt_mesh_nfr,
-                src_precompute=src_pre,
-                tgt_precompute=tgt_pre,
-            ).cpu()
+            # Per-frame encode + decode (exactly like vis_CBD.py)
+            inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0] if batch.faces.dim() == 3 else batch.faces)
+            self.model.model.update_precomputes(src_dfn_info)
+            pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
+            pred_outputs, _, _ = self.model.calc_new_mesh(
+                tgt_verts, tgt_faces_t, pred_exp, tgt_operators, tgt_dfn_info, tgt_img)
+
+            pred = pred_outputs.cpu()
+            gt_v = batch.vertices.cpu()
+            B = gt_v.shape[0]
+
+            # Metrics (self-retarget only)
+            if not is_cross:
+                if L_sp is None:
+                    L_sp = _build_cot_laplacian(src_verts.cpu().numpy(),
+                                                 src_faces.cpu().numpy() if isinstance(src_faces, torch.Tensor) else src_faces)
+                    _fnp = src_faces.cpu().numpy() if isinstance(src_faces, torch.Tensor) else src_faces
+                    edges = _build_edges(_fnp)
+                faces_t = torch.tensor(tgt_faces_np, dtype=torch.long)
+                for b in range(B):
+                    _gt = gt_v[b:b+1]
+                    _pr = pred[b:b+1]
+                    total["mse"] += F.mse_loss(_gt, _pr).item()
+                    if not opts.no_t_mask:
+                        t_mask = plateau_hat_points(src_verts.unsqueeze(0).cpu())
+                        inv_mask = 1.0 - t_mask
+                        total["mse_in"] += F.mse_loss(_gt * t_mask, _pr * t_mask).item()
+                        total["mse_out"] += F.mse_loss(_gt * inv_mask, _pr * inv_mask).item()
+                    pv_l2 = torch.sqrt(((_gt - _pr) ** 2).sum(dim=-1))
+                    total["l2"] += pv_l2.mean().item()
+                    total["l2_max_sum"] += pv_l2.max(dim=-1).values.mean().item()
+                    all_pv.append(pv_l2.numpy())
+                    total["lap"] += _laplacian_error(L_sp, _pr, _gt)
+                    total["norm_cos"] += _normal_consistency(_pr, _gt, faces_t)
+                    total["edge_dist"] += _edge_length_distortion(_pr, _gt, edges)
+                    n_frames += 1
+
+            # Visualization
+            if not opts.no_vis:
+                for b in range(B):
+                    f_cpu = torch.tensor(tgt_faces_np, dtype=torch.long)
+                    _src_f = src_faces.cpu() if isinstance(src_faces, torch.Tensor) else torch.tensor(src_faces)
+                    if is_cross:
+                        v_list = [gt_v[b], pred[b]]
+                        f_list = [_src_f, f_cpu]
+                    else:
+                        v_list = [gt_v[b], src_verts.cpu(), pred[b]]
+                        f_list = [_src_f] * 3
+                    plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
+                                    size=1, bg_black=False, mode='shade',
+                                    logdir=self.img_dir, name=f"{frame_idx:06d}", save=True)
+                    if opts.save_vert:
+                        np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"), pred[b].numpy())
+                    if opts.save_gt and not is_cross:
+                        np.save(os.path.join(self.gt_dir, f"{frame_idx:06d}.npy"), gt_v[b].numpy())
+                    frame_idx += 1
+
+            pbar.set_description(f"Eval NFR | mse: {total['mse']/max(n_frames,1):.5e}")
+
+        # Aggregate
+        if not is_cross and n_frames > 0:
+            inv = 1.0 / n_frames
+            all_pv = np.concatenate(all_pv, axis=0).flatten()
+            results = {
+                "model": "nfr", "data_selection": opts.data_selection,
+                "src_identity": opts.src_identity,
+                "MSE": total["mse"]*inv, "MSE_inner": total["mse_in"]*inv,
+                "MSE_outer": total["mse_out"]*inv, "L2_mean": total["l2"]*inv,
+                "L2_max_mean": total["l2_max_sum"]*inv,
+                "L2_median": float(np.median(all_pv)), "L2_p95": float(np.percentile(all_pv, 95)),
+                "L2_p99": float(np.percentile(all_pv, 99)), "L2_max": float(np.max(all_pv)),
+                "Laplacian_err": total["lap"]*inv, "Normal_cos_dist": total["norm_cos"]*inv,
+                "Edge_len_distortion": total["edge_dist"]*inv, "num_frames": n_frames,
+            }
+            with open(os.path.join(self.out_dir, "results.json"), 'w') as f:
+                json.dump(results, f, indent=4)
+            print(f"\nResults saved: {self.out_dir}/results.json")
+            for k, v in results.items():
+                if isinstance(v, float): print(f"  {k}: {v:.6e}")
+            np.save(os.path.join(self.out_dir, "per_vertex_l2.npy"), all_pv)
+        else:
+            print(f"\nCross-retarget done ({frame_idx} frames). Outputs: {self.out_dir}")
+        if opts.make_video and not opts.no_vis:
+            images_to_video(self.img_dir, os.path.join(self.out_dir, f"eval_nfr_{'cross' if is_cross else 'self'}.mp4"))
 
             if not is_cross:
                 if L_sp is None:
@@ -749,7 +847,7 @@ class CompEvaluator:
         # Currently supports MF self-retarget with precomputed data
         nfr_data_root = getattr(opts, 'nfr_data_root', None)
         if nfr_data_root is None:
-            print("[NFR] --nfr_data_root not set, using on-the-fly inference()")
+            print("[NFR] Using precomputed dfn_info/operators/img")
             return self._evaluate_nfr_onthefly()
 
         # Find identity dirs in test/
