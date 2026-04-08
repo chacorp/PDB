@@ -804,6 +804,111 @@ class HierarchicalLBS_FullPred(nn.Module):
         losses['L_bind_init'] = F.mse_loss(joint_pos, self.bind_pos_target.unsqueeze(0).expand_as(joint_pos))
         return losses
 
+    # ── Regional weight constraint ──────────────────────────────────────
+
+    # Target joint indices for constrained regions (eye + eyebrow)
+    _CONSTRAINED_JOINTS = [8, 10, 12, 13, 14, 15, 17, 18, 21, 22, 23, 24, 26, 27, 28]
+
+    def _build_regional_weight_constraints(self, alpha=0.5):
+        """Build per-joint min threshold and dominant vertex masks from Maya init.
+        Call once after model creation. Only uses ICT topology.
+        """
+        W_maya = self._init_targets.get('ict')
+        if W_maya is None:
+            print("[WARN] No ICT init target for regional weight constraints")
+            return
+
+        self._rwc = {}
+        for j in self._CONSTRAINED_JOINTS:
+            dom_mask = W_maya[:, j] > 0.01                          # [N_ict]
+            if dom_mask.sum() == 0:
+                continue
+            mean_w = W_maya[dom_mask, j].mean().item()
+            threshold = alpha * mean_w
+            self._rwc[j] = {
+                'dom_verts': dom_mask,                               # [N_ict] bool
+                'threshold': threshold,
+                'mean_maya': mean_w,
+            }
+        print(f"[HLBS] Regional weight constraints built for {len(self._rwc)} joints "
+              f"(alpha={alpha})")
+
+    def regional_weight_constraint_loss(self, source_vert, source_normal=None,
+                                         mesh_data=None, perm_idx=None):
+        """
+        Regional weight constraint loss for maintaining anatomically
+        meaningful skinning weights on specific joints (eye, eyebrow).
+
+        Two components:
+          1) L_rwc_init: MSE to Maya W on constrained joint-vertex pairs
+          2) L_rwc_min:  soft penalty when W drops below per-joint threshold
+
+        Only applies to ICT batches (mesh_data == 5).
+        """
+        losses = {}
+
+        if not hasattr(self, '_rwc') or not self._rwc:
+            return losses
+
+        # Only apply to ICT topology
+        if mesh_data is not None:
+            md = mesh_data.item() if isinstance(mesh_data, torch.Tensor) else mesh_data
+            if self._mesh_data_to_topo.get(md) != 'ict':
+                return losses
+
+        source_feat = torch.cat([source_vert, source_normal], dim=-1) if source_normal is not None else source_vert
+        W, _ = self._get_skinning_weights(source_feat)               # [B, N, J]
+
+        W_maya = self._init_targets.get('ict')
+        if W_maya is None:
+            return losses
+
+        N = source_vert.shape[1]
+
+        # Slice W_maya to match current vertex count (region select)
+        if perm_idx is not None:
+            W_maya_sliced = W_maya[perm_idx, :]
+        elif W_maya.shape[0] > N:
+            W_maya_sliced = W_maya[:N, :]
+        else:
+            W_maya_sliced = W_maya
+
+        init_loss = 0.0
+        min_w_loss = 0.0
+        count = 0
+
+        for j, info in self._rwc.items():
+            dom = info['dom_verts']
+            thr = info['threshold']
+
+            # Slice dominant mask to match current vertex count
+            if perm_idx is not None:
+                dom_sliced = dom[perm_idx]
+            elif dom.shape[0] > N:
+                dom_sliced = dom[:N]
+            else:
+                dom_sliced = dom
+
+            if dom_sliced.sum() == 0:
+                continue
+
+            # 1) Init supervision on this joint's dominant vertices
+            W_pred_j = W[:, dom_sliced, j]                          # [B, n_dom]
+            W_tgt_j  = W_maya_sliced[dom_sliced, j].unsqueeze(0).expand_as(W_pred_j)
+            init_loss = init_loss + F.mse_loss(W_pred_j, W_tgt_j)
+
+            # 2) Min weight penalty
+            deficit = torch.relu(thr - W_pred_j)                    # [B, n_dom]
+            min_w_loss = min_w_loss + (deficit ** 2).mean()
+
+            count += 1
+
+        if count > 0:
+            losses['L_rwc_init'] = init_loss / count
+            losses['L_rwc_min'] = min_w_loss / count
+
+        return losses
+
     # ── Regularization ───────────────────────────────────────────────────
 
     def reg_loss(self, source_feat, edges=None):

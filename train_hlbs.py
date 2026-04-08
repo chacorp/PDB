@@ -101,6 +101,12 @@ def Options():
     parser.add_argument("--lambda_init", type=float, default=1.0,
                         help='Init supervision loss weight')
 
+    # regional weight constraint
+    parser.add_argument("--lambda_rwc", type=float, default=0.0,
+                        help='Regional weight constraint loss weight (0=disabled)')
+    parser.add_argument("--rwc_alpha", type=float, default=0.5,
+                        help='Min threshold = alpha * mean(Maya weight) per constrained joint')
+
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
                         help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
@@ -863,6 +869,10 @@ class HLBSTrainer:
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
+        # Build regional weight constraints
+        if opts.lambda_rwc > 0:
+            self.model._build_regional_weight_constraints(alpha=opts.rwc_alpha)
+
         # Resume from checkpoint if specified
         if opts.ckpt and opts.continue_ckpt:
             ckpt_path = os.path.join(opts.ckpt, f"model_hlbs_{opts.start_epoch:03d}.pth")
@@ -1072,6 +1082,15 @@ class HLBSTrainer:
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
+                # ── Regional weight constraint ──────────────────────────
+                if opts.lambda_rwc > 0:
+                    _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
+                    _perm = getattr(batch, 'perm_idx', None)
+                    rwc_losses = self.model.regional_weight_constraint_loss(
+                        src_v, source_normal=src_n, mesh_data=_md, perm_idx=_perm)
+                    for k, v in rwc_losses.items():
+                        loss_dict[k] = v
+
                 # ── Total loss ───────────────────────────────────────────
                 loss_lambda = {
                     "recon-lbs": opts.lambda_vert,
@@ -1079,6 +1098,8 @@ class HLBSTrainer:
                     "recon-normal": opts.lambda_normal,
                     "L_W_init": lambda_init,
                     "L_bind_init": lambda_init,
+                    "L_rwc_init": opts.lambda_rwc,
+                    "L_rwc_min": opts.lambda_rwc,
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
                 loss.backward()
