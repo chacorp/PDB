@@ -588,6 +588,133 @@ class CompEvaluator:
         return torch.cat(pred_outputs)
 
     @torch.no_grad()
+    def _evaluate_nfr_onthefly(self):
+        """NFR eval: on-the-fly inference() — collect all frames, call once per identity."""
+        opts = self.opts
+        device = self.device
+        is_cross = opts.cross_retarget and self.tgt_mesh is not None
+
+        dataset = EvalDataset(
+            data_name=opts.data_selection,
+            toggle=opts.data_toggle,
+            data_basedir=opts.data_basedir,
+        )
+        dataloader = torch.utils.data.DataLoader(
+            dataset, batch_size=1,
+            collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
+            num_workers=0,
+        )
+
+        # Collect frames grouped by identity
+        print("Collecting frames...")
+        id_frames = {}
+        _total = 0
+        for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), ncols=120, desc="Loading"):
+            if opts.max_frames > 0 and _total >= opts.max_frames:
+                break
+            batch = batch.to('cpu')
+            src_id = self._get_src_id_name(dataset, idx) or 'default'
+            if src_id not in id_frames:
+                id_frames[src_id] = {
+                    'gt_v': [],
+                    'template': batch.template[0],
+                    'faces': batch.faces[0] if batch.faces.dim() == 3 else batch.faces,
+                }
+            id_frames[src_id]['gt_v'].append(batch.vertices[0])
+            _total += 1
+
+        # Run inference once per identity
+        L_sp, edges = None, None
+        total = {"mse": 0.0, "mse_in": 0.0, "mse_out": 0.0, "l2": 0.0, "lap": 0.0,
+                 "norm_cos": 0.0, "edge_dist": 0.0, "l2_max_sum": 0.0}
+        all_pv = []
+        n_frames, frame_idx = 0, 0
+
+        for id_name, data in id_frames.items():
+            gt_all = torch.stack(data['gt_v'], dim=0)
+            template = data['template']
+            faces = data['faces']
+            faces_np = faces.numpy()
+            T = gt_all.shape[0]
+
+            src_mesh = self._build_src_mesh(template.numpy(), faces_np)
+            tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
+            tgt_faces_np = self.tgt_faces if is_cross else faces_np
+
+            print(f"NFR on-the-fly inference: {id_name} ({T} frames)...")
+            pred_all = self.model.inference(
+                vertices=gt_all.to(device),
+                src_mesh=src_mesh,
+                tgt_mesh=tgt_mesh_nfr,
+            ).cpu()
+
+            if not is_cross:
+                if L_sp is None:
+                    L_sp = _build_cot_laplacian(template.numpy(), faces_np)
+                    edges = _build_edges(faces_np)
+                faces_t = torch.tensor(faces_np, dtype=torch.long)
+                for t in range(T):
+                    gt_v = gt_all[t:t+1]
+                    pred = pred_all[t:t+1]
+                    total["mse"] += F.mse_loss(gt_v, pred).item()
+                    if not opts.no_t_mask:
+                        t_mask = plateau_hat_points(template.unsqueeze(0))
+                        inv_mask = 1.0 - t_mask
+                        total["mse_in"] += F.mse_loss(gt_v * t_mask, pred * t_mask).item()
+                        total["mse_out"] += F.mse_loss(gt_v * inv_mask, pred * inv_mask).item()
+                    pv_l2 = torch.sqrt(((gt_v - pred) ** 2).sum(dim=-1))
+                    total["l2"] += pv_l2.mean().item()
+                    total["l2_max_sum"] += pv_l2.max(dim=-1).values.mean().item()
+                    all_pv.append(pv_l2.numpy())
+                    total["lap"] += _laplacian_error(L_sp, pred, gt_v)
+                    total["norm_cos"] += _normal_consistency(pred, gt_v, faces_t)
+                    total["edge_dist"] += _edge_length_distortion(pred, gt_v, edges)
+                    n_frames += 1
+
+            if not opts.no_vis:
+                for t in range(T):
+                    f_cpu = torch.tensor(tgt_faces_np, dtype=torch.long)
+                    if is_cross:
+                        v_list = [gt_all[t], pred_all[t]]
+                        f_list = [torch.tensor(faces_np, dtype=torch.long), f_cpu]
+                    else:
+                        v_list = [gt_all[t], template, pred_all[t]]
+                        f_list = [torch.tensor(faces_np, dtype=torch.long)] * 3
+                    plot_image_array(v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
+                                    size=1, bg_black=False, mode='shade',
+                                    logdir=self.img_dir, name=f"{frame_idx:06d}", save=True)
+                    if opts.save_vert:
+                        np.save(os.path.join(self.vert_dir, f"{frame_idx:06d}.npy"), pred_all[t].numpy())
+                    if opts.save_gt and not is_cross:
+                        np.save(os.path.join(self.gt_dir, f"{frame_idx:06d}.npy"), gt_all[t].numpy())
+                    frame_idx += 1
+
+        if not is_cross and n_frames > 0:
+            inv = 1.0 / n_frames
+            all_pv = np.concatenate(all_pv, axis=0).flatten()
+            results = {
+                "model": "nfr", "data_selection": opts.data_selection,
+                "src_identity": opts.src_identity,
+                "MSE": total["mse"]*inv, "MSE_inner": total["mse_in"]*inv,
+                "MSE_outer": total["mse_out"]*inv, "L2_mean": total["l2"]*inv,
+                "L2_max_mean": total["l2_max_sum"]*inv,
+                "L2_median": float(np.median(all_pv)), "L2_p95": float(np.percentile(all_pv, 95)),
+                "L2_p99": float(np.percentile(all_pv, 99)), "L2_max": float(np.max(all_pv)),
+                "Laplacian_err": total["lap"]*inv, "Normal_cos_dist": total["norm_cos"]*inv,
+                "Edge_len_distortion": total["edge_dist"]*inv, "num_frames": n_frames,
+            }
+            with open(os.path.join(self.out_dir, "results.json"), 'w') as f:
+                json.dump(results, f, indent=4)
+            print(f"\nResults saved: {self.out_dir}/results.json")
+            for k, v in results.items():
+                if isinstance(v, float): print(f"  {k}: {v:.6e}")
+            np.save(os.path.join(self.out_dir, "per_vertex_l2.npy"), all_pv)
+        else:
+            print(f"\nCross-retarget done ({frame_idx} frames). Outputs: {self.out_dir}")
+        if opts.make_video and not opts.no_vis:
+            images_to_video(self.img_dir, os.path.join(self.out_dir, f"eval_nfr_{'cross' if is_cross else 'self'}.mp4"))
+
+    @torch.no_grad()
     def _evaluate_nfr(self):
         """NFR evaluation using precomputed data from NFR_pytorch/data/."""
         opts = self.opts
@@ -608,7 +735,8 @@ class CompEvaluator:
                     nfr_data_root = _candidate
                     break
         if nfr_data_root is None:
-            raise FileNotFoundError("NFR precomputed data not found. Set --nfr_data_root.")
+            print("[NFR] No precomputed data found, using on-the-fly inference()")
+            return self._evaluate_nfr_onthefly()
 
         # Find identity dirs in test/
         test_dir = os.path.join(nfr_data_root, 'test')
