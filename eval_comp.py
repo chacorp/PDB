@@ -726,16 +726,7 @@ class CompEvaluator:
         # Currently supports MF self-retarget with precomputed data
         nfr_data_root = getattr(opts, 'nfr_data_root', None)
         if nfr_data_root is None:
-            # Auto-detect: try NFR_pytorch repo path, then NeuralFacialAnimation/data
-            for _candidate in [
-                '/source/inyup/NFR_pytorch/data/MF_all_v5',
-                'data/MF_all_v5',
-            ]:
-                if os.path.isdir(_candidate):
-                    nfr_data_root = _candidate
-                    break
-        if nfr_data_root is None:
-            print("[NFR] No precomputed data found, using on-the-fly inference()")
+            print("[NFR] --nfr_data_root not set, using on-the-fly inference()")
             return self._evaluate_nfr_onthefly()
 
         # Find identity dirs in test/
