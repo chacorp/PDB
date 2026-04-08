@@ -154,6 +154,8 @@ def Options():
 
     parser.add_argument("--max_frames", type=int, default=-1,
                         help='Max frames to evaluate (-1 = all)')
+    parser.add_argument("--nfr_data_root", type=str, default=None,
+                        help='NFR precomputed data root (e.g. /source/inyup/NFR_pytorch/data/MF_all_v5)')
     parser.add_argument("--device", type=str, default="cuda:0")
 
     return parser.parse_args()
@@ -587,41 +589,58 @@ class CompEvaluator:
 
     @torch.no_grad()
     def _evaluate_nfr(self):
-        """NFR evaluation: collect all frames per identity, run inference() once."""
+        """NFR evaluation using precomputed data from NFR_pytorch/data/."""
         opts = self.opts
-
-        dataset = EvalDataset(
-            data_name=opts.data_selection,
-            toggle=opts.data_toggle,
-            data_basedir=opts.data_basedir,
-        )
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=1,
-            collate_fn=partial(CBD_collate_wrapper_eval, device='cpu'),
-            num_workers=0,
-        )
+        device = self.device
 
         is_cross = opts.cross_retarget and self.tgt_mesh is not None
 
-        # Step 1: collect all frames, grouped by identity
-        print("Collecting frames...")
-        id_frames = {}  # id_name -> { 'gt_v': [...], 'src_v': ..., 'faces': ... }
-        _total_collected = 0
-        for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader), ncols=120, desc="Loading"):
-            if opts.max_frames > 0 and _total_collected >= opts.max_frames:
-                break
-            batch = batch.to('cpu')
-            src_id_name = self._get_src_id_name(dataset, idx) or 'default'
-            if src_id_name not in id_frames:
-                id_frames[src_id_name] = {
-                    'gt_v': [],
-                    'template': batch.template[0],  # [V, 3] same for all frames of this id
-                    'faces': batch.faces[0] if batch.faces.dim() == 3 else batch.faces,
-                }
-            id_frames[src_id_name]['gt_v'].append(batch.vertices[0])  # [V, 3]
-            _total_collected += 1
+        # ── Load NFR precomputed data ────────────────────────────────
+        # Currently supports MF self-retarget with precomputed data
+        nfr_data_root = getattr(opts, 'nfr_data_root', None)
+        if nfr_data_root is None:
+            # Auto-detect: try NFR_pytorch repo path, then NeuralFacialAnimation/data
+            for _candidate in [
+                '/source/inyup/NFR_pytorch/data/MF_all_v5',
+                'data/MF_all_v5',
+            ]:
+                if os.path.isdir(_candidate):
+                    nfr_data_root = _candidate
+                    break
+        if nfr_data_root is None:
+            raise FileNotFoundError("NFR precomputed data not found. Set --nfr_data_root.")
 
-        # Step 2: run inference once per identity
+        # Find identity dirs in test/
+        test_dir = os.path.join(nfr_data_root, 'test')
+        pm_files = sorted(glob.glob(os.path.join(test_dir, '*_processed_matrix.pkl')))
+        if not pm_files:
+            raise FileNotFoundError(f"No processed_matrix.pkl in {test_dir}")
+
+        # Load neutral mesh (standardized)
+        neutral_objs = sorted(glob.glob(os.path.join(nfr_data_root, '*_neutral.obj')))
+        if not neutral_objs:
+            raise FileNotFoundError(f"No neutral.obj in {nfr_data_root}")
+        neutral_mesh = trimesh.load(neutral_objs[0], process=False)
+        neutral_verts = np.array(neutral_mesh.vertices, dtype=np.float32)
+        neutral_faces = np.array(neutral_mesh.faces, dtype=np.int32)
+        print(f"NFR neutral mesh: {neutral_verts.shape[0]} verts, {neutral_faces.shape[0]} faces")
+
+        # Load neutral image
+        neutral_img_path = neutral_objs[0].replace('_neutral.obj', '_neutral_img.npy')
+        neutral_img = torch.tensor(np.load(neutral_img_path)).float().to(device)
+        if neutral_img.dim() == 3:
+            neutral_img = neutral_img.unsqueeze(0)  # [1, H, W, 3]
+
+        # Compute mesh operators once from neutral mesh
+        print("Computing mesh operators from neutral mesh...")
+        from utils.mesh_utils import get_mesh_operators
+        src_mesh = trimesh.Trimesh(vertices=neutral_verts, faces=neutral_faces, process=False)
+        tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
+        tgt_faces_np = self.tgt_faces if is_cross else neutral_faces
+        operators = get_mesh_operators(tgt_mesh_nfr)
+        print("Mesh operators ready.")
+
+        # ── Process each identity ────────────────────────────────────
         L_sp = None
         edges = None
         total = {
@@ -633,23 +652,78 @@ class CompEvaluator:
         n_frames = 0
         frame_idx = 0
 
-        for id_name, data in id_frames.items():
-            gt_all = torch.stack(data['gt_v'], dim=0)  # [T, V, 3]
-            template = data['template']                  # [V, 3]
-            faces = data['faces']
-            faces_np = faces.numpy()
-            T = gt_all.shape[0]
+        for pm_path in pm_files:
+            id_name = os.path.basename(pm_path).replace('_processed_matrix.pkl', '')
+            print(f"NFR inference: {id_name}...")
 
-            src_mesh = self._build_src_mesh(template.numpy(), faces_np)
-            tgt_mesh_nfr = self.tgt_mesh if is_cross else src_mesh
-            tgt_faces_np = self.tgt_faces if is_cross else faces_np
+            # Load precomputed data
+            pm = pickle.load(open(pm_path, 'rb'))
+            gt_verts = torch.tensor(pm['verts']).float()   # [T, V, 3]
+            gt_faces = pm['face']                           # [F, 3]
+            T = gt_verts.shape[0]
+            if opts.max_frames > 0:
+                T = min(T, opts.max_frames)
+                gt_verts = gt_verts[:T]
 
-            print(f"NFR inference: {id_name} ({T} frames)...")
-            pred_all = self.model.inference(
-                vertices=gt_all.to(self.device),
-                src_mesh=src_mesh,
-                tgt_mesh=tgt_mesh_nfr,
-            ).cpu()  # [T, V_tgt, 3]
+            # Load per-frame dfn_info
+            dfn_path = os.path.join(test_dir, f'{id_name}_dfn_info.pt')
+            dfn_data = torch.load(dfn_path, weights_only=False)
+
+            # Load per-frame images
+            imgs_path = os.path.join(test_dir, f'{id_name}_imgs.npy')
+            per_frame_imgs = np.load(imgs_path)  # [T, 256, 256, 3]
+
+            # NFR model internals
+            nfr_model = self.model.model  # latent_space model
+            normalizer = self.model.normalizer
+            myfunc = self.model.myfunc
+            lu_solver, idxs, vals, rhs = operators
+
+            # Encode + decode per frame using precomputed dfn_info + img
+            pred_all = []
+            tgt_verts_t = torch.tensor(neutral_verts).float().to(device)
+            tgt_faces_t = torch.tensor(neutral_faces).long().to(device)
+
+            pbar = tqdm(range(T), ncols=120, desc=f"  {id_name}")
+            for t in pbar:
+                # Build per-frame dfn_info
+                frame_dfn = [
+                    dfn_data['mass'][t].to(device).float(),
+                    torch.sparse_coo_tensor(
+                        dfn_data['L_idx'], dfn_data['L_val'][t],
+                        size=(gt_verts.shape[1], gt_verts.shape[1])
+                    ).to(device).float(),
+                    dfn_data['evals'][t].to(device).float(),
+                    dfn_data['evecs'][t].to(device).float(),
+                ]
+                # Add gradX, gradY if available
+                if 'gradX' in dfn_data:
+                    frame_dfn.append(dfn_data['gradX'][t].to(device).float())
+                    frame_dfn.append(dfn_data['gradY'][t].to(device).float())
+                frame_dfn.append(torch.tensor(gt_faces).long())
+
+                # Per-frame image
+                img_t = torch.tensor(per_frame_imgs[t]).float().unsqueeze(0).to(device)
+
+                # Per-frame expressed vertices
+                v_t = gt_verts[t].to(device)
+                v_normal = torch.tensor(
+                    igl.per_vertex_normals(v_t.cpu().numpy(), gt_faces)
+                ).float().to(device)
+                inputs_v = torch.cat([v_t, v_normal], dim=-1).unsqueeze(0)  # [1, V, 6]
+
+                # Encode expression
+                nfr_model.update_precomputes(frame_dfn)
+                pred_exp = nfr_model.encode(inputs_v, img_t.to(device), N_F=gt_faces.shape[0])
+
+                # Decode using calc_new_mesh
+                tmp, _, _ = self.model.calc_new_mesh(
+                    tgt_verts_t, tgt_faces_t, pred_exp,
+                    operators, frame_dfn, neutral_img)
+                pred_all.append(tmp.cpu())
+
+            pred_all = torch.cat(pred_all, dim=0)  # [T, V, 3]
+            gt_all = gt_verts[:T]
 
             # Step 3: compute metrics per frame
             if not is_cross:
