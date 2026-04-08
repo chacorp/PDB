@@ -41,7 +41,7 @@ def calculate_jacobians(neutral_mesh, vertices):
 
 
 class Transfer:
-    def __init__(self, source: Mesh, target: Mesh, project: bool=False, area: bool=True, device='cuda:0', use_chol=False, eps=1e-12):
+    def __init__(self, source: Mesh, target: Mesh, project: bool=False, area: bool=True, device='cuda:0', use_chol=False):
         self.source = source
         self.target = target
         self.do_project = project
@@ -59,16 +59,8 @@ class Transfer:
         if area:
            
             self.ATareaA = (self.A.T @ self.area @ self.A).tocsc()
-            eps_eye = sparse.diags((eps*torch.ones(self.ATareaA.shape[0])).tolist())
-            regularized_ATareaA = self.ATareaA + eps_eye
-            self.lu = sparse_lu(regularized_ATareaA)  # kept for CPU fallback / reference
-
-            # Build GPU solver via cupy's own splu (cupy_SuperLU wrapping scipy LU doesn't work)
-            from cupyx.scipy.sparse import csc_matrix as cupy_csc_matrix
-            from cupyx.scipy.sparse.linalg import splu as cupy_splu
-            with cupy.cuda.Device(self.device):
-                cupy_reg = cupy_csc_matrix(regularized_ATareaA.astype(np.float32))
-                self.solver = cupy_splu(cupy_reg)
+            self.lu = sparse_lu(self.ATareaA)
+            self.solver = cupy_SuperLU(self.lu)
 
 
             self.ATarea = (self.A.T @ self.area).T # Later transpose back
