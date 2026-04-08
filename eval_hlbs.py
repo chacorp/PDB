@@ -393,9 +393,24 @@ class HLBSEvaluator:
         import pickle
 
         if dataset_name == 'ict':
-            mesh = trimesh.load('utils/ict/ict_aligned_mean.obj', process=False)
-            return np.array(mesh.vertices, dtype=np.float32), \
-                   np.array(mesh.faces, dtype=np.int32), 'ict_mean'
+            from utils.remesh_utils import ICT_face_model
+            ict_model = ICT_face_model()
+            _test_pt = 'ict_face_pt/ict_id_vecs_test.pt'
+            _train_npy = 'data/ICT_live_100/iden_vecs.npy'
+            if os.path.exists(_test_pt):
+                iden_vecs = torch.load(_test_pt, weights_only=False).numpy()
+            elif os.path.exists(_train_npy):
+                print(f"[WARN] ict_id_vecs_test.pt not found, falling back to train iden_vecs")
+                iden_vecs = np.load(_train_npy)
+            else:
+                raise FileNotFoundError("No ICT identity vectors found")
+            if identity_idx >= len(iden_vecs):
+                raise ValueError(f"tgt_identity {identity_idx} out of range for ICT (max: {len(iden_vecs)-1})")
+            id_coeff = iden_vecs[identity_idx]
+            id_disps = ict_model.get_id_disp(id_coeff).squeeze()
+            verts = (ict_model.neutral_verts + id_disps).astype(np.float32)
+            faces = ict_model.faces.astype(np.int32)
+            return verts, faces, f'ict_{identity_idx:03d}'
 
         # Repo-local pkl files (fallback when data_basedir doesn't have them)
         local_pkl_map = {
