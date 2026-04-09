@@ -646,7 +646,7 @@ class HLBSTrainer:
                 if opts.lambda_neu > 0:
                     delta_zero   = torch.zeros_like(src_v)
                     neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n)
+                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n, nfs_feat=_nfs_feat if hasattr(self, '_nfs_feat_cache') else None)
                     if opts.no_t_mask:
                         loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
                     else:
@@ -1123,7 +1123,7 @@ class HLBSTrainer:
                 if opts.lambda_neu > 0:
                     delta_zero = torch.zeros_like(src_v)
                     neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n)
+                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n, nfs_feat=_nfs_feat if hasattr(self, '_nfs_feat_cache') else None)
                     if opts.no_t_mask:
                         loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
                     else:
@@ -1252,10 +1252,27 @@ class HLBSTrainer:
                     gt_v   = batch.vertices
                     gt_n   = batch.vertices_normal
 
+                    # Get NFS features for valid batch
+                    _nfs_feat = None
+                    if opts.nfs_feat_dir and self._nfs_feat_cache:
+                        B_cur = src_v.shape[0]
+                        N_cur = src_v.shape[1]
+                        feats = []
+                        for b in range(B_cur):
+                            id_key = batch.id_name[b]
+                            if id_key in self._nfs_feat_cache:
+                                f = self._nfs_feat_cache[id_key]
+                                if f.shape[0] > N_cur:
+                                    f = f[:N_cur]
+                                feats.append(f)
+                            else:
+                                feats.append(torch.zeros(N_cur, 256))
+                        _nfs_feat = torch.stack(feats, dim=0).to(self.device)
+
                     delta     = gt_v - src_v
                     src_in    = torch.cat([src_v, src_n], dim=-1)
                     deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
-                    pred_lbs  = self.model(src_v, deform_in, source_normal=src_n)
+                    pred_lbs  = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
 
                     target_v_val = gt_v
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * opts.lambda_vert
@@ -1265,7 +1282,7 @@ class HLBSTrainer:
                     if opts.lambda_neu > 0:
                         delta_zero = torch.zeros_like(src_v)
                         neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                        pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n)
+                        pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
                         val_neu = F.mse_loss(src_v, pred_neutral).item() * opts.lambda_neu
                         running_val["recon-neu"] += val_neu
                         running_val["total"]     += val_neu
