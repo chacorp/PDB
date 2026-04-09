@@ -86,7 +86,7 @@ def main():
 
     model = NFS(opts=opts).to(device)
     ckpt_path = os.path.join(args.nfs_ckpt, "model_best.pth")
-    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=False))
+    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=False), strict=False)
     model.eval()
     print(f"Loaded NFS: {ckpt_path}")
 
