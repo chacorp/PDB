@@ -73,6 +73,44 @@ python eval_hlbs.py --ckpt $CKPT $COMMON \
     --cross_retarget --tgt_dataset coma --tgt_identity 0 \
     --full_prediction
 
+# ── Self-retarget on other source datasets ──────────────────────────────────
+
+# Self-retarget on VOCA
+python eval_hlbs.py --ckpt $CKPT $COMMON \
+    --data_selection voca \
+    --full_prediction
+
+# Self-retarget on BIWI
+python eval_hlbs.py --ckpt $CKPT $COMMON \
+    --data_selection biwi \
+    --full_prediction
+
+# Self-retarget on COMA
+python eval_hlbs.py --ckpt $CKPT $COMMON \
+    --data_selection coma \
+    --full_prediction
+
+# ── Cross-retarget: COMA source ────────────────────────────────────────────
+
+# Cross-retarget: COMA → ICT id2
+python eval_hlbs.py --ckpt $CKPT $COMMON \
+    --data_selection coma \
+    --cross_retarget --tgt_dataset ict --tgt_identity 2 \
+    --full_prediction
+
+# Cross-retarget: COMA → MF id12 (test)
+python eval_hlbs.py --ckpt $CKPT $COMMON \
+    --data_selection coma \
+    --cross_retarget --tgt_dataset mf --tgt_identity 12 \
+    --full_prediction
+
+# ── Identity index reference ────────────────────────────────────────────────
+# MF:   0-10=train, 11=val, 12=test(002645310)
+# VOCA: 0-11 (test: FaceTalk_170809_00138_TA, FaceTalk_170731_00024_TA)
+# BIWI: 0-13 (F1-F8, M1-M6)
+# COMA: 0-11 (same templates as VOCA)
+# ICT:  0-19 (test identities from ict_id_vecs_test.pt)
+
 # ── Delta mode example ──────────────────────────────────────────────────────
 
 # Delta mode self-retarget (no --full_prediction, add --smooth_delta_W if used)

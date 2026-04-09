@@ -61,6 +61,60 @@ python eval_comp_v2.py --ckpt ./ckpts_comparison/NFS-best \
     --src_data 6 --src_id 2 --tgt_data 6 --tgt_id 2 --exp_num 0 \
     --make_video --max_frames 200
 
+# ── NFR cross-retarget to other datasets ────────────────────────────────────
+
+# NFR cross: mf_ROM → VOCA id0
+python eval_comp_v2.py --NFR \
+    --src_data 4 --src_id 12 --tgt_data 0 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# NFR cross: mf_ROM → BIWI id0
+python eval_comp_v2.py --NFR \
+    --src_data 4 --src_id 12 --tgt_data 1 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# NFR cross: mf_ROM → COMA id0
+python eval_comp_v2.py --NFR \
+    --src_data 4 --src_id 12 --tgt_data 3 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# ── NFS cross-retarget to other datasets ────────────────────────────────────
+
+# NFS cross: mf_ROM → VOCA id0
+python eval_comp_v2.py --ckpt ./ckpts_comparison/NFS-best \
+    --src_data 4 --src_id 12 --tgt_data 0 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# NFS cross: mf_ROM → BIWI id0
+python eval_comp_v2.py --ckpt ./ckpts_comparison/NFS-best \
+    --src_data 4 --src_id 12 --tgt_data 1 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# NFS cross: mf_ROM → COMA id0
+python eval_comp_v2.py --ckpt ./ckpts_comparison/NFS-best \
+    --src_data 4 --src_id 12 --tgt_data 3 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# ── Source from COMA (data=3) ───────────────────────────────────────────────
+
+# NFR self-retarget on COMA (all identities in test)
+python eval_comp_v2.py --NFR \
+    --src_data 3 --src_id 0 --tgt_data 3 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# NFS self-retarget on COMA
+python eval_comp_v2.py --ckpt ./ckpts_comparison/NFS-best \
+    --src_data 3 --src_id 0 --tgt_data 3 --tgt_id 0 \
+    --make_video --max_frames 200
+
+# ── Identity index reference ────────────────────────────────────────────────
+# VOCA (0-11):  FaceTalk_170904_00128_TA, FaceTalk_170811_03275_TA, ...
+#   test: FaceTalk_170809_00138_TA(id0 in test), FaceTalk_170731_00024_TA(id1)
+# BIWI (0-13):  F1-F8 (female), M1-M6 (male)
+# COMA (0-11):  Same as VOCA templates
+# MF (0-12):    0-10=train, 11=val, 12=test
+# ICT (0-19):   Test identities from ict_id_vecs_test.pt
+
 # ── Options ─────────────────────────────────────────────────────────────────
 # --save_vert       Save predicted vertices as .npy
 # --save_gt         Save GT vertices as .npy (self-retarget only)
