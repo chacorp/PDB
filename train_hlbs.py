@@ -1145,7 +1145,7 @@ class HLBSTrainer:
                 # ── Phase 1: init supervision ────────────────────────────
                 if lambda_init > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
-                    init_losses = self.model.init_loss(src_v, source_normal=src_n, mesh_data=_md)
+                    init_losses = self.model.init_loss(src_v, source_normal=src_n, mesh_data=_md, nfs_feat=_nfs_feat)
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
@@ -1154,7 +1154,7 @@ class HLBSTrainer:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
                     _perm = getattr(batch, 'perm_idx', None)
                     rwc_losses = self.model.regional_weight_constraint_loss(
-                        src_v, source_normal=src_n, mesh_data=_md, perm_idx=_perm)
+                        src_v, source_normal=src_n, mesh_data=_md, perm_idx=_perm, nfs_feat=_nfs_feat)
                     for k, v in rwc_losses.items():
                         loss_dict[k] = v
 

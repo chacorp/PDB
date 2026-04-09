@@ -830,15 +830,18 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Phase 1 init supervision ─────────────────────────────────────────
 
-    def init_loss(self, source_vert, source_normal=None, mesh_data=None, perm_idx=None):
+    def init_loss(self, source_vert, source_normal=None, mesh_data=None, perm_idx=None, nfs_feat=None):
         """
         Maya init supervision loss for Phase 1 warm-up.
         If mesh_data is provided, uses per-topology W target.
         If perm_idx is provided, slices W target accordingly.
         """
-        source_feat = torch.cat([source_vert, source_normal], dim=-1)
-        W, _ = self._get_skinning_weights(source_feat)
-        _, joint_pos = self._get_bind_pose(source_feat)
+        if nfs_feat is not None:
+            feat = nfs_feat
+        else:
+            feat = torch.cat([source_vert, source_normal], dim=-1)
+        W, _ = self._get_skinning_weights(feat)
+        _, joint_pos = self._get_bind_pose(feat)
         losses = {}
 
         # Find appropriate W target
@@ -920,7 +923,7 @@ class HierarchicalLBS_FullPred(nn.Module):
                   f"maya_mean={info['mean_maya']:.4f}")
 
     def regional_weight_constraint_loss(self, source_vert, source_normal=None,
-                                         mesh_data=None, perm_idx=None):
+                                         mesh_data=None, perm_idx=None, nfs_feat=None):
         """
         Regional weight constraint loss for maintaining anatomically
         meaningful skinning weights on specific joints (eye, eyebrow).
@@ -942,8 +945,11 @@ class HierarchicalLBS_FullPred(nn.Module):
             if self._mesh_data_to_topo.get(md) != 'ict':
                 return losses
 
-        source_feat = torch.cat([source_vert, source_normal], dim=-1) if source_normal is not None else source_vert
-        W, _ = self._get_skinning_weights(source_feat)               # [B, N, J]
+        if nfs_feat is not None:
+            feat = nfs_feat
+        else:
+            feat = torch.cat([source_vert, source_normal], dim=-1) if source_normal is not None else source_vert
+        W, _ = self._get_skinning_weights(feat)               # [B, N, J]
 
         W_maya = self._init_targets.get('ict')
         if W_maya is None:
