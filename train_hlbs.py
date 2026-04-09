@@ -1050,7 +1050,7 @@ class HLBSTrainer:
                         _f = batch.faces[0].cpu().numpy() if batch.faces.dim() == 3 else batch.faces.cpu().numpy()
                         _v = src_v[0].cpu().numpy()
                         _mesh = _tm.Trimesh(vertices=_v, faces=_f, process=False)
-                        _dfn = get_dfn_info(_mesh, map_location=self.device)
+                        _dfn = get_dfn_info(_mesh, cache_dir='dfn_cache', map_location=self.device)
                         self.model.update_dfn_precomputes(_dfn)
                         self._dfn_cached_N = N_cur
 
