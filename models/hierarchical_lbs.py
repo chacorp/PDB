@@ -506,13 +506,17 @@ class HierarchicalLBS_FullPred(nn.Module):
         use_joint_trans: bool = False,
         smooth_W: int = 0,
         smooth_W_alpha: float = 0.5,
-        use_dfn_skin: bool = False,
+        dfn_skin: bool = False,
+        dfn_bind: bool = False,
+        dfn_exp: bool = False,
     ):
         super().__init__()
 
         self.device_str = device
         self.use_joint_trans = use_joint_trans
-        self.use_dfn_skin = use_dfn_skin
+        self.dfn_skin = dfn_skin
+        self.dfn_bind = dfn_bind
+        self.dfn_exp = dfn_exp
         self.smooth_W_iters = smooth_W
         self.smooth_W_alpha = smooth_W_alpha
         self._mesh_edges = None
@@ -554,16 +558,11 @@ class HierarchicalLBS_FullPred(nn.Module):
         }
 
         # ── Full prediction networks ─────────────────────────────────────
-        if use_dfn_skin:
+        if dfn_skin:
             from models.encoder import BaseDiffusionNetEncoder
             self.skin_weight_net = BaseDiffusionNetEncoder(
                 in_shape=6, out_shape=J, hid_shape=hid_dim,
                 N_block=num_layers, outputs_at='vertices',
-                with_grad=True, last_activation=None,
-            ).to(device)
-            self.bind_pose_net = BaseDiffusionNetEncoder(
-                in_shape=6, out_shape=J * 3, hid_shape=hid_dim,
-                N_block=num_layers, outputs_at='global_mean',
                 with_grad=True, last_activation=None,
             ).to(device)
         else:
@@ -571,13 +570,22 @@ class HierarchicalLBS_FullPred(nn.Module):
                 in_dim=6, out_dim=J, hid_dim=hid_dim,
                 num_layers=num_layers, out_type='vertices',
             ).to(device)
+
+        if dfn_bind:
+            from models.encoder import BaseDiffusionNetEncoder
+            self.bind_pose_net = BaseDiffusionNetEncoder(
+                in_shape=6, out_shape=J * 3, hid_shape=hid_dim,
+                N_block=num_layers, outputs_at='global_mean',
+                with_grad=True, last_activation=None,
+            ).to(device)
+        else:
             self.bind_pose_net = LinearEncoder(
                 in_dim=6, out_dim=J * 3, hid_dim=hid_dim,
                 num_layers=num_layers, out_type='global',
             ).to(device)
 
         # ── Expression encoder + pose model ─────────────────────────────
-        if use_dfn_skin:
+        if dfn_exp:
             from models.encoder import BaseDiffusionNetEncoder
             self.lbs_exp_z_model = BaseDiffusionNetEncoder(
                 in_shape=in_dim_exp, out_shape=hid_dim, hid_shape=hid_dim,
@@ -602,15 +610,15 @@ class HierarchicalLBS_FullPred(nn.Module):
     # ── DiffusionNet precompute ─────────────────────────────────────────
 
     def update_dfn_precomputes(self, dfn_info):
-        """Update DiffusionNet operators for all DiffusionNet modules.
+        """Update DiffusionNet operators for DiffusionNet modules.
         Call when mesh topology changes (e.g., new identity or new dataset).
-        Only used when use_dfn_skin=True.
         """
-        if not self.use_dfn_skin:
-            return
-        self.skin_weight_net.update_precomputes(dfn_info)
-        self.bind_pose_net.update_precomputes(dfn_info)
-        self.lbs_exp_z_model.update_precomputes(dfn_info)
+        if self.dfn_skin:
+            self.skin_weight_net.update_precomputes(dfn_info)
+        if self.dfn_bind:
+            self.bind_pose_net.update_precomputes(dfn_info)
+        if self.dfn_exp:
+            self.lbs_exp_z_model.update_precomputes(dfn_info)
 
     # ── Mesh edges ───────────────────────────────────────────────────────
 

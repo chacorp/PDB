@@ -21,6 +21,9 @@ import random
 import numpy as np
 import yaml
 
+import warnings
+warnings.filterwarnings("ignore", message="torch.sparse.SparseTensor.*is deprecated")
+
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
@@ -110,10 +113,16 @@ def Options():
                         help='Adaptive alpha: joints with fewer dominant vertices get stronger constraint')
     parser.set_defaults(rwc_adaptive=False)
 
-    # DiffusionNet for skin weight / bind pose prediction
-    parser.add_argument("--use_dfn_skin", dest='use_dfn_skin', action='store_true',
-                        help='Use DiffusionNet for skin_weight_net and bind_pose_net')
-    parser.set_defaults(use_dfn_skin=False)
+    # DiffusionNet options (per-module)
+    parser.add_argument("--dfn_skin", dest='dfn_skin', action='store_true',
+                        help='Use DiffusionNet for skin_weight_net')
+    parser.set_defaults(dfn_skin=False)
+    parser.add_argument("--dfn_bind", dest='dfn_bind', action='store_true',
+                        help='Use DiffusionNet for bind_pose_net')
+    parser.set_defaults(dfn_bind=False)
+    parser.add_argument("--dfn_exp", dest='dfn_exp', action='store_true',
+                        help='Use DiffusionNet for lbs_exp_z_model')
+    parser.set_defaults(dfn_exp=False)
 
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
@@ -874,7 +883,9 @@ class HLBSTrainer:
             use_joint_trans=opts.use_joint_trans,
             smooth_W=opts.smooth_delta_W,
             smooth_W_alpha=opts.smooth_delta_W_alpha,
-            use_dfn_skin=opts.use_dfn_skin,
+            dfn_skin=opts.dfn_skin,
+            dfn_bind=opts.dfn_bind,
+            dfn_exp=opts.dfn_exp,
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
@@ -1042,7 +1053,7 @@ class HLBSTrainer:
                         self.model.set_mesh_edges(_faces)
 
                 # Update DiffusionNet precomputes when topology changes
-                if opts.use_dfn_skin:
+                if opts.dfn_skin or opts.dfn_bind or opts.dfn_exp:
                     N_cur = src_v.shape[1]
                     if not hasattr(self, '_dfn_cached_N') or self._dfn_cached_N != N_cur:
                         import trimesh as _tm
