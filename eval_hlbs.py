@@ -329,9 +329,14 @@ class HLBSEvaluator:
             mode_tag = f"cross-{tgt_tag}"
         else:
             mode_tag = "self"
+        data_tag = opts.data_selection
+        if opts.src_identity >= 0:
+            data_tag += f"_id{opts.src_identity}"
+        if opts.data_selection == 'ict-cap':
+            data_tag += f"_exp{opts.exp_num}"
         self.out_dir = os.path.join(
             opts.log_dir, f"{ckpt_basename}-eval",
-            f"e{epoch_tag}-{mode_tag}", opts.data_selection)
+            f"e{epoch_tag}-{mode_tag}", data_tag)
         os.makedirs(self.out_dir, exist_ok=True)
 
         self.img_dir = os.path.join(self.out_dir, "img")
