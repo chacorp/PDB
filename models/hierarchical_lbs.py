@@ -576,12 +576,21 @@ class HierarchicalLBS_FullPred(nn.Module):
                 num_layers=num_layers, out_type='global',
             ).to(device)
 
-        # ── Expression encoder + pose model (same as v1) ─────────────────
-        self.lbs_exp_z_model = LinearEncoder(
-            in_dim=in_dim_exp, out_dim=hid_dim, hid_dim=hid_dim,
-            num_layers=num_layers, out_type='global',
-        ).to(device)
+        # ── Expression encoder + pose model ─────────────────────────────
+        if use_dfn_skin:
+            from models.encoder import BaseDiffusionNetEncoder
+            self.lbs_exp_z_model = BaseDiffusionNetEncoder(
+                in_shape=in_dim_exp, out_shape=hid_dim, hid_shape=hid_dim,
+                N_block=num_layers, outputs_at='global_mean',
+                with_grad=True, last_activation=None,
+            ).to(device)
+        else:
+            self.lbs_exp_z_model = LinearEncoder(
+                in_dim=in_dim_exp, out_dim=hid_dim, hid_dim=hid_dim,
+                num_layers=num_layers, out_type='global',
+            ).to(device)
 
+        # Pose model always LinearEncoder (input is z_exp [B, 1, L], no mesh structure)
         pose_out_dim = J * 9 if use_joint_trans else J * 6
         self.lbs_pose_model = LinearEncoder(
             in_dim=hid_dim, out_dim=pose_out_dim, hid_dim=hid_dim,
@@ -593,7 +602,7 @@ class HierarchicalLBS_FullPred(nn.Module):
     # ── DiffusionNet precompute ─────────────────────────────────────────
 
     def update_dfn_precomputes(self, dfn_info):
-        """Update DiffusionNet operators for skin_weight_net and bind_pose_net.
+        """Update DiffusionNet operators for all DiffusionNet modules.
         Call when mesh topology changes (e.g., new identity or new dataset).
         Only used when use_dfn_skin=True.
         """
@@ -601,6 +610,7 @@ class HierarchicalLBS_FullPred(nn.Module):
             return
         self.skin_weight_net.update_precomputes(dfn_info)
         self.bind_pose_net.update_precomputes(dfn_info)
+        self.lbs_exp_z_model.update_precomputes(dfn_info)
 
     # ── Mesh edges ───────────────────────────────────────────────────────
 
@@ -683,12 +693,11 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
-            z_exp = z_exp_flat.unsqueeze(1)
         else:
             z_exp = self.lbs_exp_z_model(deform_in)
-            z_exp_flat = z_exp.squeeze(1)
+            z_exp_flat = z_exp.squeeze(1) if z_exp.dim() == 3 else z_exp  # [B, L]
 
-        pose_out = self.lbs_pose_model(z_exp).squeeze(1)
+        pose_out = self.lbs_pose_model(z_exp_flat.unsqueeze(1)).squeeze(1)
         if self.use_joint_trans:
             rot6d   = pose_out[:, :J*6].reshape(B * J, 6)
             local_t = pose_out[:, J*6:].reshape(B, J, 3, 1)
@@ -756,7 +765,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         deform_in = torch.cat([delta_src, src_def_norm, src_in], dim=-1)
 
         z_exp = self.lbs_exp_z_model(deform_in)
-        pose_out = self.lbs_pose_model(z_exp).squeeze(1)
+        z_exp_flat = z_exp.squeeze(1) if z_exp.dim() == 3 else z_exp
+        pose_out = self.lbs_pose_model(z_exp_flat.unsqueeze(1)).squeeze(1)
 
         if self.use_joint_trans:
             rot6d   = pose_out[:, :J*6].reshape(B * J, 6)
