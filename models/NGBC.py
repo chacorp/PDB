@@ -319,6 +319,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             pred_source = torch.einsum('bnc,bci->bni',key_weight,key_s)
         else:
             pred_source = 0
+            key_s = 0
         
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
@@ -447,7 +448,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             tgt_in = torch.cat([tgt_in, tgt_hat_mask], dim=-1)
         
         key_weight = self.key_weight_model(
-            source_in,
+            tgt_in,
             N=self.NZ # (not used!)
         ) # (B, N, M)
             
