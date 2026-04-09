@@ -110,6 +110,11 @@ def Options():
                         help='Adaptive alpha: joints with fewer dominant vertices get stronger constraint')
     parser.set_defaults(rwc_adaptive=False)
 
+    # DiffusionNet for skin weight / bind pose prediction
+    parser.add_argument("--use_dfn_skin", dest='use_dfn_skin', action='store_true',
+                        help='Use DiffusionNet for skin_weight_net and bind_pose_net')
+    parser.set_defaults(use_dfn_skin=False)
+
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
                         help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
@@ -869,6 +874,7 @@ class HLBSTrainer:
             use_joint_trans=opts.use_joint_trans,
             smooth_W=opts.smooth_delta_W,
             smooth_W_alpha=opts.smooth_delta_W_alpha,
+            use_dfn_skin=opts.use_dfn_skin,
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
@@ -1034,6 +1040,19 @@ class HLBSTrainer:
                     if self.model._mesh_edges_by_N is None or N_cur not in self.model._mesh_edges_by_N:
                         _faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
                         self.model.set_mesh_edges(_faces)
+
+                # Update DiffusionNet precomputes when topology changes
+                if opts.use_dfn_skin:
+                    N_cur = src_v.shape[1]
+                    if not hasattr(self, '_dfn_cached_N') or self._dfn_cached_N != N_cur:
+                        import trimesh as _tm
+                        from utils.nfr_utils import get_dfn_info
+                        _f = batch.faces[0].cpu().numpy() if batch.faces.dim() == 3 else batch.faces.cpu().numpy()
+                        _v = src_v[0].cpu().numpy()
+                        _mesh = _tm.Trimesh(vertices=_v, faces=_f, process=False)
+                        _dfn = get_dfn_info(_mesh, map_location=self.device)
+                        self.model.update_dfn_precomputes(_dfn)
+                        self._dfn_cached_N = N_cur
 
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)

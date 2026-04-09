@@ -506,11 +506,13 @@ class HierarchicalLBS_FullPred(nn.Module):
         use_joint_trans: bool = False,
         smooth_W: int = 0,
         smooth_W_alpha: float = 0.5,
+        use_dfn_skin: bool = False,
     ):
         super().__init__()
 
         self.device_str = device
         self.use_joint_trans = use_joint_trans
+        self.use_dfn_skin = use_dfn_skin
         self.smooth_W_iters = smooth_W
         self.smooth_W_alpha = smooth_W_alpha
         self._mesh_edges = None
@@ -552,15 +554,27 @@ class HierarchicalLBS_FullPred(nn.Module):
         }
 
         # ── Full prediction networks ─────────────────────────────────────
-        self.skin_weight_net = LinearEncoder(
-            in_dim=6, out_dim=J, hid_dim=hid_dim,
-            num_layers=num_layers, out_type='vertices',
-        ).to(device)
-
-        self.bind_pose_net = LinearEncoder(
-            in_dim=6, out_dim=J * 3, hid_dim=hid_dim,
-            num_layers=num_layers, out_type='global',
-        ).to(device)
+        if use_dfn_skin:
+            from models.encoder import BaseDiffusionNetEncoder
+            self.skin_weight_net = BaseDiffusionNetEncoder(
+                in_shape=6, out_shape=J, hid_shape=hid_dim,
+                N_block=num_layers, outputs_at='vertices',
+                with_grad=True, last_activation=None,
+            ).to(device)
+            self.bind_pose_net = BaseDiffusionNetEncoder(
+                in_shape=6, out_shape=J * 3, hid_shape=hid_dim,
+                N_block=num_layers, outputs_at='global_mean',
+                with_grad=True, last_activation=None,
+            ).to(device)
+        else:
+            self.skin_weight_net = LinearEncoder(
+                in_dim=6, out_dim=J, hid_dim=hid_dim,
+                num_layers=num_layers, out_type='vertices',
+            ).to(device)
+            self.bind_pose_net = LinearEncoder(
+                in_dim=6, out_dim=J * 3, hid_dim=hid_dim,
+                num_layers=num_layers, out_type='global',
+            ).to(device)
 
         # ── Expression encoder + pose model (same as v1) ─────────────────
         self.lbs_exp_z_model = LinearEncoder(
@@ -575,6 +589,18 @@ class HierarchicalLBS_FullPred(nn.Module):
         ).to(device)
 
         self._rot6d = from_6D_to_rotation_matrix_torch
+
+    # ── DiffusionNet precompute ─────────────────────────────────────────
+
+    def update_dfn_precomputes(self, dfn_info):
+        """Update DiffusionNet operators for skin_weight_net and bind_pose_net.
+        Call when mesh topology changes (e.g., new identity or new dataset).
+        Only used when use_dfn_skin=True.
+        """
+        if not self.use_dfn_skin:
+            return
+        self.skin_weight_net.update_precomputes(dfn_info)
+        self.bind_pose_net.update_precomputes(dfn_info)
 
     # ── Mesh edges ───────────────────────────────────────────────────────
 
