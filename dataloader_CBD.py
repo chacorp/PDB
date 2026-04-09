@@ -1568,7 +1568,7 @@ class CBDDataBatch:
             self.segmentation = torch.stack(transposed_data[5], 0) # [B, V, 24]
 
             self.exp_coeff = torch.stack(transposed_data[6], 0) # [B, V, 24]
-            self.id_name = transposed_data[7][0] # string
+            self.id_name = list(transposed_data[7]) # list of strings per sample
             # smooth_vertices at index 9, id_idx at index 10
             if len(transposed_data) > 9:
                 self.smooth_vertices = torch.stack(transposed_data[9], 0) # [B, V, 3]

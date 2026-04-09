@@ -509,6 +509,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         dfn_skin: bool = False,
         dfn_bind: bool = False,
         dfn_exp: bool = False,
+        nfs_feat_dim: int = 0,
     ):
         super().__init__()
 
@@ -517,6 +518,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         self.dfn_skin = dfn_skin
         self.dfn_bind = dfn_bind
         self.dfn_exp = dfn_exp
+        self.nfs_feat_dim = nfs_feat_dim
         self.smooth_W_iters = smooth_W
         self.smooth_W_alpha = smooth_W_alpha
         self._mesh_edges = None
@@ -558,6 +560,11 @@ class HierarchicalLBS_FullPred(nn.Module):
         }
 
         # ── Full prediction networks ─────────────────────────────────────
+        _skin_in = nfs_feat_dim if nfs_feat_dim > 0 else 6
+        _bind_in = nfs_feat_dim if nfs_feat_dim > 0 else 6
+        _skin_layers = 2 if nfs_feat_dim > 0 else num_layers
+        _bind_layers = 2 if nfs_feat_dim > 0 else num_layers
+
         if dfn_skin:
             from models.encoder import BaseDiffusionNetEncoder
             self.skin_weight_net = BaseDiffusionNetEncoder(
@@ -567,8 +574,8 @@ class HierarchicalLBS_FullPred(nn.Module):
             ).to(device)
         else:
             self.skin_weight_net = LinearEncoder(
-                in_dim=6, out_dim=J, hid_dim=hid_dim,
-                num_layers=num_layers, out_type='vertices',
+                in_dim=_skin_in, out_dim=J, hid_dim=hid_dim,
+                num_layers=_skin_layers, out_type='vertices',
             ).to(device)
 
         if dfn_bind:
@@ -580,8 +587,8 @@ class HierarchicalLBS_FullPred(nn.Module):
             ).to(device)
         else:
             self.bind_pose_net = LinearEncoder(
-                in_dim=6, out_dim=J * 3, hid_dim=hid_dim,
-                num_layers=num_layers, out_type='global',
+                in_dim=_bind_in, out_dim=J * 3, hid_dim=hid_dim,
+                num_layers=_bind_layers, out_type='global',
             ).to(device)
 
         # ── Expression encoder + pose model ─────────────────────────────
@@ -690,14 +697,19 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────
 
-    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None):
+    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None):
         B, N, _ = source_vert.shape
         J = self.num_joints
         device = source_vert.device
 
-        source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
-        W, _ = self._get_skinning_weights(source_feat)
-        B_inv_id, _ = self._get_bind_pose(source_feat)
+        if nfs_feat is not None:
+            # NFS pretrained feature mode: [B, V, nfs_feat_dim]
+            W, _ = self._get_skinning_weights(nfs_feat)
+            B_inv_id, _ = self._get_bind_pose(nfs_feat)
+        else:
+            source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
+            W, _ = self._get_skinning_weights(source_feat)
+            B_inv_id, _ = self._get_bind_pose(source_feat)
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
@@ -744,6 +756,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         src_def_norm: torch.Tensor,
         tgt_neu_vert: torch.Tensor,
         tgt_neu_norm: torch.Tensor,
+        tgt_nfs_feat: torch.Tensor = None,
     ):
         """
         Cross-retargeting: apply SOURCE expression to TARGET identity.
@@ -792,9 +805,13 @@ class HierarchicalLBS_FullPred(nn.Module):
         T_world   = self._chain_hierarchy(T_local)
 
         # ── Identity from TARGET ────────────────────────────────────────
-        tgt_feat = torch.cat([tgt_neu_vert, tgt_neu_norm], dim=-1)
-        W_tgt, _ = self._get_skinning_weights(tgt_feat)
-        B_inv_tgt, _ = self._get_bind_pose(tgt_feat)
+        if tgt_nfs_feat is not None:
+            W_tgt, _ = self._get_skinning_weights(tgt_nfs_feat)
+            B_inv_tgt, _ = self._get_bind_pose(tgt_nfs_feat)
+        else:
+            tgt_feat = torch.cat([tgt_neu_vert, tgt_neu_norm], dim=-1)
+            W_tgt, _ = self._get_skinning_weights(tgt_feat)
+            B_inv_tgt, _ = self._get_bind_pose(tgt_feat)
 
         G = torch.bmm(
             T_world.reshape(B * J, 4, 4),

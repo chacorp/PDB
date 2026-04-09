@@ -124,6 +124,11 @@ def Options():
                         help='Use DiffusionNet for lbs_exp_z_model')
     parser.set_defaults(dfn_exp=False)
 
+    # NFS pretrained feature
+    parser.add_argument("--nfs_feat_dir", type=str, default=None,
+                        help='Directory with NFS per-identity features (*_nfs_feat.npy). '
+                             'If set, skin_weight_net and bind_pose_net use these as input.')
+
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
                         help='Pretrained NFS checkpoint. If set, use NFS expression encoder for z_exp.')
@@ -886,8 +891,20 @@ class HLBSTrainer:
             dfn_skin=opts.dfn_skin,
             dfn_bind=opts.dfn_bind,
             dfn_exp=opts.dfn_exp,
+            nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
+
+        # Load NFS pretrained features
+        self._nfs_feat_cache = {}
+        if opts.nfs_feat_dir:
+            import glob as _glob
+            feat_files = _glob.glob(os.path.join(opts.nfs_feat_dir, '*_nfs_feat.npy'))
+            for fp in feat_files:
+                fname = os.path.basename(fp).replace('_nfs_feat.npy', '')
+                self._nfs_feat_cache[fname] = torch.tensor(np.load(fp), dtype=torch.float32)  # CPU
+            print(f"[NFS feat] Loaded {len(self._nfs_feat_cache)} identity features "
+                  f"({sum(v.numel()*4 for v in self._nfs_feat_cache.values())/1e6:.1f} MB on CPU)")
 
         # Build regional weight constraints
         if opts.lambda_rwc > 0:
@@ -1065,11 +1082,28 @@ class HLBSTrainer:
                         self.model.update_dfn_precomputes(_dfn)
                         self._dfn_cached_N = N_cur
 
+                # Get NFS features if available
+                _nfs_feat = None
+                if opts.nfs_feat_dir and self._nfs_feat_cache:
+                    B_cur = src_v.shape[0]
+                    N_cur = src_v.shape[1]
+                    feats = []
+                    for b in range(B_cur):
+                        id_key = batch.id_name[b]
+                        if id_key in self._nfs_feat_cache:
+                            f = self._nfs_feat_cache[id_key]
+                            if f.shape[0] > N_cur:
+                                f = f[:N_cur]  # region select slice
+                            feats.append(f)
+                        else:
+                            feats.append(torch.zeros(N_cur, 256))
+                    _nfs_feat = torch.stack(feats, dim=0).to(self.device)  # [B, N, 256]
+
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
 
-                pred_lbs = self.model(src_v, deform_in, source_normal=src_n)
+                pred_lbs = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
 
                 # ── Recon loss ───────────────────────────────────────────
                 if opts.no_t_mask:
