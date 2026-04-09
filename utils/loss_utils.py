@@ -4,6 +4,52 @@ import torch.nn.functional as F
 import pickle
 import numpy as np
 
+def weight_entropy_loss(
+    weights: torch.Tensor,
+    eps: float = 1e-8,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    """
+    Entropy regularization loss for normalized nonnegative weights.
+
+    Args:
+        weights: Tensor of shape (..., K), where the last dimension is the
+            weight dimension. Each row is expected to be nonnegative and
+            approximately sum to 1.
+        eps: Small constant for numerical stability.
+        reduction: One of {"mean", "sum", "none"}.
+
+    Returns:
+        Scalar tensor if reduction is "mean" or "sum".
+        Otherwise returns per-row entropy of shape weights.shape[:-1].
+
+    Notes:
+        Entropy is:
+            H(w) = -sum_i w_i log(w_i)
+
+        If you want to encourage *sparser* weights, minimize H(w).
+        This function returns positive entropy, so minimizing the returned
+        value pushes weights toward lower-entropy, more peaked distributions.
+    """
+    if reduction not in {"mean", "sum", "none"}:
+        raise ValueError(f"Invalid reduction: {reduction}")
+
+    # Clamp only for log stability; keep original weights in multiplication
+    log_w = torch.log(weights.clamp_min(eps))
+    entropy = -(weights * log_w).sum(dim=-1)
+
+    if reduction == "mean":
+        return entropy.mean()
+    if reduction == "sum":
+        return entropy.sum()
+    return entropy
+
+def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02):
+    dist = torch.sqrt(((mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]) ** 2).sum(dim=-1) + 1e-8)
+    penalty = torch.relu(dist - tau) ** 2
+    loss = (coordinate_weight * penalty).sum(dim=-1).mean()
+    return loss
+    
 # --- Loss Functions ---
 def distance_loss(
         mesh_vertices,

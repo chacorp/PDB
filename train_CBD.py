@@ -1373,12 +1373,12 @@ class Trainer():
                         )
                 # ------------------------------------------------------------------------------------------------
 
-                # if self.opts.use_dist_loss:
-                #     loss_dict['dist'] = distance_loss(
-                #         batch_template_v, pred_cage_s, pred_key_weight
-                #     ) + distance_loss(
-                #         batch_vertices_v, pred_cage_d, pred_key_weight
-                #     )
+                if self.opts.use_dist_loss:
+                    loss_dict['dist'] = distance_loss(
+                        batch_template_v, pred_cage_s, pred_key_weight
+                    ) + distance_loss(
+                        batch_vertices_v, pred_cage_d, pred_key_weight
+                    )
                 
                 # get total loss (lambda weights are multiplied here!) -------------------------------------------
                 loss = 0
