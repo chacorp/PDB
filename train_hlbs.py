@@ -128,6 +128,12 @@ def Options():
     parser.add_argument("--nfs_feat_dir", type=str, default=None,
                         help='Directory with NFS per-identity features (*_nfs_feat.npy). '
                              'If set, skin_weight_net and bind_pose_net use these as input.')
+    parser.add_argument("--nfs_concat", dest='nfs_concat', action='store_true',
+                        help='Concat seg feat with pos+norm as input [262], 4 layers.')
+    parser.set_defaults(nfs_concat=False)
+    parser.add_argument("--adain_pos_norm", dest='adain_pos_norm', action='store_true',
+                        help='AdaIN conditioning on pos+norm [6] only. Without: AdaIN on full input.')
+    parser.set_defaults(adain_pos_norm=False)
 
     # NFS encoder
     parser.add_argument("--nfs_ckpt", type=str, default=None,
@@ -904,6 +910,8 @@ class HLBSTrainer:
             dfn_bind=opts.dfn_bind,
             dfn_exp=opts.dfn_exp,
             nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
+            nfs_concat=opts.nfs_concat if hasattr(opts, 'nfs_concat') else False,
+            adain_pos_norm=opts.adain_pos_norm if hasattr(opts, 'adain_pos_norm') else False,
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
@@ -987,14 +995,26 @@ class HLBSTrainer:
         logger = Logger(os.path.join(opts.log_dir, "log.txt"))
         print(f'Log: {logger.file_path}')
 
+        # Determine skin_weight_net config for logging
+        _sw_net = self.model.skin_weight_net
+        _sw_in_dim = _sw_net.layer_in.weight.shape[1] if hasattr(_sw_net, 'layer_in') else '?'
+        _sw_n_layers = len(_sw_net.layers) if hasattr(_sw_net, 'layers') else '?'
+        _adain_dim = _sw_net.adain_in[0].weight.shape[1] if hasattr(_sw_net, 'adain_in') else '?'
+
         config_text = (
             f"=== HLBS FullPred Training ===\n"
             f"  topo_key       : {opts.topo_key}\n"
             f"  use_joint_trans: {opts.use_joint_trans}\n"
-            f"  init_phase     : {opts.init_phase_epochs} epochs\n"
+            f"  init_phase     : {opts.init_phase_epochs} epochs ({opts.init_mode})\n"
             f"  lambda_init    : {opts.lambda_init}\n"
             f"  lambda_vert    : {opts.lambda_vert}\n"
             f"  lambda_neu     : {opts.lambda_neu}\n"
+            f"  lambda_rwc     : {opts.lambda_rwc} (adaptive={getattr(opts, 'rwc_adaptive', False)})\n"
+            f"  nfs_feat_dir   : {opts.nfs_feat_dir}\n"
+            f"  nfs_concat     : {getattr(opts, 'nfs_concat', False)}\n"
+            f"  adain_pos_norm : {getattr(opts, 'adain_pos_norm', False)}\n"
+            f"  skin_weight_net: in={_sw_in_dim}, layers={_sw_n_layers}, adain_in={_adain_dim}\n"
+            f"  dfn_skin/bind/exp: {opts.dfn_skin}/{opts.dfn_bind}/{opts.dfn_exp}\n"
             f"==============================\n"
         )
         print(config_text)

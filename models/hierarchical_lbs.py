@@ -510,6 +510,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         dfn_bind: bool = False,
         dfn_exp: bool = False,
         nfs_feat_dim: int = 0,
+        nfs_concat: bool = False,
+        adain_pos_norm: bool = False,
     ):
         super().__init__()
 
@@ -519,6 +521,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         self.dfn_bind = dfn_bind
         self.dfn_exp = dfn_exp
         self.nfs_feat_dim = nfs_feat_dim
+        self.nfs_concat = nfs_concat
+        self.adain_pos_norm = adain_pos_norm
         self.smooth_W_iters = smooth_W
         self.smooth_W_alpha = smooth_W_alpha
         self._mesh_edges = None
@@ -560,12 +564,26 @@ class HierarchicalLBS_FullPred(nn.Module):
         }
 
         # ── Full prediction networks ─────────────────────────────────────
-        _skin_in = nfs_feat_dim if nfs_feat_dim > 0 else 6
-        _bind_in = nfs_feat_dim if nfs_feat_dim > 0 else 6
-        _skin_layers = 2 if nfs_feat_dim > 0 else num_layers
-        _bind_layers = 2 if nfs_feat_dim > 0 else num_layers
+        # nfs_concat mode: concat [pos+norm(6) + seg_feat(256)] = 262, AdaIN on pos+norm(6), 4 layers
+        # nfs_feat only mode: seg_feat(256) only, AdaIN on seg_feat(256), 2 layers
+        # original mode: pos+norm(6), AdaIN on pos+norm(6), num_layers
+        if nfs_feat_dim > 0 and nfs_concat:
+            _skin_in = 6 + nfs_feat_dim
+            _bind_in = 6 + nfs_feat_dim
+            _adain_dim = 6 if adain_pos_norm else None  # None = same as in_dim
+            _n_layers = num_layers
+        elif nfs_feat_dim > 0:
+            _skin_in = nfs_feat_dim
+            _bind_in = nfs_feat_dim
+            _adain_dim = None
+            _n_layers = 2
+        else:
+            _skin_in = 6
+            _bind_in = 6
+            _adain_dim = None
+            _n_layers = num_layers
 
-        # LayerNorm for NFS features (normalize scale across topologies)
+        # LayerNorm for seg features (normalize scale across topologies)
         self.nfs_layer_norm = nn.LayerNorm(nfs_feat_dim) if nfs_feat_dim > 0 else None
 
         if dfn_skin:
@@ -578,7 +596,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         else:
             self.skin_weight_net = LinearEncoder(
                 in_dim=_skin_in, out_dim=J, hid_dim=hid_dim,
-                num_layers=_skin_layers, out_type='vertices',
+                num_layers=_n_layers, out_type='vertices',
+                adain_in_dim=_adain_dim,
             ).to(device)
 
         if dfn_bind:
@@ -591,7 +610,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         else:
             self.bind_pose_net = LinearEncoder(
                 in_dim=_bind_in, out_dim=J * 3, hid_dim=hid_dim,
-                num_layers=_bind_layers, out_type='global',
+                num_layers=_n_layers, out_type='global',
+                adain_in_dim=_adain_dim,
             ).to(device)
 
         # ── Expression encoder + pose model ─────────────────────────────
@@ -662,17 +682,35 @@ class HierarchicalLBS_FullPred(nn.Module):
             logit_W = (1 - alpha) * logit_W + alpha * neighbor_mean
         return logit_W
 
+    # ── Feature prep helper ───────────────────────────────────────────────
+
+    def _prepare_feat(self, source_vert, source_normal, nfs_feat=None):
+        """Prepare skin_input and adain_input based on mode."""
+        source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
+        if nfs_feat is not None:
+            nfs_normed = self.nfs_layer_norm(nfs_feat)
+            if self.nfs_concat:
+                skin_input = torch.cat([source_feat, nfs_normed], dim=-1)  # [B, N, 262]
+                _adain = source_feat if self.adain_pos_norm else None
+            else:
+                skin_input = nfs_normed  # [B, N, 256]
+                _adain = None
+        else:
+            skin_input = source_feat
+            _adain = None
+        return skin_input, _adain
+
     # ── Core ─────────────────────────────────────────────────────────────
 
-    def _get_skinning_weights(self, source_feat):
-        logit_W = self.skin_weight_net(source_feat)                     # [B, N, J]
+    def _get_skinning_weights(self, source_feat, adain_input=None):
+        logit_W = self.skin_weight_net(source_feat, adain_input=adain_input)  # [B, N, J]
         logit_W = self._smooth_logit_W(logit_W)
         return F.softmax(logit_W, dim=-1), logit_W
 
-    def _get_bind_pose(self, source_feat):
+    def _get_bind_pose(self, source_feat, adain_input=None):
         B = source_feat.shape[0]
         J = self.num_joints
-        joint_pos = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
+        joint_pos = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
 
         dev, dtype = self.parent_idx.device, source_feat.dtype
         eye3    = torch.eye(3, device=dev, dtype=dtype).expand(B, J, 3, 3)
@@ -705,15 +743,9 @@ class HierarchicalLBS_FullPred(nn.Module):
         J = self.num_joints
         device = source_vert.device
 
-        if nfs_feat is not None:
-            # NFS pretrained feature mode: [B, V, nfs_feat_dim]
-            nfs_feat = self.nfs_layer_norm(nfs_feat)
-            W, _ = self._get_skinning_weights(nfs_feat)
-            B_inv_id, _ = self._get_bind_pose(nfs_feat)
-        else:
-            source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
-            W, _ = self._get_skinning_weights(source_feat)
-            B_inv_id, _ = self._get_bind_pose(source_feat)
+        skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
+        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)
+        B_inv_id, _ = self._get_bind_pose(skin_input, adain_input=_adain)
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
@@ -809,14 +841,9 @@ class HierarchicalLBS_FullPred(nn.Module):
         T_world   = self._chain_hierarchy(T_local)
 
         # ── Identity from TARGET ────────────────────────────────────────
-        if tgt_nfs_feat is not None:
-            tgt_nfs_feat = self.nfs_layer_norm(tgt_nfs_feat) if self.nfs_layer_norm is not None else tgt_nfs_feat
-            W_tgt, _ = self._get_skinning_weights(tgt_nfs_feat)
-            B_inv_tgt, _ = self._get_bind_pose(tgt_nfs_feat)
-        else:
-            tgt_feat = torch.cat([tgt_neu_vert, tgt_neu_norm], dim=-1)
-            W_tgt, _ = self._get_skinning_weights(tgt_feat)
-            B_inv_tgt, _ = self._get_bind_pose(tgt_feat)
+        tgt_skin_input, tgt_adain = self._prepare_feat(tgt_neu_vert, tgt_neu_norm, tgt_nfs_feat)
+        W_tgt, _ = self._get_skinning_weights(tgt_skin_input, adain_input=tgt_adain)
+        B_inv_tgt, _ = self._get_bind_pose(tgt_skin_input, adain_input=tgt_adain)
 
         G = torch.bmm(
             T_world.reshape(B * J, 4, 4),
@@ -841,12 +868,9 @@ class HierarchicalLBS_FullPred(nn.Module):
         If mesh_data is provided, uses per-topology W target.
         If perm_idx is provided, slices W target accordingly.
         """
-        if nfs_feat is not None:
-            feat = self.nfs_layer_norm(nfs_feat) if self.nfs_layer_norm is not None else nfs_feat
-        else:
-            feat = torch.cat([source_vert, source_normal], dim=-1)
-        W, _ = self._get_skinning_weights(feat)
-        _, joint_pos = self._get_bind_pose(feat)
+        skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
+        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)
+        _, joint_pos = self._get_bind_pose(skin_input, adain_input=_adain)
         losses = {}
 
         # Find appropriate W target
@@ -950,11 +974,8 @@ class HierarchicalLBS_FullPred(nn.Module):
             if self._mesh_data_to_topo.get(md) != 'ict':
                 return losses
 
-        if nfs_feat is not None:
-            feat = self.nfs_layer_norm(nfs_feat) if self.nfs_layer_norm is not None else nfs_feat
-        else:
-            feat = torch.cat([source_vert, source_normal], dim=-1) if source_normal is not None else source_vert
-        W, _ = self._get_skinning_weights(feat)               # [B, N, J]
+        skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
+        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)  # [B, N, J]
 
         W_maya = self._init_targets.get('ict')
         if W_maya is None:

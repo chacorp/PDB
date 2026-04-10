@@ -642,16 +642,17 @@ class LinearFeatureExtractor(nn.Module):
         return out
 
 class LinearEncoder(nn.Module):
-    def __init__(self, 
-                 in_dim=3, out_dim=3, hid_dim=128, num_layers=4, 
+    def __init__(self,
+                 in_dim=3, out_dim=3, hid_dim=128, num_layers=4,
                  mode='rot', use_residual=False, out_type='vertices',
-                 use_softmax=False, use_relu=False, use_softplus=False, 
+                 use_softmax=False, use_relu=False, use_softplus=False,
                  use_elu=False, use_sqrelu=False,
                  use_least_N=False, use_least_N_on_V=False,no_activation=False,
                  use_gate_layer=False,
                  use_pou=False,
                  act='lrelu', nrm='layer',
                  tau=1e-2, use_K=False, K_dim=8,
+                 adain_in_dim=None,
                 ):
         super().__init__()
         
@@ -685,8 +686,9 @@ class LinearEncoder(nn.Module):
         ])
 
         ## adaptive layer Norm
+        _adain_dim = adain_in_dim if adain_in_dim is not None else in_dim
         self.adain_in = MLP(
-            [in_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim], 
+            [_adain_dim, hid_dim, hid_dim, hid_dim, hid_dim, hid_dim],
             act=act, nrm=nrm
         )
         
@@ -734,10 +736,10 @@ class LinearEncoder(nn.Module):
         mask = (hard - soft).detach() + soft
         return mask
         
-    def forward(self, x_in, id_in=None, return_id_in=False, N=128, return_inv=False, return_raw=False):
+    def forward(self, x_in, id_in=None, return_id_in=False, N=128, return_inv=False, return_raw=False, adain_input=None):
         B, V, C = x_in.shape
-        
-        out, id_out = self.forward_func(x_in, id_in, return_id_in)
+
+        out, id_out = self.forward_func(x_in, id_in, return_id_in, adain_input=adain_input)
         
         if self.out_type == 'global':
             out = out.mean(-2, keepdims=True)
@@ -797,11 +799,12 @@ class LinearEncoder(nn.Module):
         return out
         
         
-    def forward_func(self, x_in, id_in=None, return_id_in=False, return_inv=False):
+    def forward_func(self, x_in, id_in=None, return_id_in=False, return_inv=False, adain_input=None):
         out = self.layer_in(x_in)
-        
+
         if id_in is None:
-            id_in = self.adain_in(x_in).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
+            _adain_src = adain_input if adain_input is not None else x_in
+            id_in = self.adain_in(_adain_src).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
         
         for layer, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
             l_out = layer(out)

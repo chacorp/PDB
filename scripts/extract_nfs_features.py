@@ -18,7 +18,7 @@ import igl
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
-def extract_per_vertex_feature(model, mesh, dfn_info, device):
+def extract_per_vertex_feature(model, mesh, dfn_info, device, encoder_type='seg'):
     """Run NFS id_encoder but return per-vertex feature [V, C_width] before last_lin."""
     # Render image
     img = model.renderer.render_img(mesh).float().to(device)
@@ -29,8 +29,11 @@ def extract_per_vertex_feature(model, mesh, dfn_info, device):
     faces_t = torch.tensor(mesh.faces, dtype=torch.long, device=device)
     vert_feat = model.get_local_feature(verts_t, faces_t, img_feat, at='verts').float()
 
-    # Forward through id_encoder's DiffusionNet, but stop before last_lin
-    encoder = model.mesh_id_encoder
+    # Forward through encoder's DiffusionNet, but stop before last_lin
+    if encoder_type == 'seg':
+        encoder = model.mesh_seg_encoder
+    else:
+        encoder = model.mesh_id_encoder
     encoder.update_precomputes(dfn_info)
 
     # Reconstruct sparse tensors
@@ -62,6 +65,8 @@ def main():
     parser.add_argument("--out_dir", type=str, default="nfs_features")
     parser.add_argument("--data_basedir", type=str, default="/data/sihun")
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--encoder", type=str, default="seg", choices=["id", "seg"],
+                        help="Which NFS encoder to extract features from (default: seg)")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -109,7 +114,7 @@ def main():
 
         with torch.no_grad():
             dfn_info = get_dfn_info(mesh, map_location=device)
-            feat = extract_per_vertex_feature(model, mesh, dfn_info, device)
+            feat = extract_per_vertex_feature(model, mesh, dfn_info, device, encoder_type=args.encoder)
 
         out_path = os.path.join(args.out_dir, f"{id_name}_nfs_feat.npy")
         np.save(out_path, feat.astype(np.float32))
@@ -137,7 +142,7 @@ def main():
 
         with torch.no_grad():
             dfn_info = get_dfn_info(mesh, map_location=device)
-            feat = extract_per_vertex_feature(model, mesh, dfn_info, device)
+            feat = extract_per_vertex_feature(model, mesh, dfn_info, device, encoder_type=args.encoder)
 
         out_path = os.path.join(args.out_dir, f"ict_{i:03d}_nfs_feat.npy")
         np.save(out_path, feat.astype(np.float32))
