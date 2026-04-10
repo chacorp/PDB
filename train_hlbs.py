@@ -902,9 +902,9 @@ class HLBSTrainer:
             feat_files = _glob.glob(os.path.join(opts.nfs_feat_dir, '*_nfs_feat.npy'))
             for fp in feat_files:
                 fname = os.path.basename(fp).replace('_nfs_feat.npy', '')
-                self._nfs_feat_cache[fname] = torch.tensor(np.load(fp), dtype=torch.float32)  # CPU
+                self._nfs_feat_cache[fname] = torch.tensor(np.load(fp), dtype=torch.float32).to(self.device)  # GPU
             print(f"[NFS feat] Loaded {len(self._nfs_feat_cache)} identity features "
-                  f"({sum(v.numel()*4 for v in self._nfs_feat_cache.values())/1e6:.1f} MB on CPU)")
+                  f"({sum(v.numel()*4 for v in self._nfs_feat_cache.values())/1e6:.1f} MB on GPU)")
 
         # Build regional weight constraints
         if opts.lambda_rwc > 0:
@@ -1096,8 +1096,8 @@ class HLBSTrainer:
                                 f = f[:N_cur]  # region select slice
                             feats.append(f)
                         else:
-                            feats.append(torch.zeros(N_cur, 256))
-                    _nfs_feat = torch.stack(feats, dim=0).to(self.device)  # [B, N, 256]
+                            feats.append(torch.zeros(N_cur, 256, device=self.device))
+                    _nfs_feat = torch.stack(feats, dim=0)  # [B, N, 256]
 
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)
@@ -1266,8 +1266,8 @@ class HLBSTrainer:
                                     f = f[:N_cur]
                                 feats.append(f)
                             else:
-                                feats.append(torch.zeros(N_cur, 256))
-                        _nfs_feat = torch.stack(feats, dim=0).to(self.device)
+                                feats.append(torch.zeros(N_cur, 256, device=self.device))
+                        _nfs_feat = torch.stack(feats, dim=0)
 
                     delta     = gt_v - src_v
                     src_in    = torch.cat([src_v, src_n], dim=-1)
