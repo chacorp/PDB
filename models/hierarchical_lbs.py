@@ -565,6 +565,9 @@ class HierarchicalLBS_FullPred(nn.Module):
         _skin_layers = 2 if nfs_feat_dim > 0 else num_layers
         _bind_layers = 2 if nfs_feat_dim > 0 else num_layers
 
+        # LayerNorm for NFS features (normalize scale across topologies)
+        self.nfs_layer_norm = nn.LayerNorm(nfs_feat_dim) if nfs_feat_dim > 0 else None
+
         if dfn_skin:
             from models.encoder import BaseDiffusionNetEncoder
             self.skin_weight_net = BaseDiffusionNetEncoder(
@@ -704,6 +707,7 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         if nfs_feat is not None:
             # NFS pretrained feature mode: [B, V, nfs_feat_dim]
+            nfs_feat = self.nfs_layer_norm(nfs_feat)
             W, _ = self._get_skinning_weights(nfs_feat)
             B_inv_id, _ = self._get_bind_pose(nfs_feat)
         else:
@@ -806,6 +810,7 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         # ── Identity from TARGET ────────────────────────────────────────
         if tgt_nfs_feat is not None:
+            tgt_nfs_feat = self.nfs_layer_norm(tgt_nfs_feat) if self.nfs_layer_norm is not None else tgt_nfs_feat
             W_tgt, _ = self._get_skinning_weights(tgt_nfs_feat)
             B_inv_tgt, _ = self._get_bind_pose(tgt_nfs_feat)
         else:
@@ -837,7 +842,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         If perm_idx is provided, slices W target accordingly.
         """
         if nfs_feat is not None:
-            feat = nfs_feat
+            feat = self.nfs_layer_norm(nfs_feat) if self.nfs_layer_norm is not None else nfs_feat
         else:
             feat = torch.cat([source_vert, source_normal], dim=-1)
         W, _ = self._get_skinning_weights(feat)
@@ -946,7 +951,7 @@ class HierarchicalLBS_FullPred(nn.Module):
                 return losses
 
         if nfs_feat is not None:
-            feat = nfs_feat
+            feat = self.nfs_layer_norm(nfs_feat) if self.nfs_layer_norm is not None else nfs_feat
         else:
             feat = torch.cat([source_vert, source_normal], dim=-1) if source_normal is not None else source_vert
         W, _ = self._get_skinning_weights(feat)               # [B, N, J]
