@@ -996,10 +996,14 @@ class HLBSTrainer:
         print(f'Log: {logger.file_path}')
 
         # Determine skin_weight_net config for logging
-        _sw_net = self.model.skin_weight_net
-        _sw_in_dim = _sw_net.layer_in.weight.shape[1] if hasattr(_sw_net, 'layer_in') else '?'
-        _sw_n_layers = len(_sw_net.layers) if hasattr(_sw_net, 'layers') else '?'
-        _adain_dim = _sw_net.adain_in[0].weight.shape[1] if hasattr(_sw_net, 'adain_in') else '?'
+        try:
+            _sw_net = self.model.skin_weight_net
+            _sw_in_dim = _sw_net.layer_in.weight.shape[1] if hasattr(_sw_net, 'layer_in') else '?'
+            _sw_n_layers = len(_sw_net.layers) if hasattr(_sw_net, 'layers') else '?'
+            _adain_layers = [m for m in _sw_net.adain_in.modules() if hasattr(m, 'weight') and m.weight.dim() == 2] if hasattr(_sw_net, 'adain_in') else []
+            _adain_dim = _adain_layers[0].weight.shape[1] if _adain_layers else '?'
+        except Exception:
+            _sw_in_dim = _sw_n_layers = _adain_dim = '?'
 
         config_text = (
             f"=== HLBS FullPred Training ===\n"
