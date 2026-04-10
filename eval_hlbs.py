@@ -147,12 +147,14 @@ def Options():
             train_opts = yaml.safe_load(f)
         # Model args: fill from yml only if not explicitly set via CLI
         model_keys = ['rig_path', 'topo_key', 'num_identities', 'hid_dim',
-                      'num_layers', 'freeze_adapt', 'use_joint_trans', 'full_prediction']
+                      'num_layers', 'freeze_adapt', 'use_joint_trans', 'full_prediction',
+                      'nfs_feat_dir']
         for key in model_keys:
             if key in train_opts and getattr(opts, key, None) is None:
                 setattr(opts, key, train_opts[key])
         # Boolean flags: always inherit from yml (CLI store_true can't distinguish default)
-        for key in ['freeze_adapt', 'use_joint_trans', 'full_prediction']:
+        for key in ['freeze_adapt', 'use_joint_trans', 'full_prediction',
+                     'nfs_concat', 'adain_pos_norm', 'dfn_skin', 'dfn_bind', 'dfn_exp']:
             if key in train_opts and f'--{key}' not in sys.argv:
                 setattr(opts, key, train_opts[key])
         print(f"[eval] Loaded model config from: {train_opts_path}")
@@ -168,6 +170,12 @@ def Options():
         opts.num_layers = 4
     if opts.num_identities is None:
         opts.num_identities = 13
+    # NFS feat defaults
+    if not hasattr(opts, 'nfs_feat_dir') or opts.nfs_feat_dir is None:
+        opts.nfs_feat_dir = None
+    for bkey in ['nfs_concat', 'adain_pos_norm', 'dfn_skin', 'dfn_bind', 'dfn_exp']:
+        if not hasattr(opts, bkey):
+            setattr(opts, bkey, False)
 
     return opts
 
@@ -295,6 +303,12 @@ class HLBSEvaluator:
                 num_layers=opts.num_layers,
                 device=str(self.device),
                 use_joint_trans=opts.use_joint_trans,
+                dfn_skin=opts.dfn_skin,
+                dfn_bind=opts.dfn_bind,
+                dfn_exp=opts.dfn_exp,
+                nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
+                nfs_concat=opts.nfs_concat,
+                adain_pos_norm=opts.adain_pos_norm,
             ).to(self.device)
         else:
             self.model = HierarchicalLBS(
@@ -319,6 +333,17 @@ class HLBSEvaluator:
         self.model.load_state_dict(torch.load(ckpt_path, map_location=self.device))
         self.model.eval()
         print(f"Loaded: {ckpt_path}")
+
+        # ── Load NFS features ──────────────────────────────────────────
+        self._nfs_feat_cache = {}
+        if opts.nfs_feat_dir:
+            import glob as _glob
+            feat_files = _glob.glob(os.path.join(opts.nfs_feat_dir, '*_nfs_feat.npy'))
+            for fp in feat_files:
+                fname = os.path.basename(fp).replace('_nfs_feat.npy', '')
+                self._nfs_feat_cache[fname] = torch.tensor(
+                    np.load(fp), dtype=torch.float32).to(self.device)
+            print(f"[eval] NFS feat loaded: {len(self._nfs_feat_cache)} identities on GPU")
 
         # ── Output dir ──────────────────────────────────────────────────
         # eval_hlbs/{ckpt_basename}-eval/e050-self/mf_ROM/
@@ -358,6 +383,7 @@ class HLBSEvaluator:
                 # Auto-load from dataset pkl
                 tgt_verts, tgt_faces, tgt_id_name = self._load_tgt_from_dataset(
                     opts.tgt_dataset, opts.tgt_identity, opts.data_basedir)
+                self._tgt_id_name = tgt_id_name
                 tgt_normals = igl.per_vertex_normals(tgt_verts, tgt_faces).astype(np.float32)
                 self.tgt_neu_vert = torch.from_numpy(tgt_verts).float().unsqueeze(0).to(self.device)
                 self.tgt_neu_norm = torch.from_numpy(tgt_normals).float().unsqueeze(0).to(self.device)
@@ -381,6 +407,16 @@ class HLBSEvaluator:
                     self.tgt_faces).long().unsqueeze(0).to(self.device)
                 print(f"Target mesh: {self.tgt_neu_vert.shape[1]} verts, "
                       f"{self.tgt_faces.shape[0]} faces")
+
+            # Prepare target NFS feat for cross-retarget
+            if self._nfs_feat_cache and opts.tgt_dataset:
+                # Try to find matching feature in cache
+                _tgt_id_name = getattr(self, '_tgt_id_name', None)
+                if _tgt_id_name and _tgt_id_name in self._nfs_feat_cache:
+                    self._tgt_nfs_feat = self._nfs_feat_cache[_tgt_id_name].unsqueeze(0)
+                    print(f"[eval] Target NFS feat loaded: {_tgt_id_name}")
+                else:
+                    print(f"[eval] Target NFS feat not found in cache (online extraction needed for unseen mesh)")
 
     # ── Target mesh loader ──────────────────────────────────────────────
 
@@ -494,11 +530,28 @@ class HLBSEvaluator:
                 gt_v  = batch.vertices
                 gt_n  = batch.vertices_normal
 
+                # Get NFS features if available
+                _nfs_feat = None
+                if self._nfs_feat_cache and hasattr(batch, 'id_name'):
+                    B_cur = src_v.shape[0]
+                    N_cur = src_v.shape[1]
+                    feats = []
+                    for b in range(B_cur):
+                        id_key = batch.id_name[b] if isinstance(batch.id_name, list) else batch.id_name
+                        if id_key in self._nfs_feat_cache:
+                            f = self._nfs_feat_cache[id_key]
+                            if f.shape[0] > N_cur:
+                                f = f[:N_cur]
+                            feats.append(f)
+                        else:
+                            feats.append(torch.zeros(N_cur, 256, device=self.device))
+                    _nfs_feat = torch.stack(feats, dim=0)
+
                 # forward
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
-                pred_lbs  = self.model(src_v, deform_in, source_normal=src_n)
+                pred_lbs  = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
 
                 # build mesh operators once
                 if L_sp is None:
@@ -593,8 +646,14 @@ class HLBSEvaluator:
                 tgt_v = self.tgt_neu_vert.expand(B, -1, -1)
                 tgt_n = self.tgt_neu_norm.expand(B, -1, -1)
 
+                # Target NFS feat (same for all frames)
+                _tgt_nfs_feat = None
+                if hasattr(self, '_tgt_nfs_feat'):
+                    _tgt_nfs_feat = self._tgt_nfs_feat.expand(B, -1, -1)
+
                 pred_lbs = self.model.retarget(
-                    src_v, src_n, gt_v, gt_n, tgt_v, tgt_n)
+                    src_v, src_n, gt_v, gt_n, tgt_v, tgt_n,
+                    tgt_nfs_feat=_tgt_nfs_feat)
 
                 # save predicted vertices
                 if opts.save_vert:
