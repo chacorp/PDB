@@ -425,7 +425,19 @@ class HLBSTrainer:
             delta = deformed_t - template_t
             src_in = torch.cat([template_t, template_n], dim=-1)
             deform_in = torch.cat([delta, deformed_n, src_in], dim=-1)
-            pred = self.model(template_t, deform_in, source_normal=template_n)
+
+            # Get NFS feat for visualization if available
+            _vis_nfs_feat = None
+            if hasattr(self, '_nfs_feat_cache') and self._nfs_feat_cache:
+                _key = f"ict_{0:03d}"  # first identity
+                if _key in self._nfs_feat_cache:
+                    _f = self._nfs_feat_cache[_key]
+                    N_cur = template_t.shape[1]
+                    if _f.shape[0] > N_cur:
+                        _f = _f[:N_cur]
+                    _vis_nfs_feat = _f.unsqueeze(0)
+
+            pred = self.model(template_t, deform_in, source_normal=template_n, nfs_feat=_vis_nfs_feat)
 
             faces_cpu = torch.tensor(faces_np).long()
             v_gt_list.append(deformed_t[0].cpu())
