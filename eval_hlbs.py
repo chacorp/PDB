@@ -137,6 +137,8 @@ def Options():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--data_basedir", type=str, default="/data/sihun",
                         help='Base directory for datasets')
+    parser.add_argument("--nfs_ckpt", type=str, default="ckpts_comparison/NFS-best",
+                        help='NFS checkpoint for online seg feature extraction (unseen mesh)')
 
     opts = parser.parse_args()
 
@@ -336,6 +338,7 @@ class HLBSEvaluator:
 
         # ── Load NFS features ──────────────────────────────────────────
         self._nfs_feat_cache = {}
+        self._nfs_model = None
         if opts.nfs_feat_dir:
             import glob as _glob
             feat_files = _glob.glob(os.path.join(opts.nfs_feat_dir, '*_nfs_feat.npy'))
@@ -409,14 +412,14 @@ class HLBSEvaluator:
                       f"{self.tgt_faces.shape[0]} faces")
 
             # Prepare target NFS feat for cross-retarget
-            if self._nfs_feat_cache and opts.tgt_dataset:
-                # Try to find matching feature in cache
-                _tgt_id_name = getattr(self, '_tgt_id_name', None)
-                if _tgt_id_name and _tgt_id_name in self._nfs_feat_cache:
-                    self._tgt_nfs_feat = self._nfs_feat_cache[_tgt_id_name].unsqueeze(0)
-                    print(f"[eval] Target NFS feat loaded: {_tgt_id_name}")
-                else:
-                    print(f"[eval] Target NFS feat not found in cache (online extraction needed for unseen mesh)")
+            if opts.nfs_feat_dir:
+                _tgt_id_name = getattr(self, '_tgt_id_name', None) or 'tgt_unknown'
+                tgt_verts_np = self.tgt_neu_vert[0].cpu().numpy()
+                tgt_faces_np = self.tgt_faces
+                feat = self._get_nfs_feat(_tgt_id_name, tgt_verts_np, tgt_faces_np)
+                if feat is not None:
+                    self._tgt_nfs_feat = feat.unsqueeze(0)
+                    print(f"[eval] Target NFS feat ready: {_tgt_id_name}")
 
     # ── Target mesh loader ──────────────────────────────────────────────
 
@@ -490,6 +493,84 @@ class HLBSEvaluator:
         verts = np.array(templates[id_name], dtype=np.float32)
         return verts, faces, id_name
 
+    # ── Online NFS feature extraction ──────────────────────────────────
+
+    def _load_nfs_model(self):
+        """Lazy-load NFS model for online feature extraction."""
+        if self._nfs_model is not None:
+            return
+        import yaml as _yaml
+        from models.NFS import NFS
+
+        nfs_ckpt = self.opts.nfs_ckpt
+        with open(os.path.join(nfs_ckpt, 'train_opts.yml')) as f:
+            nfs_opts = _yaml.safe_load(f)
+
+        class _Opts: pass
+        opts = _Opts()
+        for k, v in nfs_opts.items():
+            setattr(opts, k, v)
+        opts.device = str(self.device)
+        opts.is_train = False
+
+        self._nfs_model = NFS(opts=opts).to(self.device)
+        ckpt_path = os.path.join(nfs_ckpt, 'model_best.pth')
+        self._nfs_model.load_state_dict(
+            torch.load(ckpt_path, map_location=self.device, weights_only=False), strict=False)
+        self._nfs_model.eval()
+        print(f"[eval] NFS model loaded for online extraction: {ckpt_path}")
+
+    @torch.no_grad()
+    def _extract_seg_feat_online(self, verts_np, faces_np):
+        """Extract seg_encoder per-vertex feature [V, 256] for unseen mesh."""
+        self._load_nfs_model()
+        from utils.nfr_utils import get_dfn_info
+
+        mesh = trimesh.Trimesh(vertices=verts_np, faces=faces_np, process=False)
+        dfn_info = get_dfn_info(mesh, map_location=self.device)
+
+        verts_t = torch.tensor(verts_np, dtype=torch.float32, device=self.device).unsqueeze(0)
+        normals = igl.per_vertex_normals(verts_np, faces_np).astype(np.float32)
+        norms_t = torch.tensor(normals, dtype=torch.float32, device=self.device).unsqueeze(0)
+
+        # Get img feat
+        img = self._nfs_model.renderer.render_img(mesh).float().to(self.device)
+        img_feat = self._nfs_model.get_img_feat(img).squeeze()
+        img_feat_exp = img_feat.unsqueeze(0).unsqueeze(0).expand(1, verts_np.shape[0], -1)
+        vert_feat = torch.cat([verts_t, norms_t, img_feat_exp], dim=-1)
+
+        # Seg encoder forward (before last_lin)
+        encoder = self._nfs_model.mesh_seg_encoder
+        encoder.update_precomputes(dfn_info)
+        dfn = encoder.dfn
+
+        L = torch.sparse_coo_tensor(encoder.L_ind, encoder.L_val, encoder.L_size, device=self.device)
+        batch_mass = encoder.mass.unsqueeze(0)
+        batch_evals = encoder.evals.unsqueeze(0)
+        batch_evecs = encoder.evecs.unsqueeze(0)
+        gradX = [torch.sparse_coo_tensor(encoder.grad_X_ind, encoder.grad_X_val, encoder.grad_X_size, device=self.device)]
+        gradY = [torch.sparse_coo_tensor(encoder.grad_Y_ind, encoder.grad_Y_val, encoder.grad_Y_size, device=self.device)]
+
+        x = dfn.first_lin(vert_feat)
+        for block in dfn.blocks:
+            x = block(x, batch_mass, L=[L], evals=batch_evals, evecs=batch_evecs, gradX=gradX, gradY=gradY)
+
+        return x[0]  # [V, 256] on GPU
+
+    def _get_nfs_feat(self, id_name, verts_np=None, faces_np=None):
+        """Get NFS seg feature: from cache if available, otherwise extract online."""
+        if id_name in self._nfs_feat_cache:
+            return self._nfs_feat_cache[id_name]
+
+        # Online extraction for unseen identity
+        if verts_np is not None and faces_np is not None and self.opts.nfs_feat_dir:
+            print(f"[eval] Online seg feat extraction for: {id_name}")
+            feat = self._extract_seg_feat_online(verts_np, faces_np)
+            self._nfs_feat_cache[id_name] = feat  # cache for reuse
+            return feat
+
+        return None
+
     # ── Self-retargeting evaluation ─────────────────────────────────────
 
     def evaluate_self(self):
@@ -532,14 +613,18 @@ class HLBSEvaluator:
 
                 # Get NFS features if available
                 _nfs_feat = None
-                if self._nfs_feat_cache and hasattr(batch, 'id_name'):
+                if self.opts.nfs_feat_dir and hasattr(batch, 'id_name'):
                     B_cur = src_v.shape[0]
                     N_cur = src_v.shape[1]
                     feats = []
+                    _faces_np = batch.faces[0].cpu().numpy() if batch.faces.dim() == 3 else batch.faces.cpu().numpy()
                     for b in range(B_cur):
                         id_key = batch.id_name[b] if isinstance(batch.id_name, list) else batch.id_name
-                        if id_key in self._nfs_feat_cache:
-                            f = self._nfs_feat_cache[id_key]
+                        f = self._get_nfs_feat(
+                            id_key,
+                            verts_np=src_v[b].cpu().numpy(),
+                            faces_np=_faces_np)
+                        if f is not None:
                             if f.shape[0] > N_cur:
                                 f = f[:N_cur]
                             feats.append(f)
