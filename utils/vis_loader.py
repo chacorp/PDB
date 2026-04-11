@@ -195,6 +195,7 @@ class CheckpointVisLoader:
             self.frames.append({
                 'label':        label,
                 'dataset':      ds,
+                'id_name':      idn,
                 'npy_path':     npy_path,
                 'template_np':  template_np,
                 'faces':        faces,
@@ -247,7 +248,8 @@ class CheckpointVisLoader:
                   strain_mode='norm', vis_jacobian_det=False,
                   smooth_n_iter=16,
                   no_t_mask=False, use_source_template=False,
-                  norm_stats=None):
+                  norm_stats=None,
+                  nfs_feat_cache=None):
         """
         Run forward on all vis frames and save stitched panel images.
 
@@ -302,7 +304,19 @@ class CheckpointVisLoader:
                 delta     = vertices_v - template_v
                 src_in    = torch.cat([template_v, template_n], dim=-1)
                 deform_in = torch.cat([delta, vertices_n, src_in], dim=-1)
-                pred_lbs  = model_lbs(template_v, deform_in, source_normal=template_n)  # [1, N, 3]
+
+                # Look up NFS identity feature for this frame
+                _vis_nfs_feat = None
+                if nfs_feat_cache:
+                    id_key = entry.get('id_name', '')
+                    if id_key in nfs_feat_cache:
+                        _f = nfs_feat_cache[id_key]
+                        N_cur = template_v.shape[1]
+                        if _f.shape[0] > N_cur:
+                            _f = _f[:N_cur]
+                        _vis_nfs_feat = _f.unsqueeze(0)  # [1, N, 256]
+
+                pred_lbs  = model_lbs(template_v, deform_in, source_normal=template_n, nfs_feat=_vis_nfs_feat)  # [1, N, 3]
                 t_mask    = plateau_hat_points(template_v)
             else:
                 # ── LBS forward (stage_disp: old NGBC interface) ──

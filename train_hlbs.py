@@ -774,6 +774,7 @@ class HLBSTrainer:
                     mode='hlbs',
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
+                    nfs_feat_cache=self._nfs_feat_cache if hasattr(self, '_nfs_feat_cache') else None,
                 )
                 if opts.curriculum and epoch > 0:
                     self._visualize_curriculum_bases(
@@ -1264,6 +1265,7 @@ class HLBSTrainer:
                     mode='hlbs',
                     smooth_n_iter=opts.smooth_n_iter,
                     no_t_mask=opts.no_t_mask,
+                    nfs_feat_cache=self._nfs_feat_cache if hasattr(self, '_nfs_feat_cache') else None,
                 )
                 if opts.curriculum and epoch > 0:
                     self._visualize_curriculum_bases(
