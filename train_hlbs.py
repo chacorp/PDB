@@ -1179,6 +1179,13 @@ class HLBSTrainer:
                         normal_diff = normal_diff * t_mask.squeeze(-1)
                     loss_dict["recon-normal"] = normal_diff.mean()
 
+                # ── Curvature loss (Laplacian difference) ────────────────
+                if opts.lambda_curvature > 0 and not is_permed:
+                    from train_edd_real import _uniform_laplacian
+                    loss_dict["recon-curvature"] = F.mse_loss(
+                        _uniform_laplacian(pred_lbs, batch.faces),
+                        _uniform_laplacian(target_v, batch.faces))
+
                 # ── Phase 1: init supervision ────────────────────────────
                 if lambda_init > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
@@ -1200,6 +1207,7 @@ class HLBSTrainer:
                     "recon-lbs": opts.lambda_vert,
                     "recon-neu": opts.lambda_neu,
                     "recon-normal": opts.lambda_normal,
+                    "recon-curvature": opts.lambda_curvature,
                     "L_W_init": lambda_init,
                     "L_bind_init": lambda_init,
                     "L_rwc_init": opts.lambda_rwc,
