@@ -703,14 +703,20 @@ class HierarchicalLBS_FullPred(nn.Module):
     # ── Core ─────────────────────────────────────────────────────────────
 
     def _get_skinning_weights(self, source_feat, adain_input=None):
-        logit_W = self.skin_weight_net(source_feat, adain_input=adain_input)  # [B, N, J]
+        if self.dfn_skin:
+            logit_W = self.skin_weight_net(source_feat)  # [B, N, J]
+        else:
+            logit_W = self.skin_weight_net(source_feat, adain_input=adain_input)  # [B, N, J]
         logit_W = self._smooth_logit_W(logit_W)
         return F.softmax(logit_W, dim=-1), logit_W
 
     def _get_bind_pose(self, source_feat, adain_input=None):
         B = source_feat.shape[0]
         J = self.num_joints
-        joint_pos = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
+        if self.dfn_bind:
+            joint_pos = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
+        else:
+            joint_pos = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
 
         dev, dtype = self.parent_idx.device, source_feat.dtype
         eye3    = torch.eye(3, device=dev, dtype=dtype).expand(B, J, 3, 3)
