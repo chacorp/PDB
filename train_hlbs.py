@@ -117,6 +117,11 @@ def Options():
                         help='Adaptive alpha: joints with fewer dominant vertices get stronger constraint')
     parser.set_defaults(rwc_adaptive=False)
 
+    # freeze bind pose (use Maya init directly, no bind_pose_net prediction)
+    parser.add_argument("--freeze_bind_pose", dest='freeze_bind_pose', action='store_true',
+                        help='Fix bind pose to Maya init (skip bind_pose_net)')
+    parser.set_defaults(freeze_bind_pose=False)
+
     # DiffusionNet options (per-module)
     parser.add_argument("--dfn_skin", dest='dfn_skin', action='store_true',
                         help='Use DiffusionNet for skin_weight_net')
@@ -917,6 +922,7 @@ class HLBSTrainer:
             nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
             nfs_concat=opts.nfs_concat if hasattr(opts, 'nfs_concat') else False,
             adain_pos_norm=opts.adain_pos_norm if hasattr(opts, 'adain_pos_norm') else False,
+            freeze_bind_pose=opts.freeze_bind_pose if hasattr(opts, 'freeze_bind_pose') else False,
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 

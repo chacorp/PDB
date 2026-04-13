@@ -512,11 +512,13 @@ class HierarchicalLBS_FullPred(nn.Module):
         nfs_feat_dim: int = 0,
         nfs_concat: bool = False,
         adain_pos_norm: bool = False,
+        freeze_bind_pose: bool = False,
     ):
         super().__init__()
 
         self.device_str = device
         self.use_joint_trans = use_joint_trans
+        self.freeze_bind_pose = freeze_bind_pose
         self.dfn_skin = dfn_skin
         self.dfn_bind = dfn_bind
         self.dfn_exp = dfn_exp
@@ -547,6 +549,7 @@ class HierarchicalLBS_FullPred(nn.Module):
             else:
                 T_bind_local[j] = B_inv_t[p] @ B_bind[j]
         self.register_buffer('T_bind_local', T_bind_local)
+        self.register_buffer('B_inv_fixed', B_inv_t)  # [J, 4, 4] for freeze_bind_pose
 
         # ── Maya init as supervision target (not structural base) ────────
         # Per-topology init targets: {topology_key: W_target [N, J]}
@@ -751,7 +754,10 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
         W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)
-        B_inv_id, _ = self._get_bind_pose(skin_input, adain_input=_adain)
+        if self.freeze_bind_pose:
+            B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
+        else:
+            B_inv_id, _ = self._get_bind_pose(skin_input, adain_input=_adain)
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
@@ -849,7 +855,10 @@ class HierarchicalLBS_FullPred(nn.Module):
         # ── Identity from TARGET ────────────────────────────────────────
         tgt_skin_input, tgt_adain = self._prepare_feat(tgt_neu_vert, tgt_neu_norm, tgt_nfs_feat)
         W_tgt, _ = self._get_skinning_weights(tgt_skin_input, adain_input=tgt_adain)
-        B_inv_tgt, _ = self._get_bind_pose(tgt_skin_input, adain_input=tgt_adain)
+        if self.freeze_bind_pose:
+            B_inv_tgt = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)
+        else:
+            B_inv_tgt, _ = self._get_bind_pose(tgt_skin_input, adain_input=tgt_adain)
 
         G = torch.bmm(
             T_world.reshape(B * J, 4, 4),
