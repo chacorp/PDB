@@ -104,6 +104,10 @@ def Options():
     parser.add_argument("--lambda_init", type=float, default=1.0,
                         help='Init supervision loss weight')
 
+    # bind pose regularization (independent of lambda_init, not annealed)
+    parser.add_argument("--lambda_bind_reg", type=float, default=0.0,
+                        help='Bind pose MSE to Maya init (always on, 0=disabled)')
+
     # regional weight constraint
     parser.add_argument("--lambda_rwc", type=float, default=0.0,
                         help='Regional weight constraint loss weight (0=disabled)')
@@ -1193,6 +1197,13 @@ class HLBSTrainer:
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
+                # ── Bind pose regularization (always on, not annealed) ──
+                if opts.lambda_bind_reg > 0:
+                    skin_input, _adain = self.model._prepare_feat(src_v, src_n, _nfs_feat)
+                    _, joint_pos = self.model._get_bind_pose(skin_input, adain_input=_adain)
+                    loss_dict["L_bind_reg"] = F.mse_loss(
+                        joint_pos, self.model.bind_pos_target.unsqueeze(0).expand_as(joint_pos))
+
                 # ── Regional weight constraint ──────────────────────────
                 if opts.lambda_rwc > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
@@ -1210,6 +1221,7 @@ class HLBSTrainer:
                     "recon-curvature": opts.lambda_curvature,
                     "L_W_init": lambda_init,
                     "L_bind_init": lambda_init,
+                    "L_bind_reg": opts.lambda_bind_reg,
                     "L_rwc_init": opts.lambda_rwc,
                     "L_rwc_min": opts.lambda_rwc,
                 }
