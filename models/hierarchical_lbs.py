@@ -899,8 +899,8 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Regional weight constraint ──────────────────────────────────────
 
-    # Target joint indices for constrained regions (eye + eyebrow)
-    _CONSTRAINED_JOINTS = [8, 10, 12, 13, 14, 15, 17, 18, 21, 22, 23, 24, 26, 27, 28]
+    # Target joint indices for constrained regions (all 66 joints)
+    _CONSTRAINED_JOINTS = list(range(66))
 
     def _build_regional_weight_constraints(self, alpha=0.5, adaptive=False):
         """Build per-joint min threshold and dominant vertex masks from Maya init.
