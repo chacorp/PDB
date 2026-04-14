@@ -1333,6 +1333,19 @@ class HLBSTrainer:
                                 feats.append(torch.zeros(N_cur, 256, device=self.device))
                         _nfs_feat = torch.stack(feats, dim=0)
 
+                    # Update DiffusionNet precomputes for val topology
+                    if opts.dfn_skin or opts.dfn_bind or opts.dfn_exp:
+                        N_cur = src_v.shape[1]
+                        if not hasattr(self, '_dfn_cached_N') or self._dfn_cached_N != N_cur:
+                            import trimesh as _tm
+                            from utils.nfr_utils import get_dfn_info
+                            _f = batch.faces[0].cpu().numpy() if batch.faces.dim() == 3 else batch.faces.cpu().numpy()
+                            _v = src_v[0].cpu().numpy()
+                            _mesh = _tm.Trimesh(vertices=_v, faces=_f, process=False)
+                            _dfn = get_dfn_info(_mesh, cache_dir='dfn_cache', map_location=self.device)
+                            self.model.update_dfn_precomputes(_dfn)
+                            self._dfn_cached_N = N_cur
+
                     delta     = gt_v - src_v
                     src_in    = torch.cat([src_v, src_n], dim=-1)
                     deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
