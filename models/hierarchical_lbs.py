@@ -917,82 +917,100 @@ class HierarchicalLBS_FullPred(nn.Module):
     # Target joint indices for constrained regions (all 66 joints)
     _CONSTRAINED_JOINTS = list(range(66))
 
-    def _build_regional_weight_constraints(self, alpha=0.5, adaptive=False):
+    def _build_regional_weight_constraints(self, alpha=0.5, adaptive=False, topologies=('ict',)):
         """Build per-joint min threshold and dominant vertex masks from Maya init.
-        Call once after model creation. Only uses ICT topology.
+        Call once after model creation. Builds for specified topologies.
 
-        If adaptive=True, alpha is scaled per joint based on dominant vertex count:
-          alpha_j = alpha + (1 - alpha) * (1 - n_dom_j / max_n_dom)
-        Joints with fewer dominant vertices get higher alpha (stronger constraint).
+        Args:
+            topologies: tuple of topo keys to apply RWC (e.g. ('ict',) or ('ict', 'mf'))
         """
-        W_maya = self._init_targets.get('ict')
-        if W_maya is None:
-            print("[WARN] No ICT init target for regional weight constraints")
-            return
+        self._rwc_per_topo = {}
 
-        # First pass: collect dominant vertex counts
-        dom_counts = {}
-        for j in self._CONSTRAINED_JOINTS:
-            dom_mask = W_maya[:, j] > 0.01
-            if dom_mask.sum() > 0:
-                dom_counts[j] = dom_mask.sum().item()
-
-        max_n_dom = max(dom_counts.values()) if dom_counts else 1
-
-        self._rwc = {}
-        for j in self._CONSTRAINED_JOINTS:
-            dom_mask = W_maya[:, j] > 0.01                          # [N_ict]
-            if dom_mask.sum() == 0:
+        for topo_key in topologies:
+            W_maya = self._init_targets.get(topo_key)
+            if W_maya is None:
+                print(f"[WARN] No {topo_key} init target for regional weight constraints")
                 continue
-            mean_w = W_maya[dom_mask, j].mean().item()
 
-            if adaptive:
-                n_dom = dom_counts[j]
-                alpha_j = alpha + (1.0 - alpha) * (1.0 - n_dom / max_n_dom)
-            else:
-                alpha_j = alpha
+            dom_counts = {}
+            for j in self._CONSTRAINED_JOINTS:
+                dom_mask = W_maya[:, j] > 0.01
+                if dom_mask.sum() > 0:
+                    dom_counts[j] = dom_mask.sum().item()
 
-            threshold = alpha_j * mean_w
-            self._rwc[j] = {
-                'dom_verts': dom_mask,                               # [N_ict] bool
-                'threshold': threshold,
-                'mean_maya': mean_w,
-                'alpha': alpha_j,
-            }
-        print(f"[HLBS] Regional weight constraints built for {len(self._rwc)} joints "
-              f"(base_alpha={alpha}, adaptive={adaptive})")
-        for j, info in self._rwc.items():
-            print(f"  [{j:2d}] {self.joint_names[j]:>40s}  "
-                  f"alpha={info['alpha']:.3f}  thr={info['threshold']:.4f}  "
-                  f"maya_mean={info['mean_maya']:.4f}")
+            if not dom_counts:
+                continue
+
+            max_n_dom = max(dom_counts.values())
+            rwc = {}
+            for j in self._CONSTRAINED_JOINTS:
+                dom_mask = W_maya[:, j] > 0.01
+                if dom_mask.sum() == 0:
+                    continue
+                mean_w = W_maya[dom_mask, j].mean().item()
+
+                if adaptive:
+                    n_dom = dom_counts[j]
+                    alpha_j = alpha + (1.0 - alpha) * (1.0 - n_dom / max_n_dom)
+                else:
+                    alpha_j = alpha
+
+                threshold = alpha_j * mean_w
+                rwc[j] = {
+                    'dom_verts': dom_mask,
+                    'threshold': threshold,
+                    'mean_maya': mean_w,
+                    'alpha': alpha_j,
+                }
+
+            self._rwc_per_topo[topo_key] = rwc
+            print(f"[HLBS] RWC built for '{topo_key}': {len(rwc)} joints "
+                  f"(base_alpha={alpha}, adaptive={adaptive})")
+            for j, info in rwc.items():
+                print(f"  [{j:2d}] {self.joint_names[j]:>40s}  "
+                      f"alpha={info['alpha']:.3f}  thr={info['threshold']:.4f}  "
+                      f"maya_mean={info['mean_maya']:.4f}")
+
+        # Backward compat
+        self._rwc = self._rwc_per_topo.get('ict', {})
 
     def regional_weight_constraint_loss(self, source_vert, source_normal=None,
                                          mesh_data=None, perm_idx=None, nfs_feat=None):
         """
         Regional weight constraint loss for maintaining anatomically
-        meaningful skinning weights on specific joints (eye, eyebrow).
+        meaningful skinning weights on specific joints.
 
         Two components:
           1) L_rwc_init: MSE to Maya W on constrained joint-vertex pairs
           2) L_rwc_min:  soft penalty when W drops below per-joint threshold
 
-        Only applies to ICT batches (mesh_data == 5).
+        Applies to topologies registered in _rwc_per_topo.
         """
         losses = {}
 
-        if not hasattr(self, '_rwc') or not self._rwc:
-            return losses
+        if not hasattr(self, '_rwc_per_topo') or not self._rwc_per_topo:
+            # Backward compat: fall back to self._rwc (ICT only)
+            if not hasattr(self, '_rwc') or not self._rwc:
+                return losses
+            self._rwc_per_topo = {'ict': self._rwc}
 
-        # Only apply to ICT topology
+        # Determine current topology
+        topo_key = None
         if mesh_data is not None:
             md = mesh_data.item() if isinstance(mesh_data, torch.Tensor) else mesh_data
-            if self._mesh_data_to_topo.get(md) != 'ict':
-                return losses
+            topo_key = self._mesh_data_to_topo.get(md)
+
+        if topo_key is None or topo_key not in self._rwc_per_topo:
+            return losses
+
+        rwc = self._rwc_per_topo[topo_key]
+        if not rwc:
+            return losses
 
         skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
         W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)  # [B, N, J]
 
-        W_maya = self._init_targets.get('ict')
+        W_maya = self._init_targets.get(topo_key)
         if W_maya is None:
             return losses
 
@@ -1010,7 +1028,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         min_w_loss = 0.0
         count = 0
 
-        for j, info in self._rwc.items():
+        for j, info in rwc.items():
             dom = info['dom_verts']
             thr = info['threshold']
 

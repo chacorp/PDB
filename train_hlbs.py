@@ -116,6 +116,8 @@ def Options():
     parser.add_argument("--rwc_adaptive", dest='rwc_adaptive', action='store_true',
                         help='Adaptive alpha: joints with fewer dominant vertices get stronger constraint')
     parser.set_defaults(rwc_adaptive=False)
+    parser.add_argument("--rwc_topologies", type=str, default='ict',
+                        help='Comma-separated topologies for RWC (e.g. "ict" or "ict,mf")')
 
     # freeze bind pose (use Maya init directly, no bind_pose_net prediction)
     parser.add_argument("--freeze_bind_pose", dest='freeze_bind_pose', action='store_true',
@@ -939,7 +941,9 @@ class HLBSTrainer:
 
         # Build regional weight constraints
         if opts.lambda_rwc > 0:
-            self.model._build_regional_weight_constraints(alpha=opts.rwc_alpha, adaptive=opts.rwc_adaptive)
+            rwc_topos = tuple(t.strip() for t in opts.rwc_topologies.split(','))
+            self.model._build_regional_weight_constraints(
+                alpha=opts.rwc_alpha, adaptive=opts.rwc_adaptive, topologies=rwc_topos)
 
         # Resume from checkpoint if specified
         if opts.ckpt and opts.continue_ckpt:
