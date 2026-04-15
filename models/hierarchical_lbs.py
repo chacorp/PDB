@@ -549,7 +549,8 @@ class HierarchicalLBS_FullPred(nn.Module):
             else:
                 T_bind_local[j] = B_inv_t[p] @ B_bind[j]
         self.register_buffer('T_bind_local', T_bind_local)
-        self.register_buffer('B_inv_fixed', B_inv_t)  # [J, 4, 4] for freeze_bind_pose
+        if freeze_bind_pose:
+            self.register_buffer('B_inv_fixed', B_inv_t)  # [J, 4, 4]
 
         # ── Maya init as supervision target (not structural base) ────────
         # Per-topology init targets: {topology_key: W_target [N, J]}
