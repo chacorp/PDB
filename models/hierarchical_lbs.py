@@ -538,6 +538,15 @@ class HierarchicalLBS_FullPred(nn.Module):
         self.register_buffer('parent_idx', rig.parent_idx.to(device))
         self.register_buffer('bind_pos',   rig.bind_pos.to(device))
 
+        # Log hierarchy verification
+        _p = rig.parent_idx.numpy()
+        _has_child = set(int(_p[j]) for j in range(J) if _p[j] >= 0)
+        _leaves = [j for j in range(J) if j not in _has_child]
+        print(f"[HLBS] Hierarchy: {J} joints, {len(_leaves)} leaves")
+        print(f"  Root(0)→Neck({_p[1]=='0' or _p[1]}): parent={_p[1]}")
+        print(f"  Neck(1) children: {[j for j in range(J) if _p[j]==1]}")
+        print(f"  Leaf joints: {_leaves[:10]}{'...' if len(_leaves) > 10 else ''}")
+
         B_inv_t = rig.B_inv.to(device)
         B_bind  = torch.linalg.inv(B_inv_t)
         parent  = rig.parent_idx.to(device)
@@ -1058,6 +1067,107 @@ class HierarchicalLBS_FullPred(nn.Module):
         if count > 0:
             losses['L_rwc_init'] = init_loss / count
             losses['L_rwc_min'] = min_w_loss / count
+
+        return losses
+
+    # ── Hierarchy locality loss ──────────────────────────────────────────
+
+    def _build_hierarchy_constraints(self, topologies=('ict',)):
+        """Build leaf-joint dominant region masks from Maya init.
+        For each leaf joint, store vertices where W_maya > 0.01 (has weight).
+        """
+        J = self.num_joints
+        parent_idx = self.parent_idx.cpu().numpy()
+
+        # Find leaf joints (no children)
+        has_child = set()
+        for j in range(J):
+            p = parent_idx[j]
+            if p >= 0:
+                has_child.add(p)
+        self._leaf_joints = [j for j in range(J) if j not in has_child]
+
+        self._hier_per_topo = {}
+        for topo_key in topologies:
+            W_maya = self._init_targets.get(topo_key)
+            if W_maya is None:
+                continue
+
+            hier = {}
+            for j in self._leaf_joints:
+                region = W_maya[:, j] > 0.01  # vertices where this leaf has weight
+                if region.sum() == 0:
+                    continue
+                hier[j] = region  # [N] bool mask
+            self._hier_per_topo[topo_key] = hier
+
+            print(f"[HLBS] Hierarchy constraints built for '{topo_key}': "
+                  f"{len(hier)}/{len(self._leaf_joints)} leaf joints")
+            for j, mask in hier.items():
+                print(f"  [{j:2d}] {self.joint_names[j]:>40s}  region_verts={mask.sum().item()}")
+
+    def hierarchy_locality_loss(self, source_vert, source_normal=None,
+                                mesh_data=None, perm_idx=None, nfs_feat=None,
+                                margin=0.0):
+        """
+        Leaf joint locality loss: each leaf joint should have the maximum
+        predicted weight in its Maya-defined region (W_maya > 0.01).
+
+        loss = mean over leaf joints of:
+            relu(max_other_weight - W_pred[:, leaf] + margin)
+        """
+        losses = {}
+
+        if not hasattr(self, '_hier_per_topo') or not self._hier_per_topo:
+            return losses
+
+        # Determine topology
+        topo_key = None
+        if mesh_data is not None:
+            md = mesh_data.item() if isinstance(mesh_data, torch.Tensor) else mesh_data
+            topo_key = self._mesh_data_to_topo.get(md)
+
+        if topo_key is None or topo_key not in self._hier_per_topo:
+            return losses
+
+        hier = self._hier_per_topo[topo_key]
+        if not hier:
+            return losses
+
+        skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
+        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)  # [B, N, J]
+        N = source_vert.shape[1]
+
+        total_loss = 0.0
+        count = 0
+
+        for j, region in hier.items():
+            # Slice region mask for current vertex count
+            if perm_idx is not None:
+                region_sliced = region[perm_idx]
+            elif region.shape[0] > N:
+                region_sliced = region[:N]
+            else:
+                region_sliced = region
+
+            if region_sliced.sum() == 0:
+                continue
+
+            W_region = W[:, region_sliced, :]        # [B, n_region, J]
+            W_leaf = W_region[:, :, j]               # [B, n_region]
+
+            # Max weight among all OTHER joints
+            W_others = W_region.clone()
+            W_others[:, :, j] = -1e9                 # exclude self
+            max_other = W_others.max(dim=-1).values  # [B, n_region]
+
+            # Penalty when any other joint exceeds this leaf
+            violation = torch.relu(max_other - W_leaf + margin)
+            total_loss = total_loss + violation.mean()
+            count += 1
+
+        if count > 0:
+            losses['L_hier'] = total_loss / count
 
         return losses
 

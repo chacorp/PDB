@@ -119,6 +119,12 @@ def Options():
     parser.add_argument("--rwc_topologies", type=str, default='ict',
                         help='Comma-separated topologies for RWC (e.g. "ict" or "ict,mf")')
 
+    # hierarchy locality loss (leaf joints dominate their regions)
+    parser.add_argument("--lambda_hier", type=float, default=0.0,
+                        help='Hierarchy locality loss weight (0=disabled)')
+    parser.add_argument("--hier_margin", type=float, default=0.0,
+                        help='Margin for hierarchy loss (leaf must exceed others by this much)')
+
     # freeze bind pose (use Maya init directly, no bind_pose_net prediction)
     parser.add_argument("--freeze_bind_pose", dest='freeze_bind_pose', action='store_true',
                         help='Fix bind pose to Maya init (skip bind_pose_net)')
@@ -142,6 +148,9 @@ def Options():
     parser.add_argument("--nfs_concat", dest='nfs_concat', action='store_true',
                         help='Concat seg feat with pos+norm as input [262], 4 layers.')
     parser.set_defaults(nfs_concat=False)
+    parser.add_argument("--nfs_on_cpu", dest='nfs_on_cpu', action='store_true',
+                        help='Keep NFS features on CPU and transfer to GPU per-batch (saves VRAM).')
+    parser.set_defaults(nfs_on_cpu=False)
     parser.add_argument("--adain_pos_norm", dest='adain_pos_norm', action='store_true',
                         help='AdaIN conditioning on pos+norm [6] only. Without: AdaIN on full input.')
     parser.set_defaults(adain_pos_norm=False)
@@ -930,20 +939,31 @@ class HLBSTrainer:
 
         # Load NFS pretrained features
         self._nfs_feat_cache = {}
+        self._nfs_on_cpu = getattr(opts, 'nfs_on_cpu', False)
         if opts.nfs_feat_dir:
             import glob as _glob
             feat_files = _glob.glob(os.path.join(opts.nfs_feat_dir, '*_nfs_feat.npy'))
             for fp in feat_files:
                 fname = os.path.basename(fp).replace('_nfs_feat.npy', '')
-                self._nfs_feat_cache[fname] = torch.tensor(np.load(fp), dtype=torch.float32).to(self.device)  # GPU
+                t = torch.tensor(np.load(fp), dtype=torch.float32)
+                if not self._nfs_on_cpu:
+                    t = t.to(self.device)
+                self._nfs_feat_cache[fname] = t
+            total_mb = sum(v.numel() * 4 for v in self._nfs_feat_cache.values()) / 1e6
+            loc_str = 'CPU' if self._nfs_on_cpu else 'GPU'
             print(f"[NFS feat] Loaded {len(self._nfs_feat_cache)} identity features "
-                  f"({sum(v.numel()*4 for v in self._nfs_feat_cache.values())/1e6:.1f} MB on GPU)")
+                  f"({total_mb:.1f} MB on {loc_str})")
 
         # Build regional weight constraints
         if opts.lambda_rwc > 0:
             rwc_topos = tuple(t.strip() for t in opts.rwc_topologies.split(','))
             self.model._build_regional_weight_constraints(
                 alpha=opts.rwc_alpha, adaptive=opts.rwc_adaptive, topologies=rwc_topos)
+
+        # Build hierarchy locality constraints
+        if opts.lambda_hier > 0:
+            rwc_topos = tuple(t.strip() for t in opts.rwc_topologies.split(','))
+            self.model._build_hierarchy_constraints(topologies=rwc_topos)
 
         # Resume from checkpoint if specified
         if opts.ckpt and opts.continue_ckpt:
@@ -1029,6 +1049,7 @@ class HLBSTrainer:
             f"  lambda_vert    : {opts.lambda_vert}\n"
             f"  lambda_neu     : {opts.lambda_neu}\n"
             f"  lambda_rwc     : {opts.lambda_rwc} (adaptive={getattr(opts, 'rwc_adaptive', False)})\n"
+            f"  lambda_hier    : {opts.lambda_hier} (margin={opts.hier_margin})\n"
             f"  nfs_feat_dir   : {opts.nfs_feat_dir}\n"
             f"  nfs_concat     : {getattr(opts, 'nfs_concat', False)}\n"
             f"  adain_pos_norm : {getattr(opts, 'adain_pos_norm', False)}\n"
@@ -1144,7 +1165,9 @@ class HLBSTrainer:
                         if id_key in self._nfs_feat_cache:
                             f = self._nfs_feat_cache[id_key]
                             if f.shape[0] > N_cur:
-                                f = f[:N_cur]  # region select slice
+                                f = f[:N_cur]
+                            if self._nfs_on_cpu:
+                                f = f.to(self.device, non_blocking=True)
                             feats.append(f)
                         else:
                             feats.append(torch.zeros(N_cur, 256, device=self.device))
@@ -1225,6 +1248,16 @@ class HLBSTrainer:
                     for k, v in rwc_losses.items():
                         loss_dict[k] = v
 
+                # ── Hierarchy locality loss ──────────────────────────────
+                if opts.lambda_hier > 0:
+                    _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
+                    _perm = getattr(batch, 'perm_idx', None)
+                    hier_losses = self.model.hierarchy_locality_loss(
+                        src_v, source_normal=src_n, mesh_data=_md, perm_idx=_perm,
+                        nfs_feat=_nfs_feat, margin=opts.hier_margin)
+                    for k, v in hier_losses.items():
+                        loss_dict[k] = v
+
                 # ── Total loss ───────────────────────────────────────────
                 loss_lambda = {
                     "recon-lbs": opts.lambda_vert,
@@ -1236,6 +1269,7 @@ class HLBSTrainer:
                     "L_bind_reg": opts.lambda_bind_reg,
                     "L_rwc_init": opts.lambda_rwc,
                     "L_rwc_min": opts.lambda_rwc,
+                    "L_hier": opts.lambda_hier,
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
                 loss.backward()
@@ -1334,6 +1368,8 @@ class HLBSTrainer:
                                 f = self._nfs_feat_cache[id_key]
                                 if f.shape[0] > N_cur:
                                     f = f[:N_cur]
+                                if self._nfs_on_cpu:
+                                    f = f.to(self.device, non_blocking=True)
                                 feats.append(f)
                             else:
                                 feats.append(torch.zeros(N_cur, 256, device=self.device))
