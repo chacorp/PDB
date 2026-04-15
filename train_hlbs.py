@@ -1150,6 +1150,8 @@ class HLBSTrainer:
                             feats.append(torch.zeros(N_cur, 256, device=self.device))
                     _nfs_feat = torch.stack(feats, dim=0)  # [B, N, 256]
 
+                is_permed = hasattr(batch, 'perm_idx') and batch.perm_idx is not None
+
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
