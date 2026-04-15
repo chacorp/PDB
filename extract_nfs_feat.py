@@ -1,10 +1,18 @@
 """
-extract_nfs_feat.py — Extract and cache NFS seg encoder features for all datasets.
+extract_nfs_feat.py — Extract and cache NFS seg/id encoder features for all datasets.
 
 Requires GPU (pytorch3d rasterizer).
 
 Usage:
+    # All datasets (default)
     python extract_nfs_feat.py --device cuda:0
+
+    # Specific datasets only
+    python extract_nfs_feat.py --datasets biwi coma
+    python extract_nfs_feat.py --datasets mf ict
+
+    # Use id encoder instead of seg encoder
+    python extract_nfs_feat.py --encoder id
 """
 import os
 import sys
@@ -19,71 +27,80 @@ import trimesh
 sys.path.insert(0, os.path.dirname(__file__))
 
 
-def load_template(dataset, identity_idx=0):
-    if dataset == 'ict':
-        from utils.remesh_utils import ICT_face_model
-        ict = ICT_face_model()
-        iden_vecs = torch.load('ict_face_pt/ict_id_vecs_test.pt', weights_only=False).numpy()
-        id_disps = ict.get_id_disp(iden_vecs[identity_idx]).squeeze()
-        verts = (ict.neutral_verts + id_disps).astype(np.float32)
-        faces = ict.faces.astype(np.int32)
-        return verts, faces, f'ict_{identity_idx:03d}'
-
-    local_pkl_map = {
-        'mf': 'utils/templates/mf_templates.pkl',
-        'biwi': 'utils/templates/biwi_templates.pkl',
-        'coma': 'utils/templates/voca_templates.pkl',
-    }
-    with open(local_pkl_map[dataset], 'rb') as f:
+def load_templates_biwi():
+    with open('utils/templates/biwi_templates.pkl', 'rb') as f:
         templates = pickle.load(f)
     faces = np.array(templates['face'], dtype=np.int32)
     id_names = [k for k in templates if k != 'face']
-    id_name = id_names[identity_idx]
-    verts = np.array(templates[id_name], dtype=np.float32)
-    return verts, faces, id_name
+    return [(np.array(templates[n], dtype=np.float32), faces, n) for n in id_names]
 
 
-def extract_and_save(verts_np, faces_np, id_name, nfs_model, device, out_dir):
-    """Extract seg feat and save to cache."""
-    from utils.nfr_utils import get_dfn_info
+def load_templates_coma():
+    with open('utils/templates/voca_templates.pkl', 'rb') as f:
+        templates = pickle.load(f)
+    faces = np.array(templates['face'], dtype=np.int32)
+    id_names = [k for k in templates if k != 'face']
+    return [(np.array(templates[n], dtype=np.float32), faces, n) for n in id_names]
 
-    out_path = os.path.join(out_dir, f'{id_name}_nfs_feat.npy')
-    if os.path.exists(out_path):
-        print(f"  [skip] {out_path} already exists")
-        return
 
-    dev = torch.device(device)
-    mesh = trimesh.Trimesh(vertices=verts_np, faces=faces_np, process=False)
-    dfn_info = get_dfn_info(mesh, map_location=dev)
+def load_templates_mf(data_basedir):
+    mf_path = f"{data_basedir}/multiface_align/mf_templates.pkl"
+    if not os.path.exists(mf_path):
+        mf_path = f"{data_basedir}/pca/multiface_align/mf_templates.pkl"
+    with open(mf_path, 'rb') as f:
+        templates = pickle.load(f)
+    faces = np.array(templates['face'], dtype=np.int32)
+    id_names = [k for k in templates if k != 'face']
+    return [(np.array(templates[n], dtype=np.float32), faces, n) for n in id_names]
 
-    verts_t = torch.tensor(verts_np, dtype=torch.float32, device=dev).unsqueeze(0)
-    normals = igl.per_vertex_normals(verts_np, faces_np).astype(np.float32)
-    norms_t = torch.tensor(normals, dtype=torch.float32, device=dev).unsqueeze(0)
 
-    img = nfs_model.renderer.render_img(mesh).float().to(dev)
-    img_feat = nfs_model.get_img_feat(img).squeeze()
-    img_feat_exp = img_feat.unsqueeze(0).unsqueeze(0).expand(1, verts_np.shape[0], -1)
-    vert_feat = torch.cat([verts_t, norms_t, img_feat_exp], dim=-1)
+def load_templates_ict():
+    from utils.remesh_utils import ICT_face_model
+    ict = ICT_face_model()
+    ict_faces = ict.faces.astype(np.int32)
 
-    encoder = nfs_model.mesh_seg_encoder
+    ict_id_path = 'data/ICT_live_100/iden_vecs.npy'
+    if os.path.exists(ict_id_path):
+        iden_vecs = np.load(ict_id_path)
+    else:
+        iden_vecs = np.zeros((1, 100))
+
+    results = []
+    for i in range(len(iden_vecs)):
+        id_disps = ict.get_id_disp(iden_vecs[i]).squeeze()
+        verts = (ict.neutral_verts + id_disps).astype(np.float32)
+        results.append((verts, ict_faces, f'ict_{i:03d}'))
+    return results
+
+
+def extract_per_vertex_feature(model, mesh, dfn_info, device, encoder_type='seg'):
+    """Run NFS encoder and return per-vertex feature [V, C_width] before last_lin."""
+    img = model.renderer.render_img(mesh).float().to(device)
+    img_feat = model.get_img_feat(img)
+
+    verts_t = torch.tensor(mesh.vertices, dtype=torch.float32, device=device).unsqueeze(0)
+    faces_t = torch.tensor(mesh.faces, dtype=torch.long, device=device)
+    vert_feat = model.get_local_feature(verts_t, faces_t, img_feat, at='verts').float()
+
+    encoder = model.mesh_seg_encoder if encoder_type == 'seg' else model.mesh_id_encoder
     encoder.update_precomputes(dfn_info)
     dfn = encoder.dfn
 
-    L = torch.sparse_coo_tensor(encoder.L_ind, encoder.L_val, encoder.L_size, device=dev)
+    L = torch.sparse_coo_tensor(encoder.L_ind, encoder.L_val, encoder.L_size, device=device)
     batch_mass = encoder.mass.unsqueeze(0)
     batch_evals = encoder.evals.unsqueeze(0)
     batch_evecs = encoder.evecs.unsqueeze(0)
-    gradX = [torch.sparse_coo_tensor(encoder.grad_X_ind, encoder.grad_X_val, encoder.grad_X_size, device=dev)]
-    gradY = [torch.sparse_coo_tensor(encoder.grad_Y_ind, encoder.grad_Y_val, encoder.grad_Y_size, device=dev)]
+    gradX = [torch.sparse_coo_tensor(encoder.grad_X_ind, encoder.grad_X_val,
+             encoder.grad_X_size, device=device)]
+    gradY = [torch.sparse_coo_tensor(encoder.grad_Y_ind, encoder.grad_Y_val,
+             encoder.grad_Y_size, device=device)]
 
-    with torch.no_grad():
-        x = dfn.first_lin(vert_feat)
-        for block in dfn.blocks:
-            x = block(x, batch_mass, L=[L], evals=batch_evals, evecs=batch_evecs, gradX=gradX, gradY=gradY)
+    x = dfn.first_lin(vert_feat)
+    for block in dfn.blocks:
+        x = block(x, batch_mass, L=[L], evals=batch_evals,
+                  evecs=batch_evecs, gradX=gradX, gradY=gradY)
 
-    feat = x[0].cpu().numpy()  # [V, 256]
-    np.save(out_path, feat)
-    print(f"  Saved: {out_path} ({feat.shape})")
+    return x[0].cpu().numpy()  # [V, 256]
 
 
 def main():
@@ -91,10 +108,16 @@ def main():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--nfs_ckpt", type=str, default="ckpts_comparison/NFS-best")
     parser.add_argument("--out_dir", type=str, default="nfs_features_seg")
+    parser.add_argument("--data_basedir", type=str, default="/data/sihun")
+    parser.add_argument("--encoder", type=str, default="seg", choices=["id", "seg"],
+                        help="Which NFS encoder to extract features from (default: seg)")
+    parser.add_argument("--datasets", nargs='+', default=['biwi', 'coma', 'mf', 'ict'],
+                        choices=['biwi', 'coma', 'mf', 'ict'],
+                        help="Datasets to process (default: all)")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    dev = torch.device(args.device)
+    device = torch.device(args.device)
 
     # Load NFS model
     from models.NFS import NFS
@@ -106,27 +129,42 @@ def main():
     opts = _Opts()
     for k, v in nfs_opts.items():
         setattr(opts, k, v)
-    opts.device = str(dev)
+    opts.device = str(device)
     opts.is_train = False
 
-    nfs_model = NFS(opts=opts).to(dev)
+    model = NFS(opts=opts).to(device)
     ckpt_path = os.path.join(args.nfs_ckpt, 'model_best.pth')
-    nfs_model.load_state_dict(torch.load(ckpt_path, map_location=dev, weights_only=False), strict=False)
-    nfs_model.eval()
+    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=False), strict=False)
+    model.eval()
     print(f"Loaded NFS model: {ckpt_path}")
+    print(f"Encoder: {args.encoder}, Datasets: {args.datasets}")
 
-    # Datasets to extract
-    datasets = [
-        # BIWI: all 14 identities
-        *[('biwi', i) for i in range(14)],
-        # COMA/VOCA: all 12 identities
-        *[('coma', i) for i in range(12)],
-    ]
+    from utils.nfr_utils import get_dfn_info
 
-    for ds_key, id_idx in datasets:
-        verts, faces, id_name = load_template(ds_key, id_idx)
-        print(f"\n{ds_key} [{id_idx}] {id_name}: V={verts.shape[0]}")
-        extract_and_save(verts, faces, id_name, nfs_model, args.device, args.out_dir)
+    loaders = {
+        'biwi': load_templates_biwi,
+        'coma': load_templates_coma,
+        'mf': lambda: load_templates_mf(args.data_basedir),
+        'ict': load_templates_ict,
+    }
+
+    for ds in args.datasets:
+        entries = loaders[ds]()
+        print(f"\n── {ds.upper()} ({len(entries)} identities) ──")
+
+        for verts, faces, id_name in entries:
+            out_path = os.path.join(args.out_dir, f'{id_name}_nfs_feat.npy')
+            if os.path.exists(out_path):
+                print(f"  [skip] {out_path}")
+                continue
+
+            mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+            with torch.no_grad():
+                dfn_info = get_dfn_info(mesh, map_location=device)
+                feat = extract_per_vertex_feature(model, mesh, dfn_info, device, encoder_type=args.encoder)
+
+            np.save(out_path, feat.astype(np.float32))
+            print(f"  {id_name}: {feat.shape} -> {out_path}")
 
     print(f"\nDone. Features saved to: {args.out_dir}")
 
