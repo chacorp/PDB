@@ -1179,7 +1179,16 @@ class HLBSTrainer:
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
 
-                pred_lbs = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
+                _need_extras = (opts.lambda_rwc > 0 or opts.lambda_hier > 0
+                                or opts.lambda_bind_reg > 0)
+                if _need_extras:
+                    pred_lbs, _extras = self.model(
+                        src_v, deform_in, source_normal=src_n,
+                        nfs_feat=_nfs_feat, return_extras=True)
+                    _W = _extras['W']          # [B, N, J]
+                    _joint_pos = _extras['joint_pos']  # [B, J, 3] or None
+                else:
+                    pred_lbs = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
 
                 # ── Recon loss ───────────────────────────────────────────
                 if opts.no_t_mask:
@@ -1233,28 +1242,26 @@ class HLBSTrainer:
                         loss_dict[k] = v
 
                 # ── Bind pose regularization (always on, not annealed) ──
-                if opts.lambda_bind_reg > 0:
-                    skin_input, _adain = self.model._prepare_feat(src_v, src_n, _nfs_feat)
-                    _, joint_pos = self.model._get_bind_pose(skin_input, adain_input=_adain)
+                if opts.lambda_bind_reg > 0 and _joint_pos is not None:
                     loss_dict["L_bind_reg"] = F.mse_loss(
-                        joint_pos, self.model.bind_pos_target.unsqueeze(0).expand_as(joint_pos))
+                        _joint_pos, self.model.bind_pos_target.unsqueeze(0).expand_as(_joint_pos))
 
-                # ── Regional weight constraint ──────────────────────────
+                # ── Regional weight constraint (uses pre-computed W) ────
                 if opts.lambda_rwc > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
                     _perm = getattr(batch, 'perm_idx', None)
                     rwc_losses = self.model.regional_weight_constraint_loss(
-                        src_v, source_normal=src_n, mesh_data=_md, perm_idx=_perm, nfs_feat=_nfs_feat)
+                        _W, src_v.shape[1], mesh_data=_md, perm_idx=_perm)
                     for k, v in rwc_losses.items():
                         loss_dict[k] = v
 
-                # ── Hierarchy locality loss ──────────────────────────────
+                # ── Hierarchy locality loss (uses pre-computed W) ────────
                 if opts.lambda_hier > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
                     _perm = getattr(batch, 'perm_idx', None)
                     hier_losses = self.model.hierarchy_locality_loss(
-                        src_v, source_normal=src_n, mesh_data=_md, perm_idx=_perm,
-                        nfs_feat=_nfs_feat, margin=opts.hier_margin)
+                        _W, src_v.shape[1], mesh_data=_md, perm_idx=_perm,
+                        margin=opts.hier_margin)
                     for k, v in hier_losses.items():
                         loss_dict[k] = v
 

@@ -757,7 +757,7 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────
 
-    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None):
+    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False):
         B, N, _ = source_vert.shape
         J = self.num_joints
         device = source_vert.device
@@ -766,8 +766,9 @@ class HierarchicalLBS_FullPred(nn.Module):
         W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)
         if self.freeze_bind_pose:
             B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
+            joint_pos = None
         else:
-            B_inv_id, _ = self._get_bind_pose(skin_input, adain_input=_adain)
+            B_inv_id, joint_pos = self._get_bind_pose(skin_input, adain_input=_adain)
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
@@ -800,6 +801,11 @@ class HierarchicalLBS_FullPred(nn.Module):
         v_per_joint = torch.einsum('bjkl,bnl->bnjk', G[:, :, :3, :], v_h)
         rigid_v     = torch.einsum('bnj,bnjk->bnk', W, v_per_joint)
 
+        if return_extras:
+            extras = {'W': W, 'joint_pos': joint_pos}
+            if return_z_exp:
+                return rigid_v, z_exp_flat, extras
+            return rigid_v, extras
         if return_z_exp:
             return rigid_v, z_exp_flat
         return rigid_v
@@ -984,8 +990,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         # Backward compat
         self._rwc = self._rwc_per_topo.get('ict', {})
 
-    def regional_weight_constraint_loss(self, source_vert, source_normal=None,
-                                         mesh_data=None, perm_idx=None, nfs_feat=None):
+    def regional_weight_constraint_loss(self, W, N, mesh_data=None, perm_idx=None):
         """
         Regional weight constraint loss for maintaining anatomically
         meaningful skinning weights on specific joints.
@@ -994,17 +999,17 @@ class HierarchicalLBS_FullPred(nn.Module):
           1) L_rwc_init: MSE to Maya W on constrained joint-vertex pairs
           2) L_rwc_min:  soft penalty when W drops below per-joint threshold
 
-        Applies to topologies registered in _rwc_per_topo.
+        Args:
+            W: [B, N, J] predicted skin weights (from forward pass)
+            N: number of vertices
         """
         losses = {}
 
         if not hasattr(self, '_rwc_per_topo') or not self._rwc_per_topo:
-            # Backward compat: fall back to self._rwc (ICT only)
             if not hasattr(self, '_rwc') or not self._rwc:
                 return losses
             self._rwc_per_topo = {'ict': self._rwc}
 
-        # Determine current topology
         topo_key = None
         if mesh_data is not None:
             md = mesh_data.item() if isinstance(mesh_data, torch.Tensor) else mesh_data
@@ -1017,14 +1022,9 @@ class HierarchicalLBS_FullPred(nn.Module):
         if not rwc:
             return losses
 
-        skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
-        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)  # [B, N, J]
-
         W_maya = self._init_targets.get(topo_key)
         if W_maya is None:
             return losses
-
-        N = source_vert.shape[1]
 
         # Slice W_maya to match current vertex count (region select)
         if perm_idx is not None:
@@ -1106,22 +1106,20 @@ class HierarchicalLBS_FullPred(nn.Module):
             for j, mask in hier.items():
                 print(f"  [{j:2d}] {self.joint_names[j]:>40s}  region_verts={mask.sum().item()}")
 
-    def hierarchy_locality_loss(self, source_vert, source_normal=None,
-                                mesh_data=None, perm_idx=None, nfs_feat=None,
-                                margin=0.0):
+    def hierarchy_locality_loss(self, W, N, mesh_data=None, perm_idx=None, margin=0.0):
         """
         Leaf joint locality loss: each leaf joint should have the maximum
         predicted weight in its Maya-defined region (W_maya > 0.01).
 
-        loss = mean over leaf joints of:
-            relu(max_other_weight - W_pred[:, leaf] + margin)
+        Args:
+            W: [B, N, J] predicted skin weights (from forward pass)
+            N: number of vertices
         """
         losses = {}
 
         if not hasattr(self, '_hier_per_topo') or not self._hier_per_topo:
             return losses
 
-        # Determine topology
         topo_key = None
         if mesh_data is not None:
             md = mesh_data.item() if isinstance(mesh_data, torch.Tensor) else mesh_data
@@ -1133,10 +1131,6 @@ class HierarchicalLBS_FullPred(nn.Module):
         hier = self._hier_per_topo[topo_key]
         if not hier:
             return losses
-
-        skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
-        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)  # [B, N, J]
-        N = source_vert.shape[1]
 
         total_loss = 0.0
         count = 0
