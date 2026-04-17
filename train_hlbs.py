@@ -125,6 +125,10 @@ def Options():
     parser.add_argument("--hier_margin", type=float, default=0.0,
                         help='Margin for hierarchy loss (leaf must exceed others by this much)')
 
+    # distance-based weight locality loss
+    parser.add_argument("--lambda_dist", type=float, default=0.0,
+                        help='Distance-based weight locality: W should be high for close joints')
+
     # freeze bind pose (use Maya init directly, no bind_pose_net prediction)
     parser.add_argument("--freeze_bind_pose", dest='freeze_bind_pose', action='store_true',
                         help='Fix bind pose to Maya init (skip bind_pose_net)')
@@ -1050,6 +1054,7 @@ class HLBSTrainer:
             f"  lambda_neu     : {opts.lambda_neu}\n"
             f"  lambda_rwc     : {opts.lambda_rwc} (adaptive={getattr(opts, 'rwc_adaptive', False)})\n"
             f"  lambda_hier    : {opts.lambda_hier} (margin={opts.hier_margin})\n"
+            f"  lambda_dist    : {opts.lambda_dist}\n"
             f"  nfs_feat_dir   : {opts.nfs_feat_dir}\n"
             f"  nfs_concat     : {getattr(opts, 'nfs_concat', False)}\n"
             f"  adain_pos_norm : {getattr(opts, 'adain_pos_norm', False)}\n"
@@ -1118,7 +1123,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -1180,7 +1185,7 @@ class HLBSTrainer:
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
 
                 _need_extras = (opts.lambda_rwc > 0 or opts.lambda_hier > 0
-                                or opts.lambda_bind_reg > 0)
+                                or opts.lambda_bind_reg > 0 or opts.lambda_dist > 0)
                 if _need_extras:
                     pred_lbs, _extras = self.model(
                         src_v, deform_in, source_normal=src_n,
@@ -1255,6 +1260,12 @@ class HLBSTrainer:
                     for k, v in rwc_losses.items():
                         loss_dict[k] = v
 
+                # ── Distance-based weight locality (uses pre-computed W) ─
+                if opts.lambda_dist > 0:
+                    dist_losses = self.model.distance_weight_loss(_W, src_v)
+                    for k, v in dist_losses.items():
+                        loss_dict[k] = v
+
                 # ── Hierarchy locality loss (uses pre-computed W) ────────
                 if opts.lambda_hier > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
@@ -1277,6 +1288,7 @@ class HLBSTrainer:
                     "L_rwc_init": opts.lambda_rwc,
                     "L_rwc_min": opts.lambda_rwc,
                     "L_hier": opts.lambda_hier,
+                    "L_dist": opts.lambda_dist,
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
                 loss.backward()

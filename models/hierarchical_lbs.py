@@ -1176,6 +1176,27 @@ class HierarchicalLBS_FullPred(nn.Module):
             L_W_smooth = ((W_i - W_j) ** 2).mean()
         return {'L_W_smooth': L_W_smooth}
 
+    # ── Distance-based weight locality loss ──────────────────────────────
+
+    def distance_weight_loss(self, W, source_vert):
+        """
+        Encourage weight to be high for joints close to the vertex.
+
+        L_dist = mean_v ( sum_j W[v, j] * ||v - p_j||^2 )
+
+        Uses fixed bind_pos_target (ICT Maya positions, topology-invariant since
+        ICT/MF are aligned in the same canonical space).
+
+        Args:
+            W: [B, N, J] predicted skin weights
+            source_vert: [B, N, 3] template vertices
+        """
+        p = self.bind_pos_target                          # [J, 3]
+        diff = source_vert.unsqueeze(2) - p.view(1, 1, -1, 3)  # [B, N, J, 3]
+        dist_sq = (diff ** 2).sum(dim=-1)                 # [B, N, J]
+        L_dist = (W * dist_sq).sum(dim=-1).mean()         # mean over B, N
+        return {'L_dist': L_dist}
+
 
 # ── Quick sanity check ────────────────────────────────────────────────────
 if __name__ == '__main__':
