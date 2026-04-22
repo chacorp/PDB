@@ -513,12 +513,15 @@ class HierarchicalLBS_FullPred(nn.Module):
         nfs_concat: bool = False,
         adain_pos_norm: bool = False,
         freeze_bind_pose: bool = False,
+        use_gmm_hybrid: bool = False,
+        init_log_sigma: float = -1.2,
     ):
         super().__init__()
 
         self.device_str = device
         self.use_joint_trans = use_joint_trans
         self.freeze_bind_pose = freeze_bind_pose
+        self.use_gmm_hybrid = use_gmm_hybrid
         self.dfn_skin = dfn_skin
         self.dfn_bind = dfn_bind
         self.dfn_exp = dfn_exp
@@ -612,6 +615,25 @@ class HierarchicalLBS_FullPred(nn.Module):
                 num_layers=_n_layers, out_type='vertices',
                 adain_in_dim=_adain_dim,
             ).to(device)
+
+        # ── GMM hybrid params ────────────────────────────────────────────
+        # logit_total = skin_weight_net_output + (-||v - μ||² / (2σ²))
+        # μ from bind_pose_net (per-identity), σ learnable per-joint scalar
+        if use_gmm_hybrid:
+            self.log_sigma = nn.Parameter(
+                torch.full((J,), float(init_log_sigma), device=device)
+            )
+            # zero-init last layer of skin_weight_net → initial W ≈ pure Gaussian
+            _last = None
+            for m in self.skin_weight_net.modules():
+                if isinstance(m, nn.Linear):
+                    _last = m
+            if _last is not None:
+                nn.init.zeros_(_last.weight)
+                if _last.bias is not None:
+                    nn.init.zeros_(_last.bias)
+                print(f"[HLBS] GMM hybrid enabled: init log_σ={init_log_sigma}, "
+                      f"skin_weight_net last layer zero-initialized")
 
         if dfn_bind:
             from models.encoder import BaseDiffusionNetEncoder
@@ -715,13 +737,26 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Core ─────────────────────────────────────────────────────────────
 
-    def _get_skinning_weights(self, source_feat, adain_input=None):
+    def _get_skinning_weights(self, source_feat, adain_input=None,
+                               source_vert=None, joint_pos=None):
         if self.dfn_skin:
-            logit_W = self.skin_weight_net(source_feat)  # [B, N, J]
+            logit_net = self.skin_weight_net(source_feat)  # [B, N, J]
         else:
-            logit_W = self.skin_weight_net(source_feat, adain_input=adain_input)  # [B, N, J]
-        logit_W = self._smooth_logit_W(logit_W)
-        return F.softmax(logit_W, dim=-1), logit_W
+            logit_net = self.skin_weight_net(source_feat, adain_input=adain_input)  # [B, N, J]
+        logit_net = self._smooth_logit_W(logit_net)
+
+        # GMM hybrid: add Gaussian bias based on predicted joint_pos
+        if self.use_gmm_hybrid and source_vert is not None and joint_pos is not None:
+            # [B, N, J, 3] = [B, N, 1, 3] - [B, 1, J, 3]
+            diff = source_vert.unsqueeze(2) - joint_pos.unsqueeze(1)
+            dist_sq = (diff ** 2).sum(dim=-1)                           # [B, N, J]
+            sigma_sq = torch.exp(2 * self.log_sigma).view(1, 1, -1)     # [1, 1, J]
+            logit_gauss = -dist_sq / (2 * sigma_sq)                     # [B, N, J]
+            logit_total = logit_net + logit_gauss
+        else:
+            logit_total = logit_net
+
+        return F.softmax(logit_total, dim=-1), logit_total
 
     def _get_bind_pose(self, source_feat, adain_input=None):
         B = source_feat.shape[0]
@@ -763,12 +798,19 @@ class HierarchicalLBS_FullPred(nn.Module):
         device = source_vert.device
 
         skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
-        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)
+
+        # Bind pose first — μ needed for GMM-hybrid skinning
         if self.freeze_bind_pose:
             B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
-            joint_pos = None
+            # μ = fixed Maya bind_pos (broadcast to batch)
+            joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1)  # [B, J, 3]
         else:
             B_inv_id, joint_pos = self._get_bind_pose(skin_input, adain_input=_adain)
+
+        W, _ = self._get_skinning_weights(
+            skin_input, adain_input=_adain,
+            source_vert=source_vert, joint_pos=joint_pos,
+        )
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
@@ -870,11 +912,15 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         # ── Identity from TARGET ────────────────────────────────────────
         tgt_skin_input, tgt_adain = self._prepare_feat(tgt_neu_vert, tgt_neu_norm, tgt_nfs_feat)
-        W_tgt, _ = self._get_skinning_weights(tgt_skin_input, adain_input=tgt_adain)
         if self.freeze_bind_pose:
             B_inv_tgt = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)
+            tgt_joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1)
         else:
-            B_inv_tgt, _ = self._get_bind_pose(tgt_skin_input, adain_input=tgt_adain)
+            B_inv_tgt, tgt_joint_pos = self._get_bind_pose(tgt_skin_input, adain_input=tgt_adain)
+        W_tgt, _ = self._get_skinning_weights(
+            tgt_skin_input, adain_input=tgt_adain,
+            source_vert=tgt_neu_vert, joint_pos=tgt_joint_pos,
+        )
 
         G = torch.bmm(
             T_world.reshape(B * J, 4, 4),
@@ -900,8 +946,11 @@ class HierarchicalLBS_FullPred(nn.Module):
         If perm_idx is provided, slices W target accordingly.
         """
         skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
-        W, _ = self._get_skinning_weights(skin_input, adain_input=_adain)
         _, joint_pos = self._get_bind_pose(skin_input, adain_input=_adain)
+        W, _ = self._get_skinning_weights(
+            skin_input, adain_input=_adain,
+            source_vert=source_vert, joint_pos=joint_pos,
+        )
         losses = {}
 
         # Find appropriate W target

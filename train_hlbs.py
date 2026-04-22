@@ -134,6 +134,15 @@ def Options():
                         help='Fix bind pose to Maya init (skip bind_pose_net)')
     parser.set_defaults(freeze_bind_pose=False)
 
+    # GMM hybrid: add Gaussian bias to skin weight prediction
+    parser.add_argument("--use_gmm_hybrid", dest='use_gmm_hybrid', action='store_true',
+                        help='Add Gaussian bias (based on predicted joint_pos) to skin_weight_net logits')
+    parser.set_defaults(use_gmm_hybrid=False)
+    parser.add_argument("--init_log_sigma", type=float, default=-1.2,
+                        help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3)')
+    parser.add_argument("--lambda_sigma_reg", type=float, default=0.0,
+                        help='Optional regularization on log_sigma drift from init (0=disabled)')
+
     # DiffusionNet options (per-module)
     parser.add_argument("--dfn_skin", dest='dfn_skin', action='store_true',
                         help='Use DiffusionNet for skin_weight_net')
@@ -938,6 +947,8 @@ class HLBSTrainer:
             nfs_concat=opts.nfs_concat if hasattr(opts, 'nfs_concat') else False,
             adain_pos_norm=opts.adain_pos_norm if hasattr(opts, 'adain_pos_norm') else False,
             freeze_bind_pose=opts.freeze_bind_pose if hasattr(opts, 'freeze_bind_pose') else False,
+            use_gmm_hybrid=opts.use_gmm_hybrid if hasattr(opts, 'use_gmm_hybrid') else False,
+            init_log_sigma=opts.init_log_sigma if hasattr(opts, 'init_log_sigma') else -1.2,
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
@@ -1055,6 +1066,7 @@ class HLBSTrainer:
             f"  lambda_rwc     : {opts.lambda_rwc} (adaptive={getattr(opts, 'rwc_adaptive', False)})\n"
             f"  lambda_hier    : {opts.lambda_hier} (margin={opts.hier_margin})\n"
             f"  lambda_dist    : {opts.lambda_dist}\n"
+            f"  use_gmm_hybrid : {getattr(opts, 'use_gmm_hybrid', False)} (init_log_σ={getattr(opts, 'init_log_sigma', -1.2)})\n"
             f"  nfs_feat_dir   : {opts.nfs_feat_dir}\n"
             f"  nfs_concat     : {getattr(opts, 'nfs_concat', False)}\n"
             f"  adain_pos_norm : {getattr(opts, 'adain_pos_norm', False)}\n"
