@@ -259,12 +259,20 @@ def main():
         nfs_feat_dim=256 if opts.get('nfs_feat_dir') else 0,
         nfs_concat=opts.get('nfs_concat', False),
         adain_pos_norm=opts.get('adain_pos_norm', False),
+        freeze_bind_pose=opts.get('freeze_bind_pose', False),
+        use_gmm_hybrid=opts.get('use_gmm_hybrid', False),
+        init_log_sigma=opts.get('init_log_sigma', -1.2),
     ).to(device)
 
     ckpt_path = os.path.join(args.ckpt_dir, f'model_hlbs_{args.epoch}.pth')
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    model.load_state_dict(torch.load(ckpt_path, map_location=device), strict=False)
     model.eval()
     print(f"Loaded checkpoint: {ckpt_path}")
+    print(f"  use_gmm_hybrid: {opts.get('use_gmm_hybrid', False)}")
+    if opts.get('use_gmm_hybrid', False):
+        sigma_vals = torch.exp(model.log_sigma).detach().cpu().numpy()
+        print(f"  σ range: [{sigma_vals.min():.4f}, {sigma_vals.max():.4f}], "
+              f"mean={sigma_vals.mean():.4f}")
 
     J = model.num_joints
     joint_names = model.joint_names
@@ -310,7 +318,16 @@ def main():
         # Get predicted weights
         with torch.no_grad():
             skin_input, _adain = model._prepare_feat(src_v, src_n, nfs_feat)
-            W_pred, logit_W = model._get_skinning_weights(skin_input, adain_input=_adain)
+            # Bind pose first (needed by GMM hybrid)
+            if model.freeze_bind_pose:
+                B_size = src_v.shape[0]
+                joint_pos = model.bind_pos_target.unsqueeze(0).expand(B_size, -1, -1)
+            else:
+                _, joint_pos = model._get_bind_pose(skin_input, adain_input=_adain)
+            W_pred, logit_W = model._get_skinning_weights(
+                skin_input, adain_input=_adain,
+                source_vert=src_v, joint_pos=joint_pos,
+            )
 
         W_np = W_pred[0].cpu().numpy()  # [N, J]
         print(f"  W range: [{W_np.min():.6f}, {W_np.max():.6f}]")
