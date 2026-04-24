@@ -150,13 +150,14 @@ def Options():
         # Model args: fill from yml only if not explicitly set via CLI
         model_keys = ['rig_path', 'topo_key', 'num_identities', 'hid_dim',
                       'num_layers', 'freeze_adapt', 'use_joint_trans', 'full_prediction',
-                      'nfs_feat_dir']
+                      'nfs_feat_dir', 'init_log_sigma']
         for key in model_keys:
             if key in train_opts and getattr(opts, key, None) is None:
                 setattr(opts, key, train_opts[key])
         # Boolean flags: always inherit from yml (CLI store_true can't distinguish default)
         for key in ['freeze_adapt', 'use_joint_trans', 'full_prediction',
-                     'nfs_concat', 'adain_pos_norm', 'dfn_skin', 'dfn_bind', 'dfn_exp']:
+                     'nfs_concat', 'adain_pos_norm', 'dfn_skin', 'dfn_bind', 'dfn_exp',
+                     'freeze_bind_pose', 'use_gmm_hybrid']:
             if key in train_opts and f'--{key}' not in sys.argv:
                 setattr(opts, key, train_opts[key])
         print(f"[eval] Loaded model config from: {train_opts_path}")
@@ -311,6 +312,9 @@ class HLBSEvaluator:
                 nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
                 nfs_concat=opts.nfs_concat,
                 adain_pos_norm=opts.adain_pos_norm,
+                freeze_bind_pose=getattr(opts, 'freeze_bind_pose', False),
+                use_gmm_hybrid=getattr(opts, 'use_gmm_hybrid', False),
+                init_log_sigma=getattr(opts, 'init_log_sigma', -1.2),
             ).to(self.device)
         else:
             self.model = HierarchicalLBS(
