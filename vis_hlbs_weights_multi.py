@@ -244,8 +244,30 @@ def main():
         opts = yaml.safe_load(f)
     print(f"Loaded opts from {opts_path}")
 
-    # Load model
+    # Load model — replicate training-time options EXACTLY so eval path matches.
     rig = load_rig(opts['rig_path'])
+
+    # Resolve face_mask config from active_joints_json (if used in training)
+    _face_idx, _base_idx = None, None
+    _aj_path = opts.get('active_joints_json')
+    if _aj_path and os.path.exists(_aj_path):
+        with open(_aj_path) as f:
+            _aj = yaml.safe_load(f) if _aj_path.endswith(('.yml', '.yaml')) else __import__('json').load(f)
+        _face_idx = _aj['face_joint_idx']
+        _base_idx = _aj['base_joint_idx']
+
+    # Resolve sigma_targets (per-joint init if set in training)
+    _sig = None
+    if opts.get('sigma_targets_npy') and os.path.exists(opts['sigma_targets_npy']):
+        _sig = np.load(opts['sigma_targets_npy']).astype(np.float32)
+
+    # Resolve anchor_pool assets (if used in training)
+    _anc = _off = None
+    if opts.get('joint_anchors_npy') and os.path.exists(opts['joint_anchors_npy']):
+        _anc = np.load(opts['joint_anchors_npy']).astype(np.float32)
+    if opts.get('joint_offsets_npy') and os.path.exists(opts['joint_offsets_npy']):
+        _off = np.load(opts['joint_offsets_npy']).astype(np.float32)
+
     model = HierarchicalLBS_FullPred(
         rig=rig,
         in_dim_exp=12,
@@ -262,6 +284,16 @@ def main():
         freeze_bind_pose=opts.get('freeze_bind_pose', False),
         use_gmm_hybrid=opts.get('use_gmm_hybrid', False),
         init_log_sigma=opts.get('init_log_sigma', -1.2),
+        gmm_mode=opts.get('gmm_mode', 'additive'),
+        sigma_targets=_sig,
+        face_joint_idx=_face_idx,
+        base_joint_idx=_base_idx,
+        face_mask_r0=opts.get('face_mask_r0', 1.0),
+        face_mask_r1=opts.get('face_mask_r1', 2.25),
+        bind_pose_mode=opts.get('bind_pose_mode', 'net'),
+        joint_anchors=_anc,
+        joint_offsets=_off,
+        attn_temperature_init=opts.get('attn_temperature_init', 0.1),
     ).to(device)
 
     ckpt_path = os.path.join(args.ckpt_dir, f'model_hlbs_{args.epoch}.pth')

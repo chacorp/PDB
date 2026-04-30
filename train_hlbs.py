@@ -134,14 +134,57 @@ def Options():
                         help='Fix bind pose to Maya init (skip bind_pose_net)')
     parser.set_defaults(freeze_bind_pose=False)
 
+    # bind-pose mode: 'net' (default MLP) | 'anchor_pool' (closed-form NFS attention)
+    parser.add_argument("--bind_pose_mode", type=str, default='net',
+                        choices=['net', 'anchor_pool'],
+                        help='net: bind_pose_net MLP (default). '
+                             'anchor_pool: closed-form NFS attention with precomputed (anchor, offset).')
+    parser.add_argument("--joint_anchors_npy", type=str, default=None,
+                        help='Path to joint_anchors.npy [J, K] (from precompute_joint_anchors.py)')
+    parser.add_argument("--joint_offsets_npy", type=str, default=None,
+                        help='Path to joint_offsets.npy [J, 3] (world-space residuals)')
+    parser.add_argument("--attn_temperature_init", type=float, default=0.1,
+                        help='Initial softmax temperature for anchor pooling (per-joint, learnable)')
+    parser.add_argument("--bind_pos_cache_dir", type=str, default=None,
+                        help='Per-id bind_pos cache (lookup {id_name}_bind_pos.npy). '
+                             'In anchor_pool mode, defaults to --nfs_feat_dir. '
+                             'Build with precompute_per_id_bind_pos.py.')
+
     # GMM hybrid: add Gaussian bias to skin weight prediction
     parser.add_argument("--use_gmm_hybrid", dest='use_gmm_hybrid', action='store_true',
                         help='Add Gaussian bias (based on predicted joint_pos) to skin_weight_net logits')
     parser.set_defaults(use_gmm_hybrid=False)
     parser.add_argument("--init_log_sigma", type=float, default=-1.2,
-                        help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3)')
+                        help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3). '
+                             'Overridden by --sigma_targets_npy if given.')
+    parser.add_argument("--gmm_mode", type=str, default='additive',
+                        choices=['additive', 'multiplicative', 'residual'],
+                        help='additive: softmax(net+gauss). '
+                             'multiplicative: softmax(gauss) * sigmoid(net), net refines within RBF support. '
+                             'residual: softmax(gauss + exp(gauss)·tanh(net/s)·s) — bounded µ-centered residual.')
+    parser.add_argument("--residual_scale", type=float, default=2.0,
+                        help='Residual scale s in `gmm_mode=residual`. Bounds net contribution to ±s in log space.')
+    parser.add_argument("--sigma_targets_npy", type=str, default=None,
+                        help='Path to [J]-vector .npy of per-joint σ targets '
+                             '(from precompute_sigma_targets.py). If set, used as '
+                             'init AND as shrinkage target for log_sigma.')
     parser.add_argument("--lambda_sigma_reg", type=float, default=0.0,
-                        help='Optional regularization on log_sigma drift from init (0=disabled)')
+                        help='Weight for σ shrinkage penalty: relu(log_σ - log_σ_target)².'
+                             ' Applied only to active (face) joints if active_joints_json is set. '
+                             '0 = disabled.')
+    parser.add_argument("--lambda_net_center", type=float, default=0.0,
+                        help='Net-output-center anchor loss: ||mean_v(softmax(logit_net)·v) - μ_pred||². '
+                             'Forces logit_net distribution to be centered at the predicted joint position. '
+                             'Net keeps shape freedom but center is pinned. 0 = disabled.')
+
+    # Option A: face-mask mode (restrict W prediction to face joints, non-face → base joint)
+    parser.add_argument("--active_joints_json", type=str, default=None,
+                        help='Path to active_joints.json from analyze_active_joints.py. '
+                             'If set, enables face-mask mode in HLBS.')
+    parser.add_argument("--face_mask_r0", type=float, default=1.0,
+                        help='Plateau inner radius for face region (where t_mask=1)')
+    parser.add_argument("--face_mask_r1", type=float, default=2.25,
+                        help='Plateau outer radius (where t_mask=0)')
 
     # DiffusionNet options (per-module)
     parser.add_argument("--dfn_skin", dest='dfn_skin', action='store_true',
@@ -927,6 +970,58 @@ class HLBSTrainer:
         opts = self.opts
         BS = opts.batch_size
 
+        # ── Load active-joint config (Option A: face-mask mode) ──────────
+        self._face_joint_idx = None
+        self._base_joint_idx = None
+        if getattr(opts, 'active_joints_json', None):
+            with open(opts.active_joints_json) as f:
+                _aj = json.load(f)
+            self._face_joint_idx = _aj['face_joint_idx']
+            self._base_joint_idx = _aj['base_joint_idx']
+            print(f"[Option A] Loaded {len(self._face_joint_idx)} face joints, "
+                  f"base={_aj['base_joint_name']} (idx={self._base_joint_idx}) "
+                  f"from {opts.active_joints_json}")
+
+        # ── Load σ targets (per-joint init + shrinkage target) ───────────
+        self._sigma_targets = None
+        if getattr(opts, 'sigma_targets_npy', None):
+            self._sigma_targets = np.load(opts.sigma_targets_npy).astype(np.float32)
+            print(f"[σ targets] Loaded shape={self._sigma_targets.shape}, "
+                  f"range=[{self._sigma_targets.min():.3f}, {self._sigma_targets.max():.3f}] "
+                  f"from {opts.sigma_targets_npy}")
+
+        # ── Load anchor-pool bind-pose assets ────────────────────────────
+        self._joint_anchors = None
+        self._joint_offsets = None
+        if getattr(opts, 'bind_pose_mode', 'net') == 'anchor_pool':
+            assert opts.joint_anchors_npy and opts.joint_offsets_npy, \
+                'bind_pose_mode=anchor_pool requires --joint_anchors_npy and --joint_offsets_npy'
+            self._joint_anchors = np.load(opts.joint_anchors_npy).astype(np.float32)
+            self._joint_offsets = np.load(opts.joint_offsets_npy).astype(np.float32)
+            print(f"[anchor_pool] anchors={self._joint_anchors.shape} "
+                  f"offsets={self._joint_offsets.shape} (||δ|| range "
+                  f"[{np.linalg.norm(self._joint_offsets, axis=-1).min():.4f}, "
+                  f"{np.linalg.norm(self._joint_offsets, axis=-1).max():.4f}]) "
+                  f"from {opts.joint_anchors_npy}")
+
+        # ── Per-id bind_pos cache (anchor_pool default: nfs_feat_dir) ────
+        self._bind_pos_cache = {}
+        _cache_dir = getattr(opts, 'bind_pos_cache_dir', None)
+        if _cache_dir is None and getattr(opts, 'bind_pose_mode', 'net') == 'anchor_pool':
+            _cache_dir = getattr(opts, 'nfs_feat_dir', None)
+        if _cache_dir:
+            import glob as _glob
+            files = _glob.glob(os.path.join(_cache_dir, '*_bind_pos.npy'))
+            for fp in files:
+                k = os.path.basename(fp).replace('_bind_pos.npy', '')
+                self._bind_pos_cache[k] = torch.tensor(np.load(fp), dtype=torch.float32).to(self.device)
+            if files:
+                print(f"[bind_pos cache] Loaded {len(self._bind_pos_cache)} per-id "
+                      f"from {_cache_dir}")
+            elif getattr(opts, 'bind_pose_mode', 'net') == 'anchor_pool':
+                print(f"[bind_pos cache] WARNING: no *_bind_pos.npy in {_cache_dir}. "
+                      f"Run precompute_per_id_bind_pos.py first, or expect online (slower) computation.")
+
         # ── Build FullPred model ─────────────────────────────────────────
         from utils.rig_loader import load_rig
         rig = load_rig(opts.rig_path)
@@ -949,6 +1044,17 @@ class HLBSTrainer:
             freeze_bind_pose=opts.freeze_bind_pose if hasattr(opts, 'freeze_bind_pose') else False,
             use_gmm_hybrid=opts.use_gmm_hybrid if hasattr(opts, 'use_gmm_hybrid') else False,
             init_log_sigma=opts.init_log_sigma if hasattr(opts, 'init_log_sigma') else -1.2,
+            gmm_mode=getattr(opts, 'gmm_mode', 'additive'),
+            residual_scale=getattr(opts, 'residual_scale', 2.0),
+            sigma_targets=getattr(self, '_sigma_targets', None),
+            bind_pose_mode=getattr(opts, 'bind_pose_mode', 'net'),
+            joint_anchors=getattr(self, '_joint_anchors', None),
+            joint_offsets=getattr(self, '_joint_offsets', None),
+            attn_temperature_init=getattr(opts, 'attn_temperature_init', 0.1),
+            face_joint_idx=getattr(self, '_face_joint_idx', None),
+            base_joint_idx=getattr(self, '_base_joint_idx', None),
+            face_mask_r0=getattr(opts, 'face_mask_r0', 1.0),
+            face_mask_r1=getattr(opts, 'face_mask_r1', 2.25),
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
@@ -986,7 +1092,12 @@ class HLBSTrainer:
             if not os.path.exists(ckpt_path):
                 ckpt_path = os.path.join(opts.ckpt, "model_hlbs_best.pth")
             if os.path.exists(ckpt_path):
-                self.model.load_state_dict(torch.load(ckpt_path, map_location=self.device))
+                # strict=False so old ckpts (pre face-mask / sigma-target buffers) load cleanly
+                _msg = self.model.load_state_dict(
+                    torch.load(ckpt_path, map_location=self.device), strict=False)
+                if _msg.missing_keys or _msg.unexpected_keys:
+                    print(f"[FullPred resume] missing={len(_msg.missing_keys)} "
+                          f"unexpected={len(_msg.unexpected_keys)}")
                 print(f"[FullPred] Resumed from: {ckpt_path}")
 
         self.optimizer = torch.optim.AdamW(
@@ -1066,7 +1177,16 @@ class HLBSTrainer:
             f"  lambda_rwc     : {opts.lambda_rwc} (adaptive={getattr(opts, 'rwc_adaptive', False)})\n"
             f"  lambda_hier    : {opts.lambda_hier} (margin={opts.hier_margin})\n"
             f"  lambda_dist    : {opts.lambda_dist}\n"
-            f"  use_gmm_hybrid : {getattr(opts, 'use_gmm_hybrid', False)} (init_log_σ={getattr(opts, 'init_log_sigma', -1.2)})\n"
+            f"  use_gmm_hybrid : {getattr(opts, 'use_gmm_hybrid', False)} "
+            f"(mode={getattr(opts, 'gmm_mode', 'additive')}, init_log_σ={getattr(opts, 'init_log_sigma', -1.2)})\n"
+            f"  σ targets      : {getattr(opts, 'sigma_targets_npy', None)} "
+            f"(λ_sigma_reg={getattr(opts, 'lambda_sigma_reg', 0.0)})\n"
+            f"  bind_pose_mode : {getattr(opts, 'bind_pose_mode', 'net')} "
+            f"(anchors={getattr(opts, 'joint_anchors_npy', None)}, "
+            f"cache={getattr(opts, 'bind_pos_cache_dir', None)})\n"
+            f"  face_mask      : {self._face_joint_idx is not None} ("
+            f"{len(self._face_joint_idx) if self._face_joint_idx else 0}/{self.model.num_joints} joints, "
+            f"r0={opts.face_mask_r0}, r1={opts.face_mask_r1})\n"
             f"  nfs_feat_dir   : {opts.nfs_feat_dir}\n"
             f"  nfs_concat     : {getattr(opts, 'nfs_concat', False)}\n"
             f"  adain_pos_norm : {getattr(opts, 'adain_pos_norm', False)}\n"
@@ -1135,7 +1255,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -1196,16 +1316,33 @@ class HLBSTrainer:
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
 
+                # Per-id bind_pos cache lookup (anchor_pool mode optimization)
+                _bind_pos_cache = None
+                if self._bind_pos_cache:
+                    _items = []
+                    _all_hit = True
+                    for b in range(src_v.shape[0]):
+                        k = batch.id_name[b]
+                        if k in self._bind_pos_cache:
+                            _items.append(self._bind_pos_cache[k])
+                        else:
+                            _all_hit = False; break
+                    if _all_hit:
+                        _bind_pos_cache = torch.stack(_items, dim=0)  # [B, J, 3]
+
                 _need_extras = (opts.lambda_rwc > 0 or opts.lambda_hier > 0
-                                or opts.lambda_bind_reg > 0 or opts.lambda_dist > 0)
+                                or opts.lambda_bind_reg > 0 or opts.lambda_dist > 0
+                                or opts.lambda_net_center > 0)
                 if _need_extras:
                     pred_lbs, _extras = self.model(
                         src_v, deform_in, source_normal=src_n,
-                        nfs_feat=_nfs_feat, return_extras=True)
+                        nfs_feat=_nfs_feat, return_extras=True,
+                        bind_pos_cache=_bind_pos_cache)
                     _W = _extras['W']          # [B, N, J]
                     _joint_pos = _extras['joint_pos']  # [B, J, 3] or None
                 else:
-                    pred_lbs = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
+                    pred_lbs = self.model(src_v, deform_in, source_normal=src_n,
+                                          nfs_feat=_nfs_feat, bind_pos_cache=_bind_pos_cache)
 
                 # ── Recon loss ───────────────────────────────────────────
                 if opts.no_t_mask:
@@ -1258,10 +1395,32 @@ class HLBSTrainer:
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
-                # ── Bind pose regularization (always on, not annealed) ──
-                if opts.lambda_bind_reg > 0 and _joint_pos is not None:
+                # ── Bind pose regularization (skipped in anchor_pool mode: redundant by construction) ──
+                if (opts.lambda_bind_reg > 0 and _joint_pos is not None
+                        and getattr(opts, 'bind_pose_mode', 'net') == 'net'):
                     loss_dict["L_bind_reg"] = F.mse_loss(
                         _joint_pos, self.model.bind_pos_target.unsqueeze(0).expand_as(_joint_pos))
+
+                # ── σ shrinkage penalty (active joints only if face-mask on) ──
+                if opts.lambda_sigma_reg > 0 and getattr(self.model, 'use_gmm_hybrid', False):
+                    _act = self._face_joint_idx
+                    loss_dict["L_sigma"] = self.model.sigma_shrink_loss(active_idx=_act)
+
+                # ── Net-center anchor loss (logit_net 분포 무게중심을 μ_pred에 고정) ──
+                if (opts.lambda_net_center > 0 and _need_extras
+                        and _extras.get('logit_net') is not None
+                        and _joint_pos is not None):
+                    logit_net = _extras['logit_net']                    # [B, V, J]
+                    W_net = F.softmax(logit_net, dim=1)                  # softmax over V per joint
+                    mu_fit = torch.einsum('bvj,bvk->bjk', W_net, src_v)  # [B, J, 3]
+                    if self._face_joint_idx:
+                        _face_idx_t = torch.tensor(self._face_joint_idx, dtype=torch.long, device=mu_fit.device)
+                        mu_fit_a = mu_fit.index_select(1, _face_idx_t)
+                        mu_tgt_a = _joint_pos.index_select(1, _face_idx_t)
+                    else:
+                        mu_fit_a = mu_fit
+                        mu_tgt_a = _joint_pos
+                    loss_dict["L_net_center"] = F.mse_loss(mu_fit_a, mu_tgt_a.detach())
 
                 # ── Regional weight constraint (uses pre-computed W) ────
                 if opts.lambda_rwc > 0:
@@ -1301,6 +1460,8 @@ class HLBSTrainer:
                     "L_rwc_min": opts.lambda_rwc,
                     "L_hier": opts.lambda_hier,
                     "L_dist": opts.lambda_dist,
+                    "L_sigma": opts.lambda_sigma_reg,
+                    "L_net_center": opts.lambda_net_center,
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
                 loss.backward()
@@ -1373,7 +1534,7 @@ class HLBSTrainer:
                 continue
 
             self.model.eval()
-            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "total": 0.0}
+            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "L_net_center": 0.0, "total": 0.0}
             vcnt = 0
 
             pbar = tqdm(enumerate(valid_loader), total=len_valid, ncols=120,

@@ -515,6 +515,17 @@ class HierarchicalLBS_FullPred(nn.Module):
         freeze_bind_pose: bool = False,
         use_gmm_hybrid: bool = False,
         init_log_sigma: float = -1.2,
+        gmm_mode: str = 'additive',
+        residual_scale: float = 2.0,
+        sigma_targets: 'np.ndarray | torch.Tensor | None' = None,
+        face_joint_idx: list = None,
+        base_joint_idx: int = None,
+        face_mask_r0: float = 1.0,
+        face_mask_r1: float = 2.25,
+        bind_pose_mode: str = 'net',
+        joint_anchors: 'np.ndarray | torch.Tensor | None' = None,
+        joint_offsets: 'np.ndarray | torch.Tensor | None' = None,
+        attn_temperature_init: float = 0.1,
     ):
         super().__init__()
 
@@ -522,6 +533,12 @@ class HierarchicalLBS_FullPred(nn.Module):
         self.use_joint_trans = use_joint_trans
         self.freeze_bind_pose = freeze_bind_pose
         self.use_gmm_hybrid = use_gmm_hybrid
+        self.gmm_mode = gmm_mode
+        assert gmm_mode in ('additive', 'multiplicative', 'residual'), f'unknown gmm_mode: {gmm_mode}'
+        self.residual_scale = float(residual_scale)
+        # Bind-pose source: 'net' = bind_pose_net MLP (default), 'anchor_pool' = closed-form NFS attention
+        assert bind_pose_mode in ('net', 'anchor_pool'), f'unknown bind_pose_mode: {bind_pose_mode}'
+        self.bind_pose_mode = bind_pose_mode
         self.dfn_skin = dfn_skin
         self.dfn_bind = dfn_bind
         self.dfn_exp = dfn_exp
@@ -536,6 +553,46 @@ class HierarchicalLBS_FullPred(nn.Module):
         J = len(rig.joint_names)
         self.num_joints = J
         self.joint_names = rig.joint_names
+
+        # ── Option A: Face-mask mode ─────────────────────────────────────
+        # If face_joint_idx is set, softmax is restricted to these joints on
+        # face vertices (determined by plateau_hat mask). Non-face vertices
+        # get W=1 on base_joint_idx. This forces the network to only predict
+        # within the face region, and routes non-face rigid motion to a base.
+        self.use_face_mask = face_joint_idx is not None and len(face_joint_idx) > 0
+        self.face_mask_r0 = face_mask_r0
+        self.face_mask_r1 = face_mask_r1
+        if self.use_face_mask:
+            face_idx_t = torch.tensor(sorted(face_joint_idx), dtype=torch.long, device=device)
+            self.register_buffer('face_joint_idx', face_idx_t)
+            self.base_joint_idx = int(base_joint_idx) if base_joint_idx is not None else 2
+            print(f'[HLBS FaceMask] enabled | face joints: {len(face_joint_idx)}/{J} | '
+                  f'base_idx={self.base_joint_idx} ({self.joint_names[self.base_joint_idx]}) | '
+                  f'r0={face_mask_r0}, r1={face_mask_r1}')
+
+        # ── Anchor-pool bind-pose mode ───────────────────────────────────
+        # Closed-form: bind_pos = pool_attn(NFS_feat, anchor) + offset
+        # Anchors & offsets derived once on ICT mean (precompute_joint_anchors.py).
+        if self.bind_pose_mode == 'anchor_pool':
+            assert joint_anchors is not None and joint_offsets is not None, \
+                'bind_pose_mode="anchor_pool" requires joint_anchors and joint_offsets'
+            if not isinstance(joint_anchors, torch.Tensor):
+                joint_anchors = torch.tensor(joint_anchors, dtype=torch.float32)
+            if not isinstance(joint_offsets, torch.Tensor):
+                joint_offsets = torch.tensor(joint_offsets, dtype=torch.float32)
+            assert joint_anchors.shape[0] == J, \
+                f'joint_anchors shape {tuple(joint_anchors.shape)} mismatches J={J}'
+            assert joint_offsets.shape == (J, 3), \
+                f'joint_offsets shape {tuple(joint_offsets.shape)} != ({J}, 3)'
+            self.register_buffer('joint_anchors', joint_anchors.to(device))    # [J, 256]
+            self.register_buffer('joint_offsets', joint_offsets.to(device))    # [J, 3]
+            # Per-joint learnable temperature (sharper/smoother attention per joint)
+            self.attn_temperature = nn.Parameter(
+                torch.full((J,), float(attn_temperature_init), device=device))
+            print(f'[HLBS BindPose] anchor_pool enabled | anchors={tuple(joint_anchors.shape)} '
+                  f'| offset_norm range=[{joint_offsets.norm(dim=-1).min():.4f}, '
+                  f'{joint_offsets.norm(dim=-1).max():.4f}] '
+                  f'| init T={attn_temperature_init}')
 
         # ── Fixed hierarchy buffers ──────────────────────────────────────
         self.register_buffer('parent_idx', rig.parent_idx.to(device))
@@ -618,11 +675,32 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         # ── GMM hybrid params ────────────────────────────────────────────
         # logit_total = skin_weight_net_output + (-||v - μ||² / (2σ²))
-        # μ from bind_pose_net (per-identity), σ learnable per-joint scalar
+        # μ from bind_pose_net (per-identity), σ learnable per-joint scalar.
+        # If `sigma_targets` is provided, it's used as per-joint init AND as
+        # shrinkage target (via sigma_shrink_loss) to prevent σ from inflating.
         if use_gmm_hybrid:
-            self.log_sigma = nn.Parameter(
-                torch.full((J,), float(init_log_sigma), device=device)
-            )
+            if sigma_targets is not None:
+                # Per-joint σ from category-based spec (np.ndarray or tensor, shape [J])
+                if not isinstance(sigma_targets, torch.Tensor):
+                    sigma_targets = torch.tensor(sigma_targets, dtype=torch.float32)
+                sigma_targets = sigma_targets.to(device).float()
+                assert sigma_targets.shape == (J,), \
+                    f'sigma_targets shape {tuple(sigma_targets.shape)} != ({J},)'
+                log_sigma_target = torch.log(sigma_targets.clamp_min(1e-4))
+                self.log_sigma = nn.Parameter(log_sigma_target.clone())
+                self.register_buffer('log_sigma_target', log_sigma_target)
+                _init_msg = (f'per-joint from targets  '
+                             f'range log σ=[{log_sigma_target.min():+.2f}, {log_sigma_target.max():+.2f}]  '
+                             f'σ=[{sigma_targets.min():.3f}, {sigma_targets.max():.3f}]')
+            else:
+                self.log_sigma = nn.Parameter(
+                    torch.full((J,), float(init_log_sigma), device=device)
+                )
+                # No target → penalty will be skipped even if lambda>0
+                self.register_buffer('log_sigma_target',
+                                     torch.full((J,), float(init_log_sigma), device=device))
+                _init_msg = f'uniform init log_σ={init_log_sigma}'
+
             # zero-init last layer of skin_weight_net → initial W ≈ pure Gaussian
             _last = None
             for m in self.skin_weight_net.modules():
@@ -632,22 +710,26 @@ class HierarchicalLBS_FullPred(nn.Module):
                 nn.init.zeros_(_last.weight)
                 if _last.bias is not None:
                     nn.init.zeros_(_last.bias)
-                print(f"[HLBS] GMM hybrid enabled: init log_σ={init_log_sigma}, "
-                      f"skin_weight_net last layer zero-initialized")
+                print(f'[HLBS] GMM hybrid enabled: {_init_msg}, '
+                      f'skin_weight_net last layer zero-initialized, mode={gmm_mode}')
 
-        if dfn_bind:
-            from models.encoder import BaseDiffusionNetEncoder
-            self.bind_pose_net = BaseDiffusionNetEncoder(
-                in_shape=6, out_shape=J * 3, hid_shape=hid_dim,
-                N_block=num_layers, outputs_at='global_mean',
-                with_grad=True, last_activation=None,
-            ).to(device)
+        # bind_pose_net: built only in 'net' mode. anchor_pool / freeze use closed-form path.
+        if self.bind_pose_mode == 'net':
+            if dfn_bind:
+                from models.encoder import BaseDiffusionNetEncoder
+                self.bind_pose_net = BaseDiffusionNetEncoder(
+                    in_shape=6, out_shape=J * 3, hid_shape=hid_dim,
+                    N_block=num_layers, outputs_at='global_mean',
+                    with_grad=True, last_activation=None,
+                ).to(device)
+            else:
+                self.bind_pose_net = LinearEncoder(
+                    in_dim=_bind_in, out_dim=J * 3, hid_dim=hid_dim,
+                    num_layers=_n_layers, out_type='global',
+                    adain_in_dim=_adain_dim,
+                ).to(device)
         else:
-            self.bind_pose_net = LinearEncoder(
-                in_dim=_bind_in, out_dim=J * 3, hid_dim=hid_dim,
-                num_layers=_n_layers, out_type='global',
-                adain_in_dim=_adain_dim,
-            ).to(device)
+            self.bind_pose_net = None  # not used; freed for param savings
 
         # ── Expression encoder + pose model ─────────────────────────────
         if dfn_exp:
@@ -744,29 +826,75 @@ class HierarchicalLBS_FullPred(nn.Module):
         else:
             logit_net = self.skin_weight_net(source_feat, adain_input=adain_input)  # [B, N, J]
         logit_net = self._smooth_logit_W(logit_net)
+        # Cache raw smoothed logit_net for net_center_loss / diagnostic access via extras
+        self._last_logit_net = logit_net
 
-        # GMM hybrid: add Gaussian bias based on predicted joint_pos
+        # GMM hybrid: combine Gaussian bias with network logits
+        #   additive       : softmax(logit_net + logit_gauss)           [original]
+        #   multiplicative : softmax(logit_gauss) * sigmoid(logit_net)  [net refines WITHIN Gaussian support]
         if self.use_gmm_hybrid and source_vert is not None and joint_pos is not None:
             # [B, N, J, 3] = [B, N, 1, 3] - [B, 1, J, 3]
             diff = source_vert.unsqueeze(2) - joint_pos.unsqueeze(1)
             dist_sq = (diff ** 2).sum(dim=-1)                           # [B, N, J]
             sigma_sq = torch.exp(2 * self.log_sigma).view(1, 1, -1)     # [1, 1, J]
             logit_gauss = -dist_sq / (2 * sigma_sq)                     # [B, N, J]
-            logit_total = logit_net + logit_gauss
+
+            if self.gmm_mode == 'multiplicative':
+                W_prior = F.softmax(logit_gauss, dim=-1)                 # [B, N, J]  RBF support
+                modul   = torch.sigmoid(logit_net)                       # [B, N, J]  in [0,1]
+                W_raw   = W_prior * modul
+                W_pre   = W_raw / (W_raw.sum(dim=-1, keepdim=True) + 1e-8)
+                logit_total = W_pre.clamp_min(1e-8).log()
+            elif self.gmm_mode == 'residual':
+                # µ-centered bounded residual: net acts as bounded refinement
+                # whose impact decays as exp(logit_gauss) away from µ_j.
+                #   logit_total = logit_gauss + exp(logit_gauss) · tanh(net/s) · s
+                # Far from µ (window→0): residual disappears; near µ: ±s.
+                s = self.residual_scale
+                bounded = torch.tanh(logit_net / s) * s                  # [-s, +s]
+                window  = torch.exp(logit_gauss)                          # (0, 1]
+                logit_total = logit_gauss + window * bounded
+                W_pre = None  # softmax below
+            else:  # 'additive'
+                logit_total = logit_net + logit_gauss
+                W_pre = None  # softmax below
         else:
             logit_total = logit_net
+            W_pre = None
 
+        # ── Option A: face-mask mode ────────────────────────────────────
+        # Face region (t_mask≈1): softmax restricted to self.face_joint_idx.
+        # Non-face region (t_mask≈0): W routed to self.base_joint_idx.
+        # Smooth blending via plateau_hat preserves partition-of-unity.
+        if self.use_face_mask and source_vert is not None:
+            from utils.exp_utils import plateau_hat_points
+            B, N, J = logit_total.shape
+            t_mask = plateau_hat_points(
+                source_vert, r0=self.face_mask_r0, r1=self.face_mask_r1,
+            ).squeeze(-1)                                               # [B, N]
+
+            logit_face = logit_total.index_select(-1, self.face_joint_idx)   # [B, N, J_face]
+            W_face = F.softmax(logit_face, dim=-1)                            # sums to 1 over face joints
+
+            W_full = torch.zeros(B, N, J, device=source_vert.device,
+                                 dtype=source_vert.dtype)
+            W_full.index_copy_(-1, self.face_joint_idx,
+                               W_face * t_mask.unsqueeze(-1))                 # scale by t_mask
+            # Route non-face mass to base joint (add, so base may coexist in face set)
+            W_full[..., self.base_joint_idx] = (
+                W_full[..., self.base_joint_idx] + (1.0 - t_mask)
+            )
+            return W_full, logit_total
+
+        if W_pre is not None:
+            return W_pre, logit_total
         return F.softmax(logit_total, dim=-1), logit_total
 
-    def _get_bind_pose(self, source_feat, adain_input=None):
-        B = source_feat.shape[0]
-        J = self.num_joints
-        if self.dfn_bind:
-            joint_pos = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
-        else:
-            joint_pos = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
-
-        dev, dtype = self.parent_idx.device, source_feat.dtype
+    @staticmethod
+    def _build_B_inv(joint_pos):
+        """[B, J, 3] joint world positions → [B, J, 4, 4] inverse bind matrix."""
+        B, J, _ = joint_pos.shape
+        dev, dtype = joint_pos.device, joint_pos.dtype
         eye3    = torch.eye(3, device=dev, dtype=dtype).expand(B, J, 3, 3)
         neg_jp  = (-joint_pos).unsqueeze(-1)
         top     = torch.cat([eye3, neg_jp], dim=-1)
@@ -774,8 +902,44 @@ class HierarchicalLBS_FullPred(nn.Module):
             torch.zeros(B, J, 1, 3, device=dev, dtype=dtype),
             torch.ones( B, J, 1, 1, device=dev, dtype=dtype),
         ], dim=-1)
-        B_inv_id = torch.cat([top, bot], dim=-2)
-        return B_inv_id, joint_pos
+        return torch.cat([top, bot], dim=-2)
+
+    def _get_bind_pose(self, source_feat, adain_input=None):
+        """Net-based bind pose prediction (mode='net' path)."""
+        B = source_feat.shape[0]
+        J = self.num_joints
+        if self.dfn_bind:
+            joint_pos = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
+        else:
+            joint_pos = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
+        return self._build_B_inv(joint_pos), joint_pos
+
+    def _get_bind_pose_anchor(self, source_vert, nfs_feat, bind_pos_cache=None):
+        """
+        Closed-form anchor-pool bind pose.
+
+        Args:
+            source_vert:   [B, V, 3]
+            nfs_feat:      [B, V, K]   per-vertex NFS feat (must be supplied in this mode)
+            bind_pos_cache:[B, J, 3]   if not None, use cached value (skips attention pool).
+
+        Returns:
+            B_inv_id:  [B, J, 4, 4]
+            joint_pos: [B, J, 3]
+        """
+        if bind_pos_cache is not None:
+            joint_pos = bind_pos_cache
+        else:
+            assert nfs_feat is not None, \
+                'bind_pose_mode="anchor_pool" requires nfs_feat (or bind_pos_cache)'
+            from utils.anchor_pool import compute_bind_pos
+            joint_pos = compute_bind_pos(
+                source_vert, nfs_feat,
+                self.joint_anchors, self.joint_offsets,
+                temperature=self.attn_temperature,
+                offset_frame='world',
+            )
+        return self._build_B_inv(joint_pos), joint_pos
 
     def _chain_hierarchy(self, T_delta):
         B, J, _, _ = T_delta.shape
@@ -792,7 +956,7 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────
 
-    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False):
+    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False, bind_pos_cache=None):
         B, N, _ = source_vert.shape
         J = self.num_joints
         device = source_vert.device
@@ -802,9 +966,11 @@ class HierarchicalLBS_FullPred(nn.Module):
         # Bind pose first — μ needed for GMM-hybrid skinning
         if self.freeze_bind_pose:
             B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
-            # μ = fixed Maya bind_pos (broadcast to batch)
-            joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1)  # [B, J, 3]
-        else:
+            joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1) # [B, J, 3]
+        elif self.bind_pose_mode == 'anchor_pool':
+            B_inv_id, joint_pos = self._get_bind_pose_anchor(
+                source_vert, nfs_feat, bind_pos_cache=bind_pos_cache)
+        else:  # 'net'
             B_inv_id, joint_pos = self._get_bind_pose(skin_input, adain_input=_adain)
 
         W, _ = self._get_skinning_weights(
@@ -844,7 +1010,12 @@ class HierarchicalLBS_FullPred(nn.Module):
         rigid_v     = torch.einsum('bnj,bnjk->bnk', W, v_per_joint)
 
         if return_extras:
-            extras = {'W': W, 'joint_pos': joint_pos}
+            extras = {
+                'W': W, 'joint_pos': joint_pos,
+                'local_R': local_R, 'local_t': local_t.squeeze(-1),  # [B,J,3,3], [B,J,3]
+                'T_world': T_world,
+                'logit_net': getattr(self, '_last_logit_net', None),  # [B,N,J] for net_center_loss
+            }
             if return_z_exp:
                 return rigid_v, z_exp_flat, extras
             return rigid_v, extras
@@ -936,6 +1107,27 @@ class HierarchicalLBS_FullPred(nn.Module):
         rigid_v     = torch.einsum('bnj,bnjk->bnk', W_tgt, v_per_joint)
 
         return rigid_v
+
+    # ── σ shrinkage loss ─────────────────────────────────────────────────
+
+    def sigma_shrink_loss(self, active_idx=None):
+        """
+        Penalize log_sigma drift ABOVE target (one-sided: σ can shrink freely,
+        but growing past target is penalized). Applied only to `active_idx`
+        joints if provided (frozen joints' σ is irrelevant since their W=0).
+
+        Returns: scalar loss.
+        """
+        if not self.use_gmm_hybrid:
+            return self.log_sigma.new_tensor(0.0)
+        # Relu(log_σ - target)²  → zero when log_σ ≤ target, grows quadratically above
+        excess = F.relu(self.log_sigma - self.log_sigma_target)
+        if active_idx is not None and len(active_idx) > 0:
+            if not torch.is_tensor(active_idx):
+                active_idx = torch.tensor(active_idx, dtype=torch.long,
+                                          device=self.log_sigma.device)
+            excess = excess.index_select(0, active_idx)
+        return (excess ** 2).mean()
 
     # ── Phase 1 init supervision ─────────────────────────────────────────
 

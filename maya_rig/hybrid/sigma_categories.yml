@@ -1,0 +1,66 @@
+# Per-joint target σ for GMM hybrid RBF.
+# Assigned by matching joint name substring against the first category below.
+# σ is in world units (after mesh normalization).
+#
+# Rough intuition:
+#   narrow  — small semantic region (single feature)
+#   medium  — mid-size region (sub-region of face)
+#   wide    — large rigid region (skull, neck, base)
+#   ears    — isolated, low-activity structural
+
+default_sigma: 0.25    # fallback if no keyword matches
+
+categories:
+  - name: narrow
+    sigma: 0.10
+    keywords:
+      - Upper_Eyelid
+      - Lower_Eyelid
+      - Brow_Outer
+      - Brow_Center
+      - Eyebrow_Mid
+      - Eyebrow_Inner
+      - Eye_Inner_Corner
+      - Eye_Outer_Corner
+      - Lip_Upper_Side
+      - Lip_Lower_Side
+      - Top_Lip
+      - Bottom_Lip
+      - Mouth_Left_Corner
+      - Mouth_Right_Corner
+      - Nose_Wing
+      - Nose_Nostril
+      - Nose_Tip
+      - Nose_Ridge
+
+  - name: medium
+    sigma: 0.20
+    keywords:
+      - Cheek
+      - Chin
+      - Jaw_Front
+      - Jaw_Root
+      - Mouth_Center
+      - Eye_Socket
+      - Orbital
+      - Maxilla
+      - Nose_Base
+      - Nose_Bridge
+
+  - name: wide
+    sigma: 0.40
+    keywords:
+      - Root
+      - Neck
+      - Skull_Root
+      - Skull_Center
+      - Cranium
+      - Crown
+      - Nose_Root
+      - Lower_Face_Root
+      - Jaw
+
+  - name: ears
+    sigma: 0.25
+    keywords:
+      - Ear

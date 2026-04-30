@@ -451,40 +451,50 @@ class BaseDiffusionNetEncoder(nn.Module):
         else:
             print("[DiffusionNet] causion: no pre_computes provided!")
 
+    def _set_precompute(self, name, tensor):
+        # Register as non-persistent buffer so precomputes don't leak into state_dict.
+        # Handles re-registration when topology changes (safe to call repeatedly).
+        if name in self._parameters:
+            del self._parameters[name]
+        if name in self._buffers:
+            self._buffers[name] = tensor
+        else:
+            self.register_buffer(name, tensor, persistent=False)
+
     def update_precomputes(self, pre_computes):
         if len(pre_computes[0].shape) > 1:
-            self.mass = nn.Parameter(pre_computes[0].squeeze(0), requires_grad=False)
+            self._set_precompute('mass', pre_computes[0].squeeze(0))
 
-            self.L_ind = nn.Parameter(pre_computes[1]._indices()[1:], requires_grad=False)
-            self.L_val = nn.Parameter(pre_computes[1]._values(), requires_grad=False)
+            self._set_precompute('L_ind', pre_computes[1]._indices()[1:])
+            self._set_precompute('L_val', pre_computes[1]._values())
             self.L_size = pre_computes[1].size()[1:]
-            self.evals = nn.Parameter(pre_computes[2].squeeze(0), requires_grad=False)
-            self.evecs = nn.Parameter(pre_computes[3].squeeze(0), requires_grad=False)
-            self.grad_X_ind  = nn.Parameter(pre_computes[4]._indices()[1:], requires_grad=False)
-            self.grad_X_val  = nn.Parameter(pre_computes[4]._values(),  requires_grad=False)
+            self._set_precompute('evals', pre_computes[2].squeeze(0))
+            self._set_precompute('evecs', pre_computes[3].squeeze(0))
+            self._set_precompute('grad_X_ind', pre_computes[4]._indices()[1:])
+            self._set_precompute('grad_X_val', pre_computes[4]._values())
             self.grad_X_size = pre_computes[4].size()[1:]
-            self.grad_Y_ind  = nn.Parameter(pre_computes[5]._indices()[1:], requires_grad=False)
-            self.grad_Y_val  = nn.Parameter(pre_computes[5]._values(),  requires_grad=False)
+            self._set_precompute('grad_Y_ind', pre_computes[5]._indices()[1:])
+            self._set_precompute('grad_Y_val', pre_computes[5]._values())
             self.grad_Y_size = pre_computes[5].size()[1:]
 
-            self.faces = nn.Parameter(pre_computes[6].long(), requires_grad=False)
-            
-        else:
-            self.mass = nn.Parameter(pre_computes[0], requires_grad=False)
+            self._set_precompute('faces', pre_computes[6].long())
 
-            self.L_ind = nn.Parameter(pre_computes[1]._indices(), requires_grad=False)
-            self.L_val = nn.Parameter(pre_computes[1]._values(), requires_grad=False)
+        else:
+            self._set_precompute('mass', pre_computes[0])
+
+            self._set_precompute('L_ind', pre_computes[1]._indices())
+            self._set_precompute('L_val', pre_computes[1]._values())
             self.L_size = pre_computes[1].size()
-            self.evals = nn.Parameter(pre_computes[2], requires_grad=False)
-            self.evecs = nn.Parameter(pre_computes[3], requires_grad=False)
-            self.grad_X_ind = nn.Parameter(pre_computes[4]._indices(), requires_grad=False)
-            self.grad_X_val = nn.Parameter(pre_computes[4]._values(), requires_grad=False)
-            self.grad_X_size =pre_computes[4].size()
-            self.grad_Y_ind = nn.Parameter(pre_computes[5]._indices(), requires_grad=False)
-            self.grad_Y_val = nn.Parameter(pre_computes[5]._values(), requires_grad=False)
+            self._set_precompute('evals', pre_computes[2])
+            self._set_precompute('evecs', pre_computes[3])
+            self._set_precompute('grad_X_ind', pre_computes[4]._indices())
+            self._set_precompute('grad_X_val', pre_computes[4]._values())
+            self.grad_X_size = pre_computes[4].size()
+            self._set_precompute('grad_Y_ind', pre_computes[5]._indices())
+            self._set_precompute('grad_Y_val', pre_computes[5]._values())
             self.grad_Y_size = pre_computes[5].size()
 
-            self.faces = nn.Parameter(pre_computes[6].unsqueeze(0).long(), requires_grad=False)
+            self._set_precompute('faces', pre_computes[6].unsqueeze(0).long())
 
     def forward(self,
                 inputs,

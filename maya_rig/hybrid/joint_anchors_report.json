@@ -1,0 +1,614 @@
+{
+  "topo_key": "ict",
+  "aux_topo_keys": [
+    "mf"
+  ],
+  "rig_path": "maya_rig/hybrid",
+  "sigma_path": "maya_rig/hybrid/sigma_targets.npy",
+  "nfs_ckpt": "ckpts_comparison/NFS-best",
+  "V_primary": 11248,
+  "J": 66,
+  "aux_final_err": {
+    "mf": {
+      "median": 0.016602596268057823,
+      "mean": 0.04277665540575981,
+      "max": 0.26094210147857666
+    }
+  },
+  "per_joint": [
+    {
+      "idx": 0,
+      "name": "hybrid_jnt_Root",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.17066362500190735,
+      "alpha_max": 0.0025962924119085073,
+      "err_construct": 0.0,
+      "err_replay": 0.06540057063102722
+    },
+    {
+      "idx": 1,
+      "name": "hybrid_jnt_Neck",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.3531772494316101,
+      "alpha_max": 0.000492430292069912,
+      "err_construct": 1.4901161193847656e-08,
+      "err_replay": 0.030445300042629242
+    },
+    {
+      "idx": 2,
+      "name": "hybrid_jnt_Skull_Root",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.3550851345062256,
+      "alpha_max": 0.0003148073155898601,
+      "err_construct": 0.0,
+      "err_replay": 0.03584171086549759
+    },
+    {
+      "idx": 3,
+      "name": "hybrid_jnt_Cranium",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.3060644865036011,
+      "alpha_max": 0.0003645683464128524,
+      "err_construct": 0.0,
+      "err_replay": 0.026506008580327034
+    },
+    {
+      "idx": 4,
+      "name": "hybrid_jnt_Crown",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.3346807062625885,
+      "alpha_max": 0.00032116667716763914,
+      "err_construct": 0.0,
+      "err_replay": 0.016782332211732864
+    },
+    {
+      "idx": 5,
+      "name": "hybrid_jnt_Left_Crown_Outer",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.31917604804039,
+      "alpha_max": 0.0013827052898705006,
+      "err_construct": 0.0,
+      "err_replay": 0.24355347454547882
+    },
+    {
+      "idx": 6,
+      "name": "hybrid_jnt_Right_Crown_Outer",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.3191758990287781,
+      "alpha_max": 0.001382705639116466,
+      "err_construct": 0.0,
+      "err_replay": 0.17561255395412445
+    },
+    {
+      "idx": 7,
+      "name": "hybrid_jnt_Skull_Center",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.3643801808357239,
+      "alpha_max": 0.0002623421314638108,
+      "err_construct": 0.0,
+      "err_replay": 0.0235908105969429
+    },
+    {
+      "idx": 8,
+      "name": "hybrid_jnt_Brow_Center",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.07414159178733826,
+      "alpha_max": 0.008961044251918793,
+      "err_construct": 0.0,
+      "err_replay": 0.036910030990839005
+    },
+    {
+      "idx": 9,
+      "name": "hybrid_jnt_Left_Orbital",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.1378869265317917,
+      "alpha_max": 0.0013390358071774244,
+      "err_construct": 0.0,
+      "err_replay": 0.01257893443107605
+    },
+    {
+      "idx": 10,
+      "name": "hybrid_jnt_Left_Brow_Outer",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.050316356122493744,
+      "alpha_max": 0.006851751822978258,
+      "err_construct": 0.0,
+      "err_replay": 0.09717626869678497
+    },
+    {
+      "idx": 11,
+      "name": "hybrid_jnt_Left_Eye_Socket",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.09963233023881912,
+      "alpha_max": 0.0012915501138195395,
+      "err_construct": 0.0,
+      "err_replay": 0.012896263040602207
+    },
+    {
+      "idx": 12,
+      "name": "hybrid_jnt_Left_Upper_Eyelid",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.09953247010707855,
+      "alpha_max": 0.0028758582193404436,
+      "err_construct": 0.0,
+      "err_replay": 0.012490503489971161
+    },
+    {
+      "idx": 13,
+      "name": "hybrid_jnt_Left_Lower_Eyelid",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.09633928537368774,
+      "alpha_max": 0.003261895151808858,
+      "err_construct": 0.0,
+      "err_replay": 0.011052475310862064
+    },
+    {
+      "idx": 14,
+      "name": "hybrid_jnt_Left_Eye_Inner_Corner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.08492634445428848,
+      "alpha_max": 0.004421073943376541,
+      "err_construct": 0.0,
+      "err_replay": 0.0016473899595439434
+    },
+    {
+      "idx": 15,
+      "name": "hybrid_jnt_Left_Eye_Outer_Corner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.07780196517705917,
+      "alpha_max": 0.005110135767608881,
+      "err_construct": 0.0,
+      "err_replay": 0.022653991356492043
+    },
+    {
+      "idx": 16,
+      "name": "hybrid_jnt_Left_Cheek_Bone",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.16168229281902313,
+      "alpha_max": 0.0025003051850944757,
+      "err_construct": 0.0,
+      "err_replay": 0.03176243603229523
+    },
+    {
+      "idx": 17,
+      "name": "hybrid_jnt_Left_Eyebrow_Mid",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.10451795160770416,
+      "alpha_max": 0.004522133618593216,
+      "err_construct": 0.0,
+      "err_replay": 0.08633718639612198
+    },
+    {
+      "idx": 18,
+      "name": "hybrid_jnt_Left_Eyebrow_Inner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.06586652249097824,
+      "alpha_max": 0.007195665501058102,
+      "err_construct": 0.0,
+      "err_replay": 0.0873977318406105
+    },
+    {
+      "idx": 19,
+      "name": "hybrid_jnt_Right_Orbital",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.13788725435733795,
+      "alpha_max": 0.00133903743699193,
+      "err_construct": 0.0,
+      "err_replay": 0.021298648789525032
+    },
+    {
+      "idx": 20,
+      "name": "hybrid_jnt_Right_Eye_Socket",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.09963247925043106,
+      "alpha_max": 0.0012915506958961487,
+      "err_construct": 0.0,
+      "err_replay": 0.019059740006923676
+    },
+    {
+      "idx": 21,
+      "name": "hybrid_jnt_Right_Upper_Eyelid",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.09953325986862183,
+      "alpha_max": 0.002875885460525751,
+      "err_construct": 0.0,
+      "err_replay": 0.018477650359272957
+    },
+    {
+      "idx": 22,
+      "name": "hybrid_jnt_Right_Lower_Eyelid",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.09634039551019669,
+      "alpha_max": 0.0032619161065667868,
+      "err_construct": 0.0,
+      "err_replay": 0.01961692050099373
+    },
+    {
+      "idx": 23,
+      "name": "hybrid_jnt_Right_Eye_Inner_Corner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.08479622006416321,
+      "alpha_max": 0.00441984785720706,
+      "err_construct": 0.0,
+      "err_replay": 0.0012096117716282606
+    },
+    {
+      "idx": 24,
+      "name": "hybrid_jnt_Right_Eye_Outer_Corner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.07745048403739929,
+      "alpha_max": 0.005105788353830576,
+      "err_construct": 0.0,
+      "err_replay": 0.01733982563018799
+    },
+    {
+      "idx": 25,
+      "name": "hybrid_jnt_Right_Cheek_Bone",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.161682590842247,
+      "alpha_max": 0.0025002877227962017,
+      "err_construct": 0.0,
+      "err_replay": 0.033996693789958954
+    },
+    {
+      "idx": 26,
+      "name": "hybrid_jnt_Right_Brow_Outer",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.050315011292696,
+      "alpha_max": 0.006851840764284134,
+      "err_construct": 0.0,
+      "err_replay": 0.09313660115003586
+    },
+    {
+      "idx": 27,
+      "name": "hybrid_jnt_Right_Eyebrow_Mid",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.10444558411836624,
+      "alpha_max": 0.004526499658823013,
+      "err_construct": 0.0,
+      "err_replay": 0.0990370512008667
+    },
+    {
+      "idx": 28,
+      "name": "hybrid_jnt_Right_Eyebrow_Inner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.06570002436637878,
+      "alpha_max": 0.007197436410933733,
+      "err_construct": 0.0,
+      "err_replay": 0.07355889678001404
+    },
+    {
+      "idx": 29,
+      "name": "hybrid_jnt_Nose_Root_A",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.15316349267959595,
+      "alpha_max": 0.0003507633227854967,
+      "err_construct": 5.012658594661939e-17,
+      "err_replay": 0.0005751154967583716
+    },
+    {
+      "idx": 30,
+      "name": "hybrid_jnt_Nose_Root_B",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.11677153408527374,
+      "alpha_max": 0.0003342336567584425,
+      "err_construct": 5.012658594661939e-17,
+      "err_replay": 0.00019666402658913285
+    },
+    {
+      "idx": 31,
+      "name": "hybrid_jnt_Nose_Bridge",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.07043454796075821,
+      "alpha_max": 0.0010699110571295023,
+      "err_construct": 5.012658594661939e-17,
+      "err_replay": 0.00019889963732566684
+    },
+    {
+      "idx": 32,
+      "name": "hybrid_jnt_Nose_Ridge_A",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.02276645414531231,
+      "alpha_max": 0.007726914249360561,
+      "err_construct": 5.012658594661939e-17,
+      "err_replay": 0.003923782613128424
+    },
+    {
+      "idx": 33,
+      "name": "hybrid_jnt_Nose_Ridge_B",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.039985544979572296,
+      "alpha_max": 0.007194944191724062,
+      "err_construct": 5.012658594661939e-17,
+      "err_replay": 0.0070186457596719265
+    },
+    {
+      "idx": 34,
+      "name": "hybrid_jnt_Ears",
+      "sigma": 0.25,
+      "delta_norm": 0.08366382867097855,
+      "alpha_max": 0.0011116716777905822,
+      "err_construct": 0.0,
+      "err_replay": 0.02923777513206005
+    },
+    {
+      "idx": 35,
+      "name": "hybrid_jnt_Left_Ear_Position",
+      "sigma": 0.25,
+      "delta_norm": 0.08934775739908218,
+      "alpha_max": 0.0014785269740968943,
+      "err_construct": 0.0,
+      "err_replay": 0.03926543891429901
+    },
+    {
+      "idx": 36,
+      "name": "hybrid_jnt_Left_Ear_Rotate_Scale",
+      "sigma": 0.25,
+      "delta_norm": 0.08934775739908218,
+      "alpha_max": 0.0014785269740968943,
+      "err_construct": 0.0,
+      "err_replay": 0.03926543891429901
+    },
+    {
+      "idx": 37,
+      "name": "hybrid_jnt_Right_Ear_Position",
+      "sigma": 0.25,
+      "delta_norm": 0.08934762328863144,
+      "alpha_max": 0.0014785269740968943,
+      "err_construct": 0.0,
+      "err_replay": 0.020555265247821808
+    },
+    {
+      "idx": 38,
+      "name": "hybrid_jnt_Right_Ear_Rotate_Scale",
+      "sigma": 0.25,
+      "delta_norm": 0.08934762328863144,
+      "alpha_max": 0.0014785269740968943,
+      "err_construct": 0.0,
+      "err_replay": 0.020555218681693077
+    },
+    {
+      "idx": 39,
+      "name": "hybrid_jnt_Lower_Face_Root",
+      "sigma": 0.4000000059604645,
+      "delta_norm": 0.35667771100997925,
+      "alpha_max": 0.00029212370282039046,
+      "err_construct": 8.381903171539307e-09,
+      "err_replay": 0.012187854386866093
+    },
+    {
+      "idx": 40,
+      "name": "hybrid_jnt_Jaw_Root",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.2209365963935852,
+      "alpha_max": 0.0029713124968111515,
+      "err_construct": 0.0,
+      "err_replay": 0.0010501604992896318
+    },
+    {
+      "idx": 41,
+      "name": "hybrid_jnt_Jaw_Front",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.3154143691062927,
+      "alpha_max": 0.0012797393137589097,
+      "err_construct": 4.184814914129889e-17,
+      "err_replay": 0.014849651604890823
+    },
+    {
+      "idx": 42,
+      "name": "hybrid_jnt_Chin",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.20969995856285095,
+      "alpha_max": 0.0013745626201853156,
+      "err_construct": 5.9026218848354966e-18,
+      "err_replay": 0.055305417627096176
+    },
+    {
+      "idx": 43,
+      "name": "hybrid_jnt_Right_Chin",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.17140398919582367,
+      "alpha_max": 0.0034501219633966684,
+      "err_construct": 0.0,
+      "err_replay": 0.10924138873815536
+    },
+    {
+      "idx": 44,
+      "name": "hybrid_jnt_Left_Chin",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.17140398919582367,
+      "alpha_max": 0.0034501217305660248,
+      "err_construct": 0.0,
+      "err_replay": 0.15335704386234283
+    },
+    {
+      "idx": 45,
+      "name": "hybrid_jnt_Right_Jaw_Root",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.11938389390707016,
+      "alpha_max": 0.005632605869323015,
+      "err_construct": 0.0,
+      "err_replay": 0.07063622027635574
+    },
+    {
+      "idx": 46,
+      "name": "hybrid_jnt_Left_Jaw_Root",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.11938384920358658,
+      "alpha_max": 0.005632605869323015,
+      "err_construct": 0.0,
+      "err_replay": 0.11320484429597855
+    },
+    {
+      "idx": 47,
+      "name": "hybrid_jnt_Mouth_Center_Bottom",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.13351330161094666,
+      "alpha_max": 0.0008195792906917632,
+      "err_construct": 2.2285516251599447e-17,
+      "err_replay": 0.006562576629221439
+    },
+    {
+      "idx": 48,
+      "name": "hybrid_jnt_Bottom_Lip",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.06992027163505554,
+      "alpha_max": 0.002538939006626606,
+      "err_construct": 2.225827553966685e-17,
+      "err_replay": 0.036212801933288574
+    },
+    {
+      "idx": 49,
+      "name": "hybrid_jnt_Left_Lip_Lower_Side",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.06197309121489525,
+      "alpha_max": 0.0027912084478884935,
+      "err_construct": 0.0,
+      "err_replay": 0.042781390249729156
+    },
+    {
+      "idx": 50,
+      "name": "hybrid_jnt_Right_Lip_Lower_Side",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.062022220343351364,
+      "alpha_max": 0.0027914305683225393,
+      "err_construct": 0.0,
+      "err_replay": 0.04864251986145973
+    },
+    {
+      "idx": 51,
+      "name": "hybrid_jnt_Maxilla",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.13858994841575623,
+      "alpha_max": 0.000846156501211226,
+      "err_construct": 0.0,
+      "err_replay": 0.0037117931060492992
+    },
+    {
+      "idx": 52,
+      "name": "hybrid_jnt_Nose_Base_Position",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.07000468671321869,
+      "alpha_max": 0.0007665751036256552,
+      "err_construct": 3.0286053458326634e-17,
+      "err_replay": 0.0012505871709436178
+    },
+    {
+      "idx": 53,
+      "name": "hybrid_jnt_Nose_Base_Rotate",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.0387023501098156,
+      "alpha_max": 0.0007143703987821937,
+      "err_construct": 1.0478454008069817e-16,
+      "err_replay": 0.0012910705991089344
+    },
+    {
+      "idx": 54,
+      "name": "hybrid_jnt_Nose_Tip",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.033016737550497055,
+      "alpha_max": 0.00220856792293489,
+      "err_construct": 1.5109582162636573e-17,
+      "err_replay": 0.014750230126082897
+    },
+    {
+      "idx": 55,
+      "name": "hybrid_jnt_Nose_Nostril",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.045438725501298904,
+      "alpha_max": 0.0024376874789595604,
+      "err_construct": 3.0103233308062614e-17,
+      "err_replay": 0.004187555983662605
+    },
+    {
+      "idx": 56,
+      "name": "hybrid_jnt_Left_Nose_Wing",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.06404278427362442,
+      "alpha_max": 0.003489632625132799,
+      "err_construct": 0.0,
+      "err_replay": 0.007285941857844591
+    },
+    {
+      "idx": 57,
+      "name": "hybrid_jnt_Right_Nose_Wing",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.0634964182972908,
+      "alpha_max": 0.0034716464579105377,
+      "err_construct": 0.0,
+      "err_replay": 0.013343693688511848
+    },
+    {
+      "idx": 58,
+      "name": "hybrid_jnt_Mouth_Center_Top",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.14686161279678345,
+      "alpha_max": 0.0007310086512006819,
+      "err_construct": 0.0,
+      "err_replay": 0.006258952431380749
+    },
+    {
+      "idx": 59,
+      "name": "hybrid_jnt_Mouth_Left_Corner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.05809195712208748,
+      "alpha_max": 0.003128987969830632,
+      "err_construct": 0.0,
+      "err_replay": 0.059446126222610474
+    },
+    {
+      "idx": 60,
+      "name": "hybrid_jnt_Mouth_Right_Corner",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.05809197202324867,
+      "alpha_max": 0.003128987504169345,
+      "err_construct": 0.0,
+      "err_replay": 0.04293913394212723
+    },
+    {
+      "idx": 61,
+      "name": "hybrid_jnt_Left_Lip_Upper_Side",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.04435187950730324,
+      "alpha_max": 0.0024375731591135263,
+      "err_construct": 0.0,
+      "err_replay": 0.028092173859477043
+    },
+    {
+      "idx": 62,
+      "name": "hybrid_jnt_Right_Lip_Upper_Side",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.04430472478270531,
+      "alpha_max": 0.002437424147501588,
+      "err_construct": 0.0,
+      "err_replay": 0.03158619627356529
+    },
+    {
+      "idx": 63,
+      "name": "hybrid_jnt_Top_Lip",
+      "sigma": 0.10000000149011612,
+      "delta_norm": 0.04044870287179947,
+      "alpha_max": 0.0022464727517217398,
+      "err_construct": 9.298882543168379e-17,
+      "err_replay": 0.006190870422869921
+    },
+    {
+      "idx": 64,
+      "name": "hybrid_jnt_Left_Cheek",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.18746080994606018,
+      "alpha_max": 0.003006175858899951,
+      "err_construct": 0.0,
+      "err_replay": 0.056840065866708755
+    },
+    {
+      "idx": 65,
+      "name": "hybrid_jnt_Right_Cheek",
+      "sigma": 0.20000000298023224,
+      "delta_norm": 0.18746063113212585,
+      "alpha_max": 0.0030061707366257906,
+      "err_construct": 0.0,
+      "err_replay": 0.021355263888835907
+    }
+  ]
+}

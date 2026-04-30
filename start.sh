@@ -47,6 +47,9 @@ python -m pip install --no-cache-dir --index-url https://pypi.org/simple "cupy-c
 # 4) PyTorch3D (너가 말한대로 필요)
 #    - 설치 방식은 환경마다 달라서, "pip install pytorch3d"가 성공했던 그 방식 그대로 둠.
 python -m pip install --no-cache-dir pytorch3d
+## if you want GPU support, you need to install the version of PyTorch3D that matches your CUDA version. For example, if you have CUDA 11.8, you can install it using:
+pip install --no-build-isolation --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git"
+
 
 ## if docker by docker.io/chacorp/audio2face:1.0
 ## not yet
