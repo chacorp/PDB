@@ -1395,11 +1395,24 @@ class HLBSTrainer:
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
-                # ── Bind pose regularization (skipped in anchor_pool mode: redundant by construction) ──
+                # ── Bind pose regularization (per-topology supervision in net mode) ──
+                # Skipped in anchor_pool mode (redundant by construction).
                 if (opts.lambda_bind_reg > 0 and _joint_pos is not None
                         and getattr(opts, 'bind_pose_mode', 'net') == 'net'):
-                    loss_dict["L_bind_reg"] = F.mse_loss(
-                        _joint_pos, self.model.bind_pos_target.unsqueeze(0).expand_as(_joint_pos))
+                    # Build per-batch target by id_name prefix (ict_xxx → ict, m--xxx → mf)
+                    B_cur = _joint_pos.shape[0]
+                    targets = []
+                    for b in range(B_cur):
+                        idn = batch.id_name[b] if hasattr(batch, 'id_name') else ''
+                        if idn.startswith('ict_') and hasattr(self.model, 'bind_pos_target_ict'):
+                            tgt = self.model.bind_pos_target_ict
+                        elif idn.startswith('m--') and hasattr(self.model, 'bind_pos_target_mf'):
+                            tgt = self.model.bind_pos_target_mf
+                        else:
+                            tgt = self.model.bind_pos_target  # fallback
+                        targets.append(tgt)
+                    target_batch = torch.stack(targets, dim=0)               # [B, J, 3]
+                    loss_dict["L_bind_reg"] = F.mse_loss(_joint_pos, target_batch.detach())
 
                 # ── σ shrinkage penalty (active joints only if face-mask on) ──
                 if opts.lambda_sigma_reg > 0 and getattr(self.model, 'use_gmm_hybrid', False):

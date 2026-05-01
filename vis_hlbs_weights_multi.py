@@ -350,10 +350,12 @@ def main():
         # Get predicted weights
         with torch.no_grad():
             skin_input, _adain = model._prepare_feat(src_v, src_n, nfs_feat)
-            # Bind pose first (needed by GMM hybrid)
+            # Bind pose dispatch: freeze / anchor_pool / net (matches model.forward)
             if model.freeze_bind_pose:
                 B_size = src_v.shape[0]
                 joint_pos = model.bind_pos_target.unsqueeze(0).expand(B_size, -1, -1)
+            elif getattr(model, 'bind_pose_mode', 'net') == 'anchor_pool':
+                _, joint_pos = model._get_bind_pose_anchor(src_v, nfs_feat)
             else:
                 _, joint_pos = model._get_bind_pose(skin_input, adain_input=_adain)
             W_pred, logit_W = model._get_skinning_weights(

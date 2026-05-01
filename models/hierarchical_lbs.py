@@ -627,6 +627,10 @@ class HierarchicalLBS_FullPred(nn.Module):
         for topo_key, W_t in rig.W_init.items():
             self._init_targets[topo_key] = W_t.to(device)
         self.register_buffer('bind_pos_target', rig.bind_pos.to(device).clone())
+        # Per-topology bind_pos buffers (used for L_bind_reg in net mode to
+        # supervise each identity toward its own topology's Maya GT).
+        for topo_key, bp in rig.bind_pos_dict.items():
+            self.register_buffer(f'bind_pos_target_{topo_key}', bp.to(device).clone())
 
         # mesh_data label → topology key mapping
         self._mesh_data_to_topo = {
