@@ -824,7 +824,8 @@ class HierarchicalLBS_FullPred(nn.Module):
     # ── Core ─────────────────────────────────────────────────────────────
 
     def _get_skinning_weights(self, source_feat, adain_input=None,
-                               source_vert=None, joint_pos=None):
+                               source_vert=None, joint_pos=None,
+                               dist_sq_override=None):
         if self.dfn_skin:
             logit_net = self.skin_weight_net(source_feat)  # [B, N, J]
         else:
@@ -836,10 +837,15 @@ class HierarchicalLBS_FullPred(nn.Module):
         # GMM hybrid: combine Gaussian bias with network logits
         #   additive       : softmax(logit_net + logit_gauss)           [original]
         #   multiplicative : softmax(logit_gauss) * sigmoid(logit_net)  [net refines WITHIN Gaussian support]
-        if self.use_gmm_hybrid and source_vert is not None and joint_pos is not None:
-            # [B, N, J, 3] = [B, N, 1, 3] - [B, 1, J, 3]
-            diff = source_vert.unsqueeze(2) - joint_pos.unsqueeze(1)
-            dist_sq = (diff ** 2).sum(dim=-1)                           # [B, N, J]
+        _have_dist_input = (dist_sq_override is not None) or (source_vert is not None and joint_pos is not None)
+        if self.use_gmm_hybrid and _have_dist_input:
+            if dist_sq_override is not None:
+                # Geodesic distance² lookup, [B, N, J] (bypass euclidean compute)
+                dist_sq = dist_sq_override
+            else:
+                # Euclidean: [B, N, J, 3] = [B, N, 1, 3] - [B, 1, J, 3]
+                diff = source_vert.unsqueeze(2) - joint_pos.unsqueeze(1)
+                dist_sq = (diff ** 2).sum(dim=-1)                       # [B, N, J]
             sigma_sq = torch.exp(2 * self.log_sigma).view(1, 1, -1)     # [1, 1, J]
             logit_gauss = -dist_sq / (2 * sigma_sq)                     # [B, N, J]
 
@@ -960,7 +966,7 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────
 
-    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False, bind_pos_cache=None):
+    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False, bind_pos_cache=None, dist_sq_geo=None):
         B, N, _ = source_vert.shape
         J = self.num_joints
         device = source_vert.device
@@ -969,8 +975,13 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         # Bind pose first — μ needed for GMM-hybrid skinning
         if self.freeze_bind_pose:
-            B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
-            joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1) # [B, J, 3]
+            if bind_pos_cache is not None:
+                # Per-topo / per-id frozen bind_pos passed in via cache (preferred)
+                joint_pos = bind_pos_cache
+                B_inv_id = self._build_B_inv(joint_pos)
+            else:
+                B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
+                joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1) # [B, J, 3]
         elif self.bind_pose_mode == 'anchor_pool':
             B_inv_id, joint_pos = self._get_bind_pose_anchor(
                 source_vert, nfs_feat, bind_pos_cache=bind_pos_cache)
@@ -980,6 +991,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         W, _ = self._get_skinning_weights(
             skin_input, adain_input=_adain,
             source_vert=source_vert, joint_pos=joint_pos,
+            dist_sq_override=dist_sq_geo,
         )
 
         if z_exp_override is not None:
@@ -1135,7 +1147,7 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Phase 1 init supervision ─────────────────────────────────────────
 
-    def init_loss(self, source_vert, source_normal=None, mesh_data=None, perm_idx=None, nfs_feat=None):
+    def init_loss(self, source_vert, source_normal=None, mesh_data=None, perm_idx=None, nfs_feat=None, dist_sq_geo=None):
         """
         Maya init supervision loss for Phase 1 warm-up.
         If mesh_data is provided, uses per-topology W target.
@@ -1146,6 +1158,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         W, _ = self._get_skinning_weights(
             skin_input, adain_input=_adain,
             source_vert=source_vert, joint_pos=joint_pos,
+            dist_sq_override=dist_sq_geo,
         )
         losses = {}
 
@@ -1423,22 +1436,26 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Distance-based weight locality loss ──────────────────────────────
 
-    def distance_weight_loss(self, W, source_vert):
+    def distance_weight_loss(self, W, source_vert, dist_sq_override=None):
         """
         Encourage weight to be high for joints close to the vertex.
 
-        L_dist = mean_v ( sum_j W[v, j] * ||v - p_j||^2 )
+        L_dist = mean_v ( sum_j W[v, j] * dist²(v, j) )
 
-        Uses fixed bind_pos_target (ICT Maya positions, topology-invariant since
-        ICT/MF are aligned in the same canonical space).
+        dist² = Euclidean ||v - p_j||² by default, or geodesic dist²
+        from joint home_vertex when dist_sq_override is supplied [B, N, J].
 
         Args:
             W: [B, N, J] predicted skin weights
             source_vert: [B, N, 3] template vertices
+            dist_sq_override: optional [B, N, J] geodesic dist² lookup
         """
-        p = self.bind_pos_target                          # [J, 3]
-        diff = source_vert.unsqueeze(2) - p.view(1, 1, -1, 3)  # [B, N, J, 3]
-        dist_sq = (diff ** 2).sum(dim=-1)                 # [B, N, J]
+        if dist_sq_override is not None:
+            dist_sq = dist_sq_override
+        else:
+            p = self.bind_pos_target                          # [J, 3]
+            diff = source_vert.unsqueeze(2) - p.view(1, 1, -1, 3)  # [B, N, J, 3]
+            dist_sq = (diff ** 2).sum(dim=-1)                 # [B, N, J]
         L_dist = (W * dist_sq).sum(dim=-1).mean()         # mean over B, N
         return {'L_dist': L_dist}
 

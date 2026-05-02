@@ -298,23 +298,59 @@ class HLBSEvaluator:
         from models.hierarchical_lbs import HierarchicalLBS, HierarchicalLBS_FullPred
 
         rig = load_rig(opts.rig_path)
+
+        # ── Mirror trainer's config preprocessing ────────────────────────
+        # (active_joints / sigma_targets / anchor_pool assets) so checkpoint
+        # buffers (face_joint_idx, log_sigma_target, joint_anchors, …) line up.
+        _face_joint_idx = None; _base_joint_idx = None
+        if getattr(opts, 'active_joints_json', None):
+            import json as _json
+            with open(opts.active_joints_json) as _f:
+                _aj = _json.load(_f)
+            _face_joint_idx = _aj['face_joint_idx']
+            _base_joint_idx = _aj['base_joint_idx']
+
+        _sigma_targets = None
+        if getattr(opts, 'sigma_targets_npy', None):
+            _sigma_targets = np.load(opts.sigma_targets_npy).astype(np.float32)
+
+        _joint_anchors = None; _joint_offsets = None
+        if getattr(opts, 'bind_pose_mode', 'net') == 'anchor_pool':
+            if getattr(opts, 'joint_anchors_npy', None) and getattr(opts, 'joint_offsets_npy', None):
+                _joint_anchors = np.load(opts.joint_anchors_npy).astype(np.float32)
+                _joint_offsets = np.load(opts.joint_offsets_npy).astype(np.float32)
+
         if opts.full_prediction:
             self.model = HierarchicalLBS_FullPred(
                 rig=rig,
+                topology=getattr(opts, 'topo_key', 'mf'),
                 in_dim_exp=12,
                 hid_dim=opts.hid_dim,
                 num_layers=opts.num_layers,
                 device=str(self.device),
                 use_joint_trans=opts.use_joint_trans,
+                smooth_W=getattr(opts, 'smooth_delta_W', 0),
+                smooth_W_alpha=getattr(opts, 'smooth_delta_W_alpha', 0.5),
                 dfn_skin=opts.dfn_skin,
                 dfn_bind=opts.dfn_bind,
                 dfn_exp=opts.dfn_exp,
                 nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
-                nfs_concat=opts.nfs_concat,
-                adain_pos_norm=opts.adain_pos_norm,
+                nfs_concat=getattr(opts, 'nfs_concat', False),
+                adain_pos_norm=getattr(opts, 'adain_pos_norm', False),
                 freeze_bind_pose=getattr(opts, 'freeze_bind_pose', False),
                 use_gmm_hybrid=getattr(opts, 'use_gmm_hybrid', False),
                 init_log_sigma=getattr(opts, 'init_log_sigma', -1.2),
+                gmm_mode=getattr(opts, 'gmm_mode', 'additive'),
+                residual_scale=getattr(opts, 'residual_scale', 2.0),
+                sigma_targets=_sigma_targets,
+                bind_pose_mode=getattr(opts, 'bind_pose_mode', 'net'),
+                joint_anchors=_joint_anchors,
+                joint_offsets=_joint_offsets,
+                attn_temperature_init=getattr(opts, 'attn_temperature_init', 0.1),
+                face_joint_idx=_face_joint_idx,
+                base_joint_idx=_base_joint_idx,
+                face_mask_r0=getattr(opts, 'face_mask_r0', 1.0),
+                face_mask_r1=getattr(opts, 'face_mask_r1', 2.25),
             ).to(self.device)
         else:
             self.model = HierarchicalLBS(
@@ -336,9 +372,45 @@ class HLBSEvaluator:
         if not os.path.isfile(ckpt_path):
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-        self.model.load_state_dict(torch.load(ckpt_path, map_location=self.device))
+        _msg = self.model.load_state_dict(
+            torch.load(ckpt_path, map_location=self.device), strict=False)
+        if _msg.missing_keys or _msg.unexpected_keys:
+            print(f"[eval load] missing={len(_msg.missing_keys)} "
+                  f"unexpected={len(_msg.unexpected_keys)}")
+            if _msg.missing_keys:
+                print(f"  missing: {_msg.missing_keys[:5]}{'...' if len(_msg.missing_keys)>5 else ''}")
+            if _msg.unexpected_keys:
+                print(f"  unexpected: {_msg.unexpected_keys[:5]}{'...' if len(_msg.unexpected_keys)>5 else ''}")
         self.model.eval()
         print(f"Loaded: {ckpt_path}")
+
+        # ── Per-topo geodesic dist tables (mirror training) ──────────────
+        self._geo_dist_per_topo = {}
+        if getattr(opts, 'use_geodesic_gauss', False):
+            _gd_dir = getattr(opts, 'geo_dist_dir', None) or opts.rig_path
+            for _topo in ('ict', 'mf', 'biwi', 'coma'):
+                _p = os.path.join(_gd_dir, f'geo_dist_{_topo}.npy')
+                if os.path.exists(_p):
+                    self._geo_dist_per_topo[_topo] = torch.from_numpy(
+                        np.load(_p)).to(self.device).float()
+            if self._geo_dist_per_topo:
+                _msg = ', '.join(f'{k}{tuple(v.shape)}'
+                                 for k, v in self._geo_dist_per_topo.items())
+                print(f"[geo_dist] eval loaded: {_msg} from {_gd_dir}")
+
+        # ── Per-id bind_pos cache (anchor_pool / freeze_bind_pose) ───────
+        self._bind_pos_cache = {}
+        _cache_dir = getattr(opts, 'bind_pos_cache_dir', None)
+        if _cache_dir is None and getattr(opts, 'bind_pose_mode', 'net') == 'anchor_pool':
+            _cache_dir = getattr(opts, 'nfs_feat_dir', None)
+        if _cache_dir:
+            import glob as _glob
+            for fp in _glob.glob(os.path.join(_cache_dir, '*_bind_pos.npy')):
+                k = os.path.basename(fp).replace('_bind_pos.npy', '')
+                self._bind_pos_cache[k] = torch.tensor(
+                    np.load(fp), dtype=torch.float32).to(self.device)
+            if self._bind_pos_cache:
+                print(f"[bind_pos cache] eval loaded {len(self._bind_pos_cache)} per-id from {_cache_dir}")
 
         # ── Load NFS features ──────────────────────────────────────────
         self._nfs_feat_cache = {}
@@ -640,7 +712,44 @@ class HLBSEvaluator:
                 delta     = gt_v - src_v
                 src_in    = torch.cat([src_v, src_n], dim=-1)
                 deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
-                pred_lbs  = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
+
+                # Per-id bind_pos cache lookup (parity with training)
+                _bind_pos_cache = None
+                if self._bind_pos_cache:
+                    _items = []; _all_hit = True
+                    for b in range(src_v.shape[0]):
+                        k = batch.id_name[b] if isinstance(batch.id_name, list) else batch.id_name
+                        if k in self._bind_pos_cache:
+                            _items.append(self._bind_pos_cache[k])
+                        else:
+                            _all_hit = False; break
+                    if _all_hit:
+                        _bind_pos_cache = torch.stack(_items, dim=0)
+
+                # Per-batch geodesic dist² lookup
+                _dist_sq_geo = None
+                if self._geo_dist_per_topo:
+                    _per_b = []; _all_hit = True
+                    for b in range(src_v.shape[0]):
+                        idn = batch.id_name[b] if isinstance(batch.id_name, list) else batch.id_name
+                        topo = ('ict'  if idn.startswith('ict_')  else
+                                'mf'   if idn.startswith('m--')   else
+                                'biwi' if idn.startswith('biwi_') else
+                                'coma' if idn.startswith('coma_') else None)
+                        if topo and topo in self._geo_dist_per_topo:
+                            _gd = self._geo_dist_per_topo[topo].t()      # [V, J]
+                            if _gd.shape[0] != src_v.shape[1]:
+                                _gd = _gd[:src_v.shape[1]]
+                            _per_b.append(_gd)
+                        else:
+                            _all_hit = False; break
+                    if _all_hit:
+                        _dist_sq_geo = (torch.stack(_per_b, dim=0)) ** 2
+
+                pred_lbs  = self.model(src_v, deform_in, source_normal=src_n,
+                                       nfs_feat=_nfs_feat,
+                                       bind_pos_cache=_bind_pos_cache,
+                                       dist_sq_geo=_dist_sq_geo)
 
                 # build mesh operators once
                 if L_sp is None:

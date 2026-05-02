@@ -154,6 +154,14 @@ def Options():
     parser.add_argument("--use_gmm_hybrid", dest='use_gmm_hybrid', action='store_true',
                         help='Add Gaussian bias (based on predicted joint_pos) to skin_weight_net logits')
     parser.set_defaults(use_gmm_hybrid=False)
+    parser.add_argument("--use_geodesic_gauss", action='store_true', default=False,
+                        help='Replace Euclidean ||v - μ_j||² with precomputed geodesic dist²[topo, j, v] '
+                             'in: (1) GMM Gauss bias, (2) L_net_center, (3) distance_weight_loss. '
+                             'Requires geo_dist_{topo}.npy in --geo_dist_dir (default: --rig_path). '
+                             'Falls back to Euclidean per-batch when topology has no table.')
+    parser.add_argument("--geo_dist_dir", type=str, default=None,
+                        help='Directory with geo_dist_{topo}.npy [J, V] tables '
+                             '(from precompute_geo_dist.py). Defaults to --rig_path.')
     parser.add_argument("--init_log_sigma", type=float, default=-1.2,
                         help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3). '
                              'Overridden by --sigma_targets_npy if given.')
@@ -1022,6 +1030,23 @@ class HLBSTrainer:
                 print(f"[bind_pos cache] WARNING: no *_bind_pos.npy in {_cache_dir}. "
                       f"Run precompute_per_id_bind_pos.py first, or expect online (slower) computation.")
 
+        # ── Per-topo geodesic dist tables (for GMM Gauss / L_net_center / L_dist) ──
+        self._geo_dist_per_topo = {}    # topo → [J, V] tensor on self.device
+        if getattr(opts, 'use_geodesic_gauss', False):
+            _gd_dir = getattr(opts, 'geo_dist_dir', None) or opts.rig_path
+            for _topo in ('ict', 'mf', 'biwi', 'coma'):
+                _p = os.path.join(_gd_dir, f'geo_dist_{_topo}.npy')
+                if os.path.exists(_p):
+                    self._geo_dist_per_topo[_topo] = torch.from_numpy(
+                        np.load(_p)).to(self.device).float()                # [J, V]
+            if self._geo_dist_per_topo:
+                _msg = ', '.join(f'{k}{tuple(v.shape)}'
+                                 for k, v in self._geo_dist_per_topo.items())
+                print(f"[geo_dist] loaded: {_msg} from {_gd_dir}")
+            else:
+                print(f"[geo_dist] WARNING: --use_geodesic_gauss set but no "
+                      f"geo_dist_{{topo}}.npy in {_gd_dir}. Falling back to Euclidean.")
+
         # ── Build FullPred model ─────────────────────────────────────────
         from utils.rig_loader import load_rig
         rig = load_rig(opts.rig_path)
@@ -1330,6 +1355,55 @@ class HLBSTrainer:
                     if _all_hit:
                         _bind_pos_cache = torch.stack(_items, dim=0)  # [B, J, 3]
 
+                # freeze_bind_pose mode: auto-build per-topo mean cache when no preloaded cache.
+                # Each batch element gets bind_pos_target_{topo} matching its id_name prefix.
+                if (_bind_pos_cache is None
+                        and getattr(opts, 'freeze_bind_pose', False)
+                        and hasattr(batch, 'id_name')):
+                    _items = []
+                    for b in range(src_v.shape[0]):
+                        idn = batch.id_name[b]
+                        if idn.startswith('ict_') and hasattr(self.model, 'bind_pos_target_ict'):
+                            tgt = self.model.bind_pos_target_ict
+                        elif idn.startswith('m--') and hasattr(self.model, 'bind_pos_target_mf'):
+                            tgt = self.model.bind_pos_target_mf
+                        else:
+                            tgt = self.model.bind_pos_target  # fallback
+                        _items.append(tgt)
+                    _bind_pos_cache = torch.stack(_items, dim=0).detach()  # [B, J, 3]
+
+                # Per-batch geodesic dist² lookup (replaces Euclidean ||v - μ||²)
+                _dist_sq_geo = None
+                if self._geo_dist_per_topo:
+                    B_cur = src_v.shape[0]; N_cur = src_v.shape[1]
+                    J_cur = self.model.num_joints
+                    _per_b = []
+                    _all_hit_geo = True
+                    for b in range(B_cur):
+                        idn = batch.id_name[b] if hasattr(batch, 'id_name') else ''
+                        topo = ('ict'  if idn.startswith('ict_')  else
+                                'mf'   if idn.startswith('m--')   else
+                                'biwi' if idn.startswith('biwi_') else
+                                'coma' if idn.startswith('coma_') else None)
+                        if topo and topo in self._geo_dist_per_topo:
+                            gd = self._geo_dist_per_topo[topo]      # [J, V_topo]
+                            gd_t = gd.t()                            # [V_topo, J]
+                            if is_permed:
+                                _perm = batch.perm_idx[b].to(gd_t.device).long()
+                                gd_t = gd_t.index_select(0, _perm)   # [N, J]
+                            elif gd_t.shape[0] != N_cur:
+                                if gd_t.shape[0] > N_cur:
+                                    gd_t = gd_t[:N_cur]
+                                else:
+                                    _pad = torch.zeros(N_cur - gd_t.shape[0], J_cur,
+                                                       device=gd_t.device, dtype=gd_t.dtype)
+                                    gd_t = torch.cat([gd_t, _pad], dim=0)
+                            _per_b.append(gd_t)
+                        else:
+                            _all_hit_geo = False; break
+                    if _all_hit_geo:
+                        _dist_sq_geo = (torch.stack(_per_b, dim=0)) ** 2   # [B, N, J]
+
                 _need_extras = (opts.lambda_rwc > 0 or opts.lambda_hier > 0
                                 or opts.lambda_bind_reg > 0 or opts.lambda_dist > 0
                                 or opts.lambda_net_center > 0)
@@ -1337,12 +1411,14 @@ class HLBSTrainer:
                     pred_lbs, _extras = self.model(
                         src_v, deform_in, source_normal=src_n,
                         nfs_feat=_nfs_feat, return_extras=True,
-                        bind_pos_cache=_bind_pos_cache)
+                        bind_pos_cache=_bind_pos_cache,
+                        dist_sq_geo=_dist_sq_geo)
                     _W = _extras['W']          # [B, N, J]
                     _joint_pos = _extras['joint_pos']  # [B, J, 3] or None
                 else:
                     pred_lbs = self.model(src_v, deform_in, source_normal=src_n,
-                                          nfs_feat=_nfs_feat, bind_pos_cache=_bind_pos_cache)
+                                          nfs_feat=_nfs_feat, bind_pos_cache=_bind_pos_cache,
+                                          dist_sq_geo=_dist_sq_geo)
 
                 # ── Recon loss ───────────────────────────────────────────
                 if opts.no_t_mask:
@@ -1362,7 +1438,10 @@ class HLBSTrainer:
                 if opts.lambda_neu > 0:
                     delta_zero = torch.zeros_like(src_v)
                     neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n, nfs_feat=_nfs_feat if hasattr(self, '_nfs_feat_cache') else None)
+                    pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n,
+                                              nfs_feat=_nfs_feat if hasattr(self, '_nfs_feat_cache') else None,
+                                              bind_pos_cache=_bind_pos_cache,
+                                              dist_sq_geo=_dist_sq_geo)
                     if opts.no_t_mask:
                         loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
                     else:
@@ -1391,7 +1470,8 @@ class HLBSTrainer:
                 # ── Phase 1: init supervision ────────────────────────────
                 if lambda_init > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
-                    init_losses = self.model.init_loss(src_v, source_normal=src_n, mesh_data=_md, nfs_feat=_nfs_feat)
+                    init_losses = self.model.init_loss(src_v, source_normal=src_n, mesh_data=_md,
+                                                       nfs_feat=_nfs_feat, dist_sq_geo=_dist_sq_geo)
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
@@ -1419,21 +1499,34 @@ class HLBSTrainer:
                     _act = self._face_joint_idx
                     loss_dict["L_sigma"] = self.model.sigma_shrink_loss(active_idx=_act)
 
-                # ── Net-center anchor loss (logit_net 분포 무게중심을 μ_pred에 고정) ──
+                # ── Net-center anchor loss ───────────────────────────────
+                # Euclidean: ||Σ_v W_net[v,j]·v_pos - joint_pos||²        (1차 모멘트 매칭)
+                # Geodesic : Σ_v W_net[v,j] · geo_dist²[topo, j, v]       (home_vertex 주변 집중)
                 if (opts.lambda_net_center > 0 and _need_extras
                         and _extras.get('logit_net') is not None
-                        and _joint_pos is not None):
-                    logit_net = _extras['logit_net']                    # [B, V, J]
-                    W_net = F.softmax(logit_net, dim=1)                  # softmax over V per joint
-                    mu_fit = torch.einsum('bvj,bvk->bjk', W_net, src_v)  # [B, J, 3]
-                    if self._face_joint_idx:
-                        _face_idx_t = torch.tensor(self._face_joint_idx, dtype=torch.long, device=mu_fit.device)
-                        mu_fit_a = mu_fit.index_select(1, _face_idx_t)
-                        mu_tgt_a = _joint_pos.index_select(1, _face_idx_t)
+                        and (_joint_pos is not None or _dist_sq_geo is not None)):
+                    logit_net = _extras['logit_net']                     # [B, V, J]
+                    W_net = F.softmax(logit_net, dim=1)                   # softmax over V per joint
+                    if _dist_sq_geo is not None:
+                        # Restrict to face joints if defined
+                        if self._face_joint_idx:
+                            _face_idx_t = torch.tensor(self._face_joint_idx,
+                                                       dtype=torch.long, device=W_net.device)
+                            W_a = W_net.index_select(2, _face_idx_t)         # [B, V, J_face]
+                            d_a = _dist_sq_geo.index_select(2, _face_idx_t)  # [B, V, J_face]
+                        else:
+                            W_a = W_net; d_a = _dist_sq_geo
+                        loss_dict["L_net_center"] = (W_a * d_a).sum(dim=1).mean()
                     else:
-                        mu_fit_a = mu_fit
-                        mu_tgt_a = _joint_pos
-                    loss_dict["L_net_center"] = F.mse_loss(mu_fit_a, mu_tgt_a.detach())
+                        mu_fit = torch.einsum('bvj,bvk->bjk', W_net, src_v)  # [B, J, 3]
+                        if self._face_joint_idx:
+                            _face_idx_t = torch.tensor(self._face_joint_idx,
+                                                       dtype=torch.long, device=mu_fit.device)
+                            mu_fit_a = mu_fit.index_select(1, _face_idx_t)
+                            mu_tgt_a = _joint_pos.index_select(1, _face_idx_t)
+                        else:
+                            mu_fit_a = mu_fit; mu_tgt_a = _joint_pos
+                        loss_dict["L_net_center"] = F.mse_loss(mu_fit_a, mu_tgt_a.detach())
 
                 # ── Regional weight constraint (uses pre-computed W) ────
                 if opts.lambda_rwc > 0:
@@ -1446,7 +1539,8 @@ class HLBSTrainer:
 
                 # ── Distance-based weight locality (uses pre-computed W) ─
                 if opts.lambda_dist > 0:
-                    dist_losses = self.model.distance_weight_loss(_W, src_v)
+                    dist_losses = self.model.distance_weight_loss(_W, src_v,
+                                                                  dist_sq_override=_dist_sq_geo)
                     for k, v in dist_losses.items():
                         loss_dict[k] = v
 
@@ -1596,7 +1690,44 @@ class HLBSTrainer:
                     delta     = gt_v - src_v
                     src_in    = torch.cat([src_v, src_n], dim=-1)
                     deform_in = torch.cat([delta, gt_n, src_in], dim=-1)
-                    pred_lbs  = self.model(src_v, deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
+
+                    # Per-id bind_pos cache lookup (val) ─ same as train
+                    _bind_pos_cache_val = None
+                    if self._bind_pos_cache:
+                        _items = []; _all_hit = True
+                        for b in range(src_v.shape[0]):
+                            k = batch.id_name[b]
+                            if k in self._bind_pos_cache:
+                                _items.append(self._bind_pos_cache[k])
+                            else:
+                                _all_hit = False; break
+                        if _all_hit:
+                            _bind_pos_cache_val = torch.stack(_items, dim=0)
+
+                    # Per-batch geodesic dist² (val) — same logic as train
+                    _dist_sq_geo_val = None
+                    if self._geo_dist_per_topo:
+                        _per_b = []; _all_hit = True
+                        for b in range(src_v.shape[0]):
+                            idn = batch.id_name[b] if hasattr(batch, 'id_name') else ''
+                            topo = ('ict'  if idn.startswith('ict_')  else
+                                    'mf'   if idn.startswith('m--')   else
+                                    'biwi' if idn.startswith('biwi_') else
+                                    'coma' if idn.startswith('coma_') else None)
+                            if topo and topo in self._geo_dist_per_topo:
+                                _gd = self._geo_dist_per_topo[topo].t()       # [V, J]
+                                if _gd.shape[0] != src_v.shape[1]:
+                                    _gd = _gd[:src_v.shape[1]] if _gd.shape[0] > src_v.shape[1] else _gd
+                                _per_b.append(_gd)
+                            else:
+                                _all_hit = False; break
+                        if _all_hit:
+                            _dist_sq_geo_val = (torch.stack(_per_b, dim=0)) ** 2
+
+                    pred_lbs  = self.model(src_v, deform_in, source_normal=src_n,
+                                           nfs_feat=_nfs_feat,
+                                           bind_pos_cache=_bind_pos_cache_val,
+                                           dist_sq_geo=_dist_sq_geo_val)
 
                     target_v_val = gt_v
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * opts.lambda_vert
@@ -1606,7 +1737,10 @@ class HLBSTrainer:
                     if opts.lambda_neu > 0:
                         delta_zero = torch.zeros_like(src_v)
                         neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
-                        pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n, nfs_feat=_nfs_feat)
+                        pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n,
+                                                  nfs_feat=_nfs_feat,
+                                                  bind_pos_cache=_bind_pos_cache_val,
+                                                  dist_sq_geo=_dist_sq_geo_val)
                         val_neu = F.mse_loss(src_v, pred_neutral).item() * opts.lambda_neu
                         running_val["recon-neu"] += val_neu
                         running_val["total"]     += val_neu
