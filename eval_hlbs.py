@@ -962,13 +962,39 @@ if __name__ == "__main__":
     if os.path.isfile(train_cfg_path):
         with open(train_cfg_path) as f:
             train_cfg = yaml.safe_load(f)
-        for key in ['hid_dim', 'num_layers', 'topo_key', 'freeze_adapt',
-                     'use_joint_trans', 'smooth_n_iter', 'target']:
+        # All keys whose value affects model architecture / forward path —
+        # must match training to avoid silent shape/buffer mismatch on load.
+        _INHERIT_KEYS = [
+            # core arch
+            'hid_dim', 'num_layers', 'topo_key', 'freeze_adapt',
+            'use_joint_trans', 'smooth_n_iter', 'target',
+            'full_prediction',
+            # input/feature pipeline
+            'nfs_feat_dir', 'nfs_concat', 'adain_pos_norm',
+            'dfn_skin', 'dfn_bind', 'dfn_exp',
+            'smooth_delta_W', 'smooth_delta_W_alpha',
+            # bind pose
+            'freeze_bind_pose', 'bind_pose_mode',
+            'joint_anchors_npy', 'joint_offsets_npy',
+            'attn_temperature_init', 'bind_pos_cache_dir',
+            # GMM hybrid + sigma
+            'use_gmm_hybrid', 'init_log_sigma', 'gmm_mode',
+            'residual_scale', 'sigma_targets_npy',
+            # face mask (Option A)
+            'active_joints_json', 'face_mask_r0', 'face_mask_r1',
+            # geodesic
+            'use_geodesic_gauss', 'geo_dist_dir',
+        ]
+        _inherited = []
+        for key in _INHERIT_KEYS:
             if key in train_cfg:
                 cli_flags = [f'--{key}', f'--{key.replace("_", "-")}']
                 if not any(flag in sys.argv for flag in cli_flags):
                     setattr(opts, key, train_cfg[key])
+                    _inherited.append(key)
         print(f"Inherited model config from: {train_cfg_path}")
+        if _inherited:
+            print(f"  inherited keys ({len(_inherited)}): {_inherited}")
 
     evaluator = HLBSEvaluator(opts)
 
