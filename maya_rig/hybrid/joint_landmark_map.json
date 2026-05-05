@@ -1,0 +1,50 @@
+{
+  "_doc": "Mapping from face joint name -> DTU3D 73-landmark index (0-indexed). null = fallback to maya_bind. DTU3D doc 30-32 ('Right eye upper') treated as typo for 'Left eye upper'.",
+  "_landmark_set": "DTU3D-73 (Deep-MVLM output)",
+  "mapping": {
+    "hybrid_jnt_Brow_Center":           null,
+    "hybrid_jnt_Left_Brow_Outer":       8,
+    "hybrid_jnt_Right_Brow_Outer":      0,
+    "hybrid_jnt_Left_Eyebrow_Mid":      14,
+    "hybrid_jnt_Right_Eyebrow_Mid":     2,
+    "hybrid_jnt_Left_Eyebrow_Inner":    12,
+    "hybrid_jnt_Right_Eyebrow_Inner":   4,
+
+    "hybrid_jnt_Left_Upper_Eyelid":     30,
+    "hybrid_jnt_Right_Upper_Eyelid":    18,
+    "hybrid_jnt_Left_Lower_Eyelid":     26,
+    "hybrid_jnt_Right_Lower_Eyelid":    22,
+    "hybrid_jnt_Left_Eye_Inner_Corner": 28,
+    "hybrid_jnt_Right_Eye_Inner_Corner":20,
+    "hybrid_jnt_Left_Eye_Outer_Corner": 24,
+    "hybrid_jnt_Right_Eye_Outer_Corner":16,
+
+    "hybrid_jnt_Left_Cheek_Bone":       null,
+    "hybrid_jnt_Right_Cheek_Bone":      null,
+    "hybrid_jnt_Left_Cheek":            null,
+    "hybrid_jnt_Right_Cheek":           null,
+
+    "hybrid_jnt_Jaw_Front":             null,
+    "hybrid_jnt_Chin":                  67,
+    "hybrid_jnt_Left_Chin":             70,
+    "hybrid_jnt_Right_Chin":            65,
+
+    "hybrid_jnt_Maxilla":               null,
+    "hybrid_jnt_Nose_Base_Rotate":      39,
+    "hybrid_jnt_Nose_Tip":              45,
+    "hybrid_jnt_Nose_Nostril":          38,
+    "hybrid_jnt_Left_Nose_Wing":        36,
+    "hybrid_jnt_Right_Nose_Wing":       42,
+
+    "hybrid_jnt_Mouth_Center_Top":      null,
+    "hybrid_jnt_Mouth_Center_Bottom":   null,
+    "hybrid_jnt_Top_Lip":               49,
+    "hybrid_jnt_Bottom_Lip":            54,
+    "hybrid_jnt_Left_Lip_Upper_Side":   50,
+    "hybrid_jnt_Right_Lip_Upper_Side":  48,
+    "hybrid_jnt_Left_Lip_Lower_Side":   53,
+    "hybrid_jnt_Right_Lip_Lower_Side":  55,
+    "hybrid_jnt_Mouth_Left_Corner":     52,
+    "hybrid_jnt_Mouth_Right_Corner":    46
+  }
+}

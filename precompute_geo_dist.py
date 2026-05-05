@@ -63,11 +63,25 @@ def main():
     ap.add_argument('--topologies', nargs='+', default=['ict', 'mf'])
     ap.add_argument('--data_basedir', type=str, default='/data/sihun')
     ap.add_argument('--out_dir', type=str, default=None)
+    ap.add_argument('--landmark_map', type=str, default=None,
+                    help='Path to joint_landmark_map.json. If set, uses '
+                         'landmark_vidx_{topo}.npy[mapped_lm] as home_vertex '
+                         'for mapped face joints, falling back to maya_bind argmin '
+                         'for unmapped joints. Expects landmark_vidx_{topo}.npy '
+                         'in --out_dir (or --rig_path).')
     args = ap.parse_args()
 
     out_dir = args.out_dir or args.rig_path
     rig = load_rig(args.rig_path, device='cpu')
     J = len(rig.joint_names)
+
+    # Load landmark→joint map (optional)
+    joint_lm_map = None
+    if args.landmark_map:
+        import json as _json
+        with open(args.landmark_map) as f:
+            joint_lm_map = _json.load(f)['mapping']
+        print(f'[landmark map] loaded {len(joint_lm_map)} entries from {args.landmark_map}')
 
     for topo in args.topologies:
         if topo not in rig.bind_pos_dict:
@@ -79,11 +93,32 @@ def main():
         V = verts.shape[0]
         print(f'\n[{topo}] mesh V={V} F={faces.shape[0]}, J={J}')
 
-        # Home vertex per joint = argmin Euclidean dist to maya_bind
+        # Optional: load landmark vertex indices for this topology
+        landmark_vidx = None
+        if joint_lm_map is not None:
+            lv_path = os.path.join(out_dir, f'landmark_vidx_{topo}.npy')
+            if os.path.exists(lv_path):
+                landmark_vidx = np.load(lv_path).astype(np.int64)
+                print(f'  landmark_vidx loaded: {landmark_vidx.shape} from {lv_path}')
+            else:
+                print(f'  WARNING: {lv_path} not found, falling back to maya_bind for all joints')
+
+        # Home vertex per joint:
+        #   - if landmark mapping exists for this joint → use landmark_vidx[lm_idx]
+        #   - else → argmin Euclidean to maya_bind (legacy)
         home_verts = np.zeros(J, dtype=np.int32)
+        n_landmark, n_maya = 0, 0
         for j in range(J):
-            d = np.linalg.norm(verts - maya_bind[j], axis=-1)
-            home_verts[j] = int(d.argmin())
+            jname = rig.joint_names[j]
+            lm_idx = joint_lm_map.get(jname) if joint_lm_map else None
+            if landmark_vidx is not None and lm_idx is not None:
+                home_verts[j] = int(landmark_vidx[lm_idx])
+                n_landmark += 1
+            else:
+                d = np.linalg.norm(verts - maya_bind[j], axis=-1)
+                home_verts[j] = int(d.argmin())
+                n_maya += 1
+        print(f'  home_verts: landmark-derived={n_landmark}, maya_bind-fallback={n_maya}')
         print(f'  home_verts: range=[{home_verts.min()}, {home_verts.max()}]')
 
         # Heat method per source
