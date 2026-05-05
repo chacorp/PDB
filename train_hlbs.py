@@ -162,6 +162,11 @@ def Options():
     parser.add_argument("--geo_dist_dir", type=str, default=None,
                         help='Directory with geo_dist_{topo}.npy [J, V] tables '
                              '(from precompute_geo_dist.py). Defaults to --rig_path.')
+    parser.add_argument("--per_id_bind_pose_dir", type=str, default=None,
+                        help='Dir with {id_name}_bind_pos_landmark.npy per-id GT bind_pose '
+                             '(from precompute_per_id_bind_pos_landmark.py). When set, '
+                             'L_bind_reg target switches from per-topo mean to per-id GT '
+                             'where available; per-topo mean used as fallback for missing IDs.')
     parser.add_argument("--init_log_sigma", type=float, default=-1.2,
                         help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3). '
                              'Overridden by --sigma_targets_npy if given.')
@@ -1030,6 +1035,22 @@ class HLBSTrainer:
                 print(f"[bind_pos cache] WARNING: no *_bind_pos.npy in {_cache_dir}. "
                       f"Run precompute_per_id_bind_pos.py first, or expect online (slower) computation.")
 
+        # ── Per-id bind_pose GT cache (Phase B: landmark-based supervision) ──
+        self._per_id_bind_pose_gt = {}    # id_name → [J, 3] tensor on self.device
+        if getattr(opts, 'per_id_bind_pose_dir', None):
+            import glob as _glob
+            _files = _glob.glob(os.path.join(opts.per_id_bind_pose_dir, '*_bind_pos_landmark.npy'))
+            for _fp in _files:
+                _k = os.path.basename(_fp).replace('_bind_pos_landmark.npy', '')
+                self._per_id_bind_pose_gt[_k] = torch.from_numpy(
+                    np.load(_fp)).to(self.device).float()
+            if self._per_id_bind_pose_gt:
+                print(f"[per-id bind_pose GT] Loaded {len(self._per_id_bind_pose_gt)} from "
+                      f"{opts.per_id_bind_pose_dir}")
+            else:
+                print(f"[per-id bind_pose GT] WARNING: no *_bind_pos_landmark.npy in "
+                      f"{opts.per_id_bind_pose_dir}. L_bind_reg falls back to per-topo mean.")
+
         # ── Per-topo geodesic dist tables (for GMM Gauss / L_net_center / L_dist) ──
         self._geo_dist_per_topo = {}    # topo → [J, V] tensor on self.device
         if getattr(opts, 'use_geodesic_gauss', False):
@@ -1475,22 +1496,30 @@ class HLBSTrainer:
                     for k, v in init_losses.items():
                         loss_dict[k] = v
 
-                # ── Bind pose regularization (per-topology supervision in net mode) ──
+                # ── Bind pose regularization (per-topology / per-id supervision in net mode) ──
                 # Skipped in anchor_pool mode (redundant by construction).
+                # Target priority: per-id GT (Phase B landmark-based) > per-topo mean (fallback)
                 if (opts.lambda_bind_reg > 0 and _joint_pos is not None
                         and getattr(opts, 'bind_pose_mode', 'net') == 'net'):
-                    # Build per-batch target by id_name prefix (ict_xxx → ict, m--xxx → mf)
                     B_cur = _joint_pos.shape[0]
                     targets = []
+                    n_per_id = 0; n_per_topo = 0
                     for b in range(B_cur):
                         idn = batch.id_name[b] if hasattr(batch, 'id_name') else ''
+                        # 1st: per-id GT cache (landmark-based)
+                        if idn in self._per_id_bind_pose_gt:
+                            targets.append(self._per_id_bind_pose_gt[idn])
+                            n_per_id += 1
+                            continue
+                        # 2nd: per-topo mean fallback
                         if idn.startswith('ict_') and hasattr(self.model, 'bind_pos_target_ict'):
                             tgt = self.model.bind_pos_target_ict
                         elif idn.startswith('m--') and hasattr(self.model, 'bind_pos_target_mf'):
                             tgt = self.model.bind_pos_target_mf
                         else:
-                            tgt = self.model.bind_pos_target  # fallback
+                            tgt = self.model.bind_pos_target
                         targets.append(tgt)
+                        n_per_topo += 1
                     target_batch = torch.stack(targets, dim=0)               # [B, J, 3]
                     loss_dict["L_bind_reg"] = F.mse_loss(_joint_pos, target_batch.detach())
 
