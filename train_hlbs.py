@@ -167,6 +167,17 @@ def Options():
                              '(from precompute_per_id_bind_pos_landmark.py). When set, '
                              'L_bind_reg target switches from per-topo mean to per-id GT '
                              'where available; per-topo mean used as fallback for missing IDs.')
+    # ── Vertex subsample augmentation ──
+    parser.add_argument("--subsample_ratio", type=float, default=0.0,
+                        help='Per-batch vertex subsample ratio (0 = disabled, 0.5 = use half). '
+                             'Applies same perm to src_v / gt_v / normals / nfs_feat / geo_dist; '
+                             'sets batch.perm_idx so existing perm-aware paths (rwc, hier, init) work. '
+                             'Skips face-dependent losses (normal, curvature). Landmark vertices are '
+                             'pinned to ensure anchor preservation.')
+    parser.add_argument("--subsample_mode", type=str, default='random',
+                        choices=['random', 'importance'],
+                        help='random: uniform. importance: weights face region (eye/brow/lip) higher '
+                             'using plateau_hat indicator (face×3 vs non-face×1).')
     parser.add_argument("--init_log_sigma", type=float, default=-1.2,
                         help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3). '
                              'Overridden by --sigma_targets_npy if given.')
@@ -486,6 +497,59 @@ class HLBSTrainer:
         self.nfs_exp_encoder.update_precomputes(self._nfs_dfn_info)
         z_ge = self.nfs_exp_encoder(nfs_input)                         # [B, 128]
         return self.nfs_z_adapter(z_ge)                                # [B, hid_dim]
+
+    def _build_subsample_perm(self, src_v, batch, ratio, mode):
+        """Build [B, K] long perm_idx for vertex subsampling.
+
+        - K = round(N * ratio). Returns None if K >= N (no-op).
+        - Pins landmark vertices (when available for the topology) so anatomical
+          anchors are preserved in the subsample.
+        - Mode 'random': uniform sample over non-anchor vertices.
+        - Mode 'importance': weights by face-region indicator (plateau_hat),
+          face-area vertices ×3 vs non-face ×1.
+        """
+        from utils.exp_utils import plateau_hat_points
+        B, N, _ = src_v.shape
+        K = int(round(N * ratio))
+        if K >= N or K <= 0:
+            return None
+        out = []
+        for b in range(B):
+            idn = batch.id_name[b] if hasattr(batch, 'id_name') else ''
+            topo = ('ict' if idn.startswith('ict_') else
+                    'mf'  if idn.startswith('m--')   else None)
+            anchor = self._landmark_vidx_per_topo.get(topo) if topo else None
+            if anchor is not None:
+                # filter out indices outside current N (safety)
+                anchor = anchor[anchor < N]
+                if len(anchor) >= K:
+                    anchor = anchor[:K]
+
+            if mode == 'importance':
+                t = plateau_hat_points(src_v[b:b+1]).squeeze(-1).squeeze(0)   # [N]
+                w = 1.0 + 2.0 * t                                               # face=3, non-face=1
+            else:  # random
+                w = None
+
+            if anchor is not None and len(anchor) < K:
+                K_rest = K - len(anchor)
+                if w is None:
+                    avail_mask = torch.ones(N, dtype=torch.bool, device=src_v.device)
+                    avail_mask[anchor] = False
+                    others = avail_mask.nonzero(as_tuple=False).squeeze(-1)
+                    rest = others[torch.randperm(len(others), device=src_v.device)[:K_rest]]
+                else:
+                    w_others = w.clone()
+                    w_others[anchor] = 0.0
+                    rest = torch.multinomial(w_others, K_rest, replacement=False)
+                perm = torch.cat([anchor, rest])
+            else:
+                if w is None:
+                    perm = torch.randperm(N, device=src_v.device)[:K]
+                else:
+                    perm = torch.multinomial(w, K, replacement=False)
+            out.append(perm)
+        return torch.stack(out, dim=0)   # [B, K]
 
     @torch.no_grad()
     def _visualize_curriculum_bases(self, epoch, save_dir):
@@ -1068,6 +1132,20 @@ class HLBSTrainer:
                 print(f"[geo_dist] WARNING: --use_geodesic_gauss set but no "
                       f"geo_dist_{{topo}}.npy in {_gd_dir}. Falling back to Euclidean.")
 
+        # ── Per-topo landmark vertex indices (for subsample anchor pinning) ──
+        self._landmark_vidx_per_topo = {}
+        if getattr(opts, 'subsample_ratio', 0) > 0:
+            _lv_dir = getattr(opts, 'geo_dist_dir', None) or opts.rig_path
+            for _topo in ('ict', 'mf'):
+                _p = os.path.join(_lv_dir, f'landmark_vidx_{_topo}.npy')
+                if os.path.exists(_p):
+                    self._landmark_vidx_per_topo[_topo] = torch.from_numpy(
+                        np.load(_p)).to(self.device).long()
+            if self._landmark_vidx_per_topo:
+                _msg = ', '.join(f'{k}{tuple(v.shape)}'
+                                 for k, v in self._landmark_vidx_per_topo.items())
+                print(f"[subsample] landmark anchors loaded: {_msg}")
+
         # ── Build FullPred model ─────────────────────────────────────────
         from utils.rig_loader import load_rig
         rig = load_rig(opts.rig_path)
@@ -1355,6 +1433,26 @@ class HLBSTrainer:
                         else:
                             feats.append(torch.zeros(N_cur, 256, device=self.device))
                     _nfs_feat = torch.stack(feats, dim=0)  # [B, N, 256]
+
+                # ── Subsample augmentation (Track A) ──
+                # Subsample to K = round(N * ratio) vertices; pin landmark anchors;
+                # apply same perm to src_v / src_n / gt_v / gt_n / nfs_feat.
+                # Sets batch.perm_idx so existing perm-aware paths (geo_dist, rwc, hier,
+                # init_loss W target) handle their own slicing.
+                if getattr(opts, 'subsample_ratio', 0) > 0:
+                    _perm = self._build_subsample_perm(
+                        src_v, batch, opts.subsample_ratio, opts.subsample_mode)
+                    if _perm is not None:
+                        idx3 = _perm.unsqueeze(-1).expand(-1, -1, 3)
+                        src_v = torch.gather(src_v, 1, idx3)
+                        src_n = torch.gather(src_n, 1, idx3)
+                        gt_v  = torch.gather(gt_v,  1, idx3)
+                        gt_n  = torch.gather(gt_n,  1, idx3)
+                        target_v = gt_v
+                        if _nfs_feat is not None:
+                            idxF = _perm.unsqueeze(-1).expand(-1, -1, _nfs_feat.shape[-1])
+                            _nfs_feat = torch.gather(_nfs_feat, 1, idxF)
+                        batch.perm_idx = _perm
 
                 is_permed = hasattr(batch, 'perm_idx') and batch.perm_idx is not None
 
