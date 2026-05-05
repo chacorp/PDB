@@ -175,9 +175,10 @@ def Options():
                              'Skips face-dependent losses (normal, curvature). Landmark vertices are '
                              'pinned to ensure anchor preservation.')
     parser.add_argument("--subsample_mode", type=str, default='random',
-                        choices=['random', 'importance'],
-                        help='random: uniform. importance: weights face region (eye/brow/lip) higher '
-                             'using plateau_hat indicator (face×3 vs non-face×1).')
+                        choices=['random', 'importance', 'mixed'],
+                        help='random: uniform. importance: face region (eye/brow/lip) ×3 vs non-face '
+                             '×1. mixed: per-batch-sample split — even index uses random, odd index '
+                             'uses importance, so each batch sees both distributions.')
     parser.add_argument("--init_log_sigma", type=float, default=-1.2,
                         help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3). '
                              'Overridden by --sigma_targets_npy if given.')
@@ -525,10 +526,15 @@ class HLBSTrainer:
                 if len(anchor) >= K:
                     anchor = anchor[:K]
 
-            if mode == 'importance':
+            # 'mixed' splits batch per-sample: even idx → random, odd idx → importance
+            _eff_mode = mode
+            if mode == 'mixed':
+                _eff_mode = 'random' if (b % 2 == 0) else 'importance'
+
+            if _eff_mode == 'importance':
                 t = plateau_hat_points(src_v[b:b+1]).squeeze(-1).squeeze(0)   # [N]
                 w = 1.0 + 2.0 * t                                               # face=3, non-face=1
-            else:  # random
+            else:
                 w = None
 
             if anchor is not None and len(anchor) < K:
