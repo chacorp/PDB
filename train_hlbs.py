@@ -1726,22 +1726,25 @@ class HLBSTrainer:
                     log_text += " ".join(f"{k}: {v*inv:.6e}" for k, v in running.items())
                     logger.write(log_text + "\n")
 
-                    HB = BS // 2
-                    _d = lambda t: t.cpu().detach()
-                    _s = lambda i: min(i, BS-1)
-                    faces_cpu = batch.faces.cpu()
-                    v_list = [
-                        _d(gt_v[0]),        _d(gt_v[_s(1)]),
-                        _d(gt_v[_s(HB)]),   _d(gt_v[BS-1]),
-                        _d(pred_lbs[0]),    _d(pred_lbs[_s(1)]),
-                        _d(pred_lbs[_s(HB)]), _d(pred_lbs[BS-1]),
-                    ]
-                    f_list = [faces_cpu] * len(v_list)
-                    plot_image_array(
-                        v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
-                        size=1, bg_black=False, mode='shade',
-                        logdir=f"{opts.log_dir}/img/train/mesh",
-                        name=f"{epoch:03d}_{idx:04d}", save=True)
+                    # Skip mesh vis when subsampled — batch.faces refers to original
+                    # vertex indices and would index out-of-range on subsampled verts.
+                    if not is_permed:
+                        HB = BS // 2
+                        _d = lambda t: t.cpu().detach()
+                        _s = lambda i: min(i, BS-1)
+                        faces_cpu = batch.faces.cpu()
+                        v_list = [
+                            _d(gt_v[0]),        _d(gt_v[_s(1)]),
+                            _d(gt_v[_s(HB)]),   _d(gt_v[BS-1]),
+                            _d(pred_lbs[0]),    _d(pred_lbs[_s(1)]),
+                            _d(pred_lbs[_s(HB)]), _d(pred_lbs[BS-1]),
+                        ]
+                        f_list = [faces_cpu] * len(v_list)
+                        plot_image_array(
+                            v_list, f_list, rot_list=[[0,0,0]]*len(v_list),
+                            size=1, bg_black=False, mode='shade',
+                            logdir=f"{opts.log_dir}/img/train/mesh",
+                            name=f"{epoch:03d}_{idx:04d}", save=True)
 
                 if opts.debug:
                     break
