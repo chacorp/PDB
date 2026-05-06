@@ -167,6 +167,19 @@ def Options():
                              '(from precompute_per_id_bind_pos_landmark.py). When set, '
                              'L_bind_reg target switches from per-topo mean to per-id GT '
                              'where available; per-topo mean used as fallback for missing IDs.')
+    # ── ICT cross-retargeting paired supervision (Track B) ──
+    parser.add_argument("--lambda_cross_retarget", type=float, default=0.0,
+                        help='Weight for cross-id retarget loss. When > 0, builds a CrossPairICTDataset '
+                             'and at every train step computes L_cross = MSE(model.retarget(src_id_A, '
+                             'tgt_id_B_neutral), tgt_id_B_def) — supervising explicit identity vs '
+                             'expression disentanglement using shared z_FACS pairs.')
+    parser.add_argument("--cross_pair_iden_vecs", type=str,
+                        default='data/ICT_live_100/iden_vecs.npy',
+                        help='Path to .npy or .pt file with iden_vecs [N, 100] for cross-pair sampling. '
+                             'Default = 100 train IDs (matches per-id bind_pose GT cache for ICT).')
+    parser.add_argument("--cross_pair_length", type=int, default=0,
+                        help='Items-per-epoch for cross-pair loader (0=N_id*53). Lower = fewer pairs/epoch.')
+
     # ── Vertex subsample augmentation ──
     parser.add_argument("--subsample_ratio", type=float, default=0.0,
                         help='Per-batch vertex subsample ratio (0 = disabled, 0.5 = use half). '
@@ -1138,6 +1151,37 @@ class HLBSTrainer:
                 print(f"[geo_dist] WARNING: --use_geodesic_gauss set but no "
                       f"geo_dist_{{topo}}.npy in {_gd_dir}. Falling back to Euclidean.")
 
+        # ── Cross-pair ICT loader (Track B) ──
+        self._cross_pair_loader = None
+        self._cross_pair_iter = None
+        if getattr(opts, 'lambda_cross_retarget', 0) > 0:
+            try:
+                from dataloader_cross_pair import CrossPairICTDataset, cross_pair_collate
+                from utils.remesh_utils import ICT_face_model
+                _ict_fm = ICT_face_model()
+                _path = opts.cross_pair_iden_vecs
+                if _path.endswith('.npy'):
+                    _iden_vecs = np.load(_path)
+                else:
+                    _iden_vecs = torch.load(_path).numpy()
+                _length = opts.cross_pair_length if opts.cross_pair_length > 0 \
+                    else (_iden_vecs.shape[0] * 53)
+                _cross_ds = CrossPairICTDataset(
+                    _ict_fm, _iden_vecs, expression_vecs=None,
+                    mode='train', length=_length,
+                )
+                self._cross_pair_loader = torch.utils.data.DataLoader(
+                    _cross_ds, batch_size=opts.batch_size, num_workers=0,
+                    shuffle=True, collate_fn=partial(cross_pair_collate, device='cpu'),
+                )
+                self._cross_pair_iter = iter(self._cross_pair_loader)
+                print(f"[cross-pair] CrossPairICTDataset: {_iden_vecs.shape[0]} ids × 53 exp → "
+                      f"{_length} pairs/epoch (batch={opts.batch_size})")
+            except Exception as _e:
+                print(f"[cross-pair] WARNING: failed to build CrossPairICTDataset: {_e}. "
+                      f"Disabling cross-retarget supervision.")
+                self._cross_pair_loader = None
+
         # ── Per-topo landmark vertex indices (for subsample anchor pinning) ──
         self._landmark_vidx_per_topo = {}
         if getattr(opts, 'subsample_ratio', 0) > 0:
@@ -1385,7 +1429,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -1687,6 +1731,67 @@ class HLBSTrainer:
                     for k, v in hier_losses.items():
                         loss_dict[k] = v
 
+                # ── Cross-id retarget loss (Track B) ─────────────────────
+                if (getattr(opts, 'lambda_cross_retarget', 0) > 0
+                        and self._cross_pair_loader is not None):
+                    try:
+                        cb = next(self._cross_pair_iter)
+                    except StopIteration:
+                        self._cross_pair_iter = iter(self._cross_pair_loader)
+                        cb = next(self._cross_pair_iter)
+                    cb = cb.to(self.device)
+                    B_c, V_c, _ = cb.tgt_template.shape
+
+                    # NFS feat for tgt id (W uses tgt's identity)
+                    _tgt_nfs = None
+                    if opts.nfs_feat_dir and self._nfs_feat_cache:
+                        _feats = []
+                        for b in range(B_c):
+                            _idn = cb.tgt_id_name[b]
+                            if _idn in self._nfs_feat_cache:
+                                _f = self._nfs_feat_cache[_idn]
+                                if _f.shape[0] > V_c: _f = _f[:V_c]
+                                if self._nfs_on_cpu: _f = _f.to(self.device, non_blocking=True)
+                                _feats.append(_f)
+                            else:
+                                _feats.append(torch.zeros(V_c, 256, device=self.device))
+                        _tgt_nfs = torch.stack(_feats, dim=0)
+
+                    # Per-id bind_pos cache for tgt (Phase B GT > legacy > per-topo mean)
+                    _tgt_bp = None
+                    _bp_items = []
+                    for b in range(B_c):
+                        _idn = cb.tgt_id_name[b]
+                        if _idn in self._per_id_bind_pose_gt:
+                            _bp_items.append(self._per_id_bind_pose_gt[_idn])
+                        elif _idn in self._bind_pos_cache:
+                            _bp_items.append(self._bind_pos_cache[_idn])
+                        elif hasattr(self.model, 'bind_pos_target_ict'):
+                            _bp_items.append(self.model.bind_pos_target_ict)
+                        else:
+                            _bp_items = None; break
+                    if _bp_items is not None and len(_bp_items) == B_c:
+                        _tgt_bp = torch.stack(_bp_items, dim=0).detach()
+
+                    # geo_dist² for tgt (cross-pair is always ICT)
+                    _tgt_geo = None
+                    if 'ict' in self._geo_dist_per_topo:
+                        _gd = self._geo_dist_per_topo['ict'].t()         # [V, J]
+                        if _gd.shape[0] >= V_c:
+                            _gd = _gd[:V_c]
+                            _tgt_geo = (_gd.unsqueeze(0).expand(B_c, -1, -1)) ** 2
+
+                    # Forward retarget
+                    pred_tgt = self.model.retarget(
+                        cb.src_template, cb.src_template_normal,
+                        cb.src_vertices,  cb.src_vertices_normal,
+                        cb.tgt_template,  cb.tgt_template_normal,
+                        tgt_nfs_feat=_tgt_nfs,
+                        tgt_bind_pos_cache=_tgt_bp,
+                        tgt_dist_sq_geo=_tgt_geo,
+                    )
+                    loss_dict["L_cross_retarget"] = F.mse_loss(pred_tgt, cb.tgt_vertices)
+
                 # ── Total loss ───────────────────────────────────────────
                 loss_lambda = {
                     "recon-lbs": opts.lambda_vert,
@@ -1702,6 +1807,7 @@ class HLBSTrainer:
                     "L_dist": opts.lambda_dist,
                     "L_sigma": opts.lambda_sigma_reg,
                     "L_net_center": opts.lambda_net_center,
+                    "L_cross_retarget": opts.lambda_cross_retarget,
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
                 loss.backward()

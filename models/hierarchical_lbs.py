@@ -1050,6 +1050,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         tgt_neu_vert: torch.Tensor,
         tgt_neu_norm: torch.Tensor,
         tgt_nfs_feat: torch.Tensor = None,
+        tgt_bind_pos_cache: torch.Tensor = None,
+        tgt_dist_sq_geo: torch.Tensor = None,
     ):
         """
         Cross-retargeting: apply SOURCE expression to TARGET identity.
@@ -1100,13 +1102,21 @@ class HierarchicalLBS_FullPred(nn.Module):
         # ── Identity from TARGET ────────────────────────────────────────
         tgt_skin_input, tgt_adain = self._prepare_feat(tgt_neu_vert, tgt_neu_norm, tgt_nfs_feat)
         if self.freeze_bind_pose:
-            B_inv_tgt = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)
-            tgt_joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1)
-        else:
+            if tgt_bind_pos_cache is not None:
+                tgt_joint_pos = tgt_bind_pos_cache
+                B_inv_tgt = self._build_B_inv(tgt_joint_pos)
+            else:
+                B_inv_tgt = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)
+                tgt_joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1)
+        elif self.bind_pose_mode == 'anchor_pool':
+            B_inv_tgt, tgt_joint_pos = self._get_bind_pose_anchor(
+                tgt_neu_vert, tgt_nfs_feat, bind_pos_cache=tgt_bind_pos_cache)
+        else:  # 'net'
             B_inv_tgt, tgt_joint_pos = self._get_bind_pose(tgt_skin_input, adain_input=tgt_adain)
         W_tgt, _ = self._get_skinning_weights(
             tgt_skin_input, adain_input=tgt_adain,
             source_vert=tgt_neu_vert, joint_pos=tgt_joint_pos,
+            dist_sq_override=tgt_dist_sq_geo,
         )
 
         G = torch.bmm(
