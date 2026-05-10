@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF: Point-Based Deformation Factorization for Facial Animation Retargeting</title>
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+
+  <style>
+    body { font-family: 'Noto Sans', sans-serif; }
+
+    .hero { background: #f5f5f5; }
+
+    .title.is-1 {
+      font-family: 'Google Sans', sans-serif;
+      font-size: 2.2rem;
+    }
+    .title.is-3 { font-family: 'Google Sans', sans-serif; }
+
+    .author-block { display: inline-block; margin: 0 6px; }
+
+    .publication-links .button {
+      border-radius: 20px;
+      font-size: 0.9rem;
+    }
+
+    /* teaser */
+    .teaser img { border-radius: 8px; }
+
+    /* section separators */
+    section.section { padding: 3rem 1.5rem; }
+
+    /* comparison */
+    .comparison-tabs { margin-bottom: 1.5rem; }
+    .comparison-tabs .tabs { margin-bottom: 0; }
+
+    .video-grid {
+      display: grid;
+      gap: 6px;
+    }
+    .video-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+    .video-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+    .video-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+
+    .video-item { text-align: center; }
+    .video-item video {
+      width: 100%;
+      border-radius: 6px;
+    }
+    .video-item p {
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-top: 4px;
+      color: #555;
+    }
+    .video-item p.ours { color: #d9534f; }
+
+    .scene-panel { display: none; }
+    .scene-panel.is-active { display: block; }
+
+    /* BibTeX */
+    .bibtex-box {
+      background: #f8f8f8;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 1.25rem;
+      font-family: 'Castoro', monospace;
+      font-size: 0.85rem;
+      text-align: left;
+      white-space: pre-wrap;
+    }
+
+    /* footer */
+    .footer { background: #f5f5f5; padding: 2rem; }
+
+    @media (max-width: 768px) {
+      .video-grid.cols-4 { grid-template-columns: repeat(2, 1fr); }
+      .video-grid.cols-3 { grid-template-columns: repeat(2, 1fr); }
+      .title.is-1 { font-size: 1.6rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ==================== HERO ==================== -->
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+
+          <h1 class="title is-1 publication-title">
+            PDF: Point-Based Deformation Factorization<br>for Facial Animation Retargeting
+          </h1>
+
+          <!-- Authors — fill in -->
+          <div class="is-size-5 publication-authors" style="margin: 1rem 0;">
+            <span class="author-block"><a href="#">Sihun Cha</a><sup>1</sup>,</span>
+            <span class="author-block"><a href="#">Author Two</a><sup>1</sup>,</span>
+            <span class="author-block"><a href="#">Author Three</a><sup>1</sup></span>
+          </div>
+
+          <div class="is-size-6 publication-authors" style="margin-bottom: 1rem; color: #666;">
+            <span class="author-block"><sup>1</sup>Institution Name</span>
+          </div>
+
+          <!-- Links -->
+          <div class="publication-links">
+            <span class="link-block" style="margin: 4px;">
+              <a href="#" class="button is-dark is-rounded">
+                <span class="icon"><i class="ai ai-arxiv"></i></span>
+                <span>arXiv</span>
+              </a>
+            </span>
+            <span class="link-block" style="margin: 4px;">
+              <a href="https://github.com/chacorp/NeuralFacialAnimation" class="button is-dark is-rounded">
+                <span class="icon"><i class="fab fa-github"></i></span>
+                <span>Code</span>
+              </a>
+            </span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== TEASER ==================== -->
+<section class="section teaser">
+  <div class="container is-max-desktop">
+    <figure class="image">
+      <img src="static/images/teaser.png" alt="Teaser: PDF retargeting results across diverse mesh types">
+    </figure>
+    <p class="has-text-centered" style="margin-top: 0.75rem; color: #555; font-size: 0.95rem;">
+      PDF retargets facial animations across diverse mesh topologies — ICT, Multiface, BIWI, CoMA and character rigs — using a unified point-based deformation representation.
+    </p>
+  </div>
+</section>
+
+<!-- ==================== ABSTRACT ==================== -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            <!-- TODO: fill in abstract -->
+            We present <strong>PDF</strong>, a point-based deformation factorization method for mesh-agnostic facial animation retargeting. Given a source facial animation sequence and a target character mesh with arbitrary topology, PDF transfers the facial expressions from the source to the target without requiring any paired training data or manual rigging. Our key idea is to factorize the per-vertex deformation into identity-independent expression codes and identity-specific coordinate weights computed from a sparse set of learned point coordinates. This factorization allows the model to generalize to unseen mesh topologies at test time. We demonstrate that PDF outperforms previous methods on diverse datasets including ICT-FaceKit, Multiface, BIWI, and CoMA.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== COMPARISON ==================== -->
+<section class="section" style="background: #fafafa;">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Qualitative Comparison</h2>
+    <p class="has-text-centered" style="margin-bottom: 1.5rem; color: #555;">
+      Select a scenario to compare methods. <span style="color:#d9534f; font-weight:600;">PDF (Ours)</span> shown in red.
+    </p>
+
+    <!-- Scene selector tabs -->
+    <div class="comparison-tabs">
+      <div class="tabs is-centered is-boxed">
+        <ul id="scene-tabs">
+          <li class="is-active" data-scene="ict-self"><a>ICT Self</a></li>
+          <li data-scene="ict-cross-003"><a>ICT → ID 003</a></li>
+          <li data-scene="ict-cross-009"><a>ICT → ID 009</a></li>
+          <li data-scene="ict-to-mf"><a>ICT → Multiface</a></li>
+          <li data-scene="mf-self"><a>MF Self</a></li>
+          <li data-scene="mf-to-ict"><a>MF → ICT</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Scene: ICT self-retargeting (ID 000 → 000) -->
+    <div class="scene-panel is-active" id="panel-ict-self">
+      <p class="has-text-centered is-size-7 mb-3" style="color:#888;">Source: ICT ID_000 &rarr; Target: ICT ID_000 (self-retargeting)</p>
+      <div class="video-grid cols-4">
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/gt/ict-self.mp4" type="video/mp4"></video>
+          <p>GT</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfr/ict-self.mp4" type="video/mp4"></video>
+          <p>NFR</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfs/ict-self.mp4" type="video/mp4"></video>
+          <p>NFS</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/ours/ict-self.mp4" type="video/mp4"></video>
+          <p class="ours">PDF (Ours)</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene: ICT cross ID 003 -->
+    <div class="scene-panel" id="panel-ict-cross-003">
+      <p class="has-text-centered is-size-7 mb-3" style="color:#888;">Source: ICT ID_000 &rarr; Target: ICT ID_003 (cross-retargeting)</p>
+      <div class="video-grid cols-3">
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfr/ict-cross-003.mp4" type="video/mp4"></video>
+          <p>NFR</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfs/ict-cross-003.mp4" type="video/mp4"></video>
+          <p>NFS</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/ours/ict-cross-003.mp4" type="video/mp4"></video>
+          <p class="ours">PDF (Ours)</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene: ICT cross ID 009 -->
+    <div class="scene-panel" id="panel-ict-cross-009">
+      <p class="has-text-centered is-size-7 mb-3" style="color:#888;">Source: ICT ID_000 &rarr; Target: ICT ID_009 (cross-retargeting)</p>
+      <div class="video-grid cols-3">
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfr/ict-cross-009.mp4" type="video/mp4"></video>
+          <p>NFR</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfs/ict-cross-009.mp4" type="video/mp4"></video>
+          <p>NFS</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/ours/ict-cross-009.mp4" type="video/mp4"></video>
+          <p class="ours">PDF (Ours)</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene: ICT → Multiface -->
+    <div class="scene-panel" id="panel-ict-to-mf">
+      <p class="has-text-centered is-size-7 mb-3" style="color:#888;">Source: ICT ID_000 &rarr; Target: Multiface ID_012 (cross-dataset)</p>
+      <div class="video-grid cols-2">
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfr/ict-to-mf.mp4" type="video/mp4"></video>
+          <p>NFR</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/ours/ict-to-mf.mp4" type="video/mp4"></video>
+          <p class="ours">PDF (Ours)</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene: Multiface self-retargeting -->
+    <div class="scene-panel" id="panel-mf-self">
+      <p class="has-text-centered is-size-7 mb-3" style="color:#888;">Source: Multiface &rarr; Target: Multiface (self-retargeting)</p>
+      <div class="video-grid cols-4">
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/gt/mf-self.mp4" type="video/mp4"></video>
+          <p>GT</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfr/mf-self.mp4" type="video/mp4"></video>
+          <p>NFR</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfs/mf-self.mp4" type="video/mp4"></video>
+          <p>NFS</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/ours/mf-self.mp4" type="video/mp4"></video>
+          <p class="ours">PDF (Ours)</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene: Multiface → ICT (NC comparison) -->
+    <div class="scene-panel" id="panel-mf-to-ict">
+      <p class="has-text-centered is-size-7 mb-3" style="color:#888;">Source: Multiface &rarr; Target: ICT ID_009 (cross-dataset)</p>
+      <div class="video-grid cols-3">
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nfr/mf-to-ict.mp4" type="video/mp4"></video>
+          <p>NFR</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/nc/mf-to-ict.mp4" type="video/mp4"></video>
+          <p>NC</p>
+        </div>
+        <div class="video-item">
+          <video autoplay muted loop playsinline><source src="static/videos/ours/mf-to-ict.mp4" type="video/mp4"></video>
+          <p class="ours">PDF (Ours)</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ==================== BIBTEX ==================== -->
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">BibTeX</h2>
+    <div class="bibtex-box">@article{cha2025pdf,
+  title     = {PDF: Point-Based Deformation Factorization for Facial Animation Retargeting},
+  author    = {Cha, Sihun and others},
+  journal   = {arXiv preprint},
+  year      = {2025}
+}</div>
+  </div>
+</section>
+
+<!-- ==================== FOOTER ==================== -->
+<footer class="footer">
+  <div class="container">
+    <div class="content has-text-centered">
+      <p>
+        The template is borrowed from
+        <a href="https://nerfies.github.io">Nerfies</a>.
+        We thank the contributors of
+        <a href="https://github.com/dafei-qin/NFR_pytorch">NFR</a>,
+        <a href="https://voca.is.tue.mpg.de/">VOCA</a>,
+        <a href="https://github.com/facebookresearch/multiface">Multiface</a>,
+        <a href="https://data.vision.ee.ethz.ch/cvl/datasets/b3dac2.en.html">BIWI</a>, and
+        <a href="https://github.com/USC-ICT/ICT-FaceKit">ICT-FaceKit</a>.
+      </p>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Tab switching
+  document.querySelectorAll('#scene-tabs li').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      // deactivate all tabs and panels
+      document.querySelectorAll('#scene-tabs li').forEach(t => t.classList.remove('is-active'));
+      document.querySelectorAll('.scene-panel').forEach(p => p.classList.remove('is-active'));
+
+      // activate clicked
+      tab.classList.add('is-active');
+      var scene = tab.getAttribute('data-scene');
+      var panel = document.getElementById('panel-' + scene);
+      panel.classList.add('is-active');
+
+      // restart videos in the newly shown panel
+      panel.querySelectorAll('video').forEach(function(v) {
+        v.load();
+        v.play();
+      });
+    });
+  });
+</script>
+
+</body>
+</html>
