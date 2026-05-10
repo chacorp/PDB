@@ -12,6 +12,8 @@ data_capture
 video/
 vis_CBD/
 eval_CBD/
+notebook/fig*/
+notebook/vis*/
 
 *.pkl
 */*.pkl
