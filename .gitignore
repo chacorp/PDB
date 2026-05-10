@@ -9,12 +9,21 @@ ckpt*
 test_results
 data_capture
 
-video/
+video*/
 vis_CBD*/
 eval_CBD*/
+eval_cyc*/
 notebook/fig*/
 notebook/vis*/
+*summary*/
 
+vis_CBD*
+eval_CBD*
+eval_cyc*
+*summary*
+
+*.sh
+*.txt
 *.pkl
 */*.pkl
 */*/*.pkl
