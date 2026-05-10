@@ -3,6 +3,7 @@ import glob
 import json
 import yaml
 import random
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import argparse
@@ -307,7 +308,7 @@ class Pipeline():
         self.ict_precompute_path = '/data/sihun/ICT-audio2face/precompute-real-fullhead'
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
-        BS = 1
+        BS = self.opts.batch_size
         device=self.device
         
         ##########################################################################################################
@@ -329,7 +330,8 @@ class Pipeline():
             src_dataset,
             batch_size=BS,
             collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
-            #num_workers=8,
+            num_workers=4,
+            persistent_workers=True,
         )
         src_v, src_f, src_mesh_id = self.get_mesh(src_selection, src_dataset, SRC_SELECT_MESH)
         # if 'mf' in src_selection:
@@ -356,7 +358,9 @@ class Pipeline():
         #     src_img = torch.from_numpy(src_img)[0]
             
         src_n = igl.per_vertex_normals(src_v, src_f)
-        
+        src_v_th = torch.tensor(src_v).float()[None].to(device)
+        src_n_th = torch.tensor(src_n).float()[None].to(device)
+
         ##########################################################################################################
         tgt_selection = data_name_list[TGT_SELECT_DATA]
 
@@ -394,6 +398,7 @@ class Pipeline():
         tgt_n = igl.per_vertex_normals(tgt_v, tgt_f)
         tgt_v_th = torch.tensor(tgt_v).float()[None].to(device)
         tgt_n_th = torch.tensor(tgt_n).float()[None].to(device)
+        tgt_f_th = torch.from_numpy(tgt_f).to(device)
         ##########################################################################################################
         
         
@@ -874,7 +879,7 @@ class Pipeline():
                         with torch.no_grad():
                             key_weight = self.model.predict_coordinate(src_template, src_template_normal)
                     else:
-                        if (batch.template[0] - src_template[0]).mean() != 0:
+                        if (batch.template[0] - src_template[0]).abs().mean() > 0:
                             if self.opts.laplacian:
                                 src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                                 tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
@@ -913,24 +918,13 @@ class Pipeline():
                 print('cross-retargeting! (src != tgt)')
                 with torch.no_grad():
                     key_weight = self.model.predict_coordinate(tgt_v_th, tgt_n_th)
+                    src_key_weight = self.model.predict_coordinate(src_v_th, src_n_th)
 
-                pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
-                for index, batch in pbar:
-                    if index==0:
-                        if self.opts.laplacian:
-                            src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-                            tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
-                            src_L = torch.sparse_csc_tensor(
-                                torch.LongTensor(tmp_L.indptr).to(device),
-                                torch.LongTensor(tmp_L.indices).to(device),
-                                torch.FloatTensor(tmp_L.data).to(device),
-                                tmp_L.shape
-                            )
-                        src_template = batch.template
-                        src_template_normal = batch.template_normal
-                        src_key_weight = self.model.predict_coordinate(src_template, src_template_normal)
-                    else:
-                        if (batch.template[0] - src_template[0]).mean() != 0:
+                src_template = None
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+                    for index, batch in pbar:
+                        if index == 0:
                             if self.opts.laplacian:
                                 src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                                 tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
@@ -942,40 +936,47 @@ class Pipeline():
                                 )
                             src_template = batch.template
                             src_template_normal = batch.template_normal
-                            src_key_weight = self.model.predict_coordinate(src_template, src_template_normal)
+                        else:
+                            if (batch.template[0] - src_template[0]).abs().mean() > 0:
+                                if self.opts.laplacian:
+                                    src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+                                    tmp_L = igl.cotmatrix(src_m.vertices, src_m.faces)
+                                    src_L = torch.sparse_csc_tensor(
+                                        torch.LongTensor(tmp_L.indptr).to(device),
+                                        torch.LongTensor(tmp_L.indices).to(device),
+                                        torch.FloatTensor(tmp_L.data).to(device),
+                                        tmp_L.shape
+                                    )
+                                src_template = batch.template
+                                src_template_normal = batch.template_normal
+                                with torch.no_grad():
+                                    src_key_weight = self.model.predict_coordinate(src_template, src_template_normal)
 
-                    with torch.no_grad():
-                        pred_outputs, key_d_src = self.model.retarget_animation(
-                            batch.template, batch.template_normal, 
-                            batch.vertices, batch.vertices_normal, 
-                            key_weight,
-                            tgt_v_th # -> (optional) only needed for diplacement prediction
-                        )
-                        # import pdb;pdb.set_trace()
-                        # pred_verts_nrm = calc_norm_torch(pred_outputs, batch.faces.squeeze(0), at='verts')
-                        pred_verts_nrm = calc_norm_torch(pred_outputs, torch.from_numpy(tgt_f).to(self.device), at='verts')
-                        
-                        # import pdb;pdb.set_trace()
-                        pred_outputs_src, key_d_tgt = self.model.retarget_animation(
-                            tgt_v_th, tgt_n_th, 
-                            pred_outputs, pred_verts_nrm,
-                            src_key_weight,
-                            src_template # -> (optional) only needed for diplacement prediction
-                        )
-                        # pred_outputs_src = torch.einsum('bnc,bci->bni', src_key_weight, key_d)
-                    
-                        losses_val = stack_mse(batch, pred_outputs_src, losses_val, denom, src_L)
-                        
-                    pred_outputs_np = pred_outputs.detach().cpu().numpy()
-                    pred_outputs_src_np = pred_outputs_src.detach().cpu().numpy()
-                    
-                    CurrBS=pred_outputs_np.shape[0]
-                    for b_idx in range(CurrBS):
-                        save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
-                        np.save(save_out_name, pred_outputs_np[b_idx])
-                        
-                        save_out_name_cyc = self.opts.log_dir_vert_cyc+f'/{index*CurrBS+b_idx:06d}.npy'
-                        np.save(save_out_name_cyc, pred_outputs_src_np[b_idx])
+                        with torch.no_grad():
+                            pred_outputs, key_d_src = self.model.retarget_animation(
+                                batch.template, batch.template_normal,
+                                batch.vertices, batch.vertices_normal,
+                                key_weight,
+                                tgt_v_th,
+                            )
+                            pred_verts_nrm = calc_norm_torch(pred_outputs, tgt_f_th, at='verts')
+
+                            CurrBS = pred_outputs.shape[0]
+                            pred_outputs_src, key_d_tgt = self.model.retarget_animation(
+                                tgt_v_th.expand(CurrBS, -1, -1), tgt_n_th.expand(CurrBS, -1, -1),
+                                pred_outputs, pred_verts_nrm,
+                                src_key_weight.expand(CurrBS, -1, -1),
+                                src_v_th.expand(CurrBS, -1, -1),
+                            )
+
+                            losses_val = stack_mse(batch, pred_outputs_src, losses_val, denom, src_L)
+
+                        pred_outputs_np = pred_outputs.detach().cpu().numpy()
+                        pred_outputs_src_np = pred_outputs_src.detach().cpu().numpy()
+
+                        for b_idx in range(CurrBS):
+                            executor.submit(np.save, self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy', pred_outputs_np[b_idx])
+                            executor.submit(np.save, self.opts.log_dir_vert_cyc+f'/{index*CurrBS+b_idx:06d}.npy', pred_outputs_src_np[b_idx])
                         
         else:
             pass   
