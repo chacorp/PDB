@@ -450,22 +450,7 @@ class BaseDiffusionNetEncoder(nn.Module):
             self.update_precomputes(pre_computes)
         else:
             print("[DiffusionNet] causion: no pre_computes provided!")
-            
-    def empty_precomputes(self):
-        self.mass = None
-        self.L_ind = None
-        self.L_val = None
-        self.L_size = None
-        self.evals = None
-        self.evecs = None
-        self.grad_X_ind  = None
-        self.grad_X_val  = None
-        self.grad_X_size = None
-        self.grad_Y_ind  = None
-        self.grad_Y_val  = None
-        self.grad_Y_size = None
-        self.faces = None
-        
+
     def update_precomputes(self, pre_computes):
         if len(pre_computes[0].shape) > 1:
             self.mass = nn.Parameter(pre_computes[0].squeeze(0), requires_grad=False)

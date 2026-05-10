@@ -21,9 +21,10 @@ import torch.nn as nn
 from utils.exp_utils import Model, Model_mk2_1 #Model_mk1, Model_mk3_1
 from utils.exp_utils import plateau_hat_points
 
-class NeuralGeneralizedBarycentricCoordinate(nn.Module):
+
+class ICBDNet(nn.Module):
     """
-        Neural ~Generalized~ Barycentric Coordinate (cannot generalize other than face)
+        Implicit Cage-based Deformation Network
         (model specialized for facial animation)
     """
     def __init__(self, 
@@ -67,8 +68,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         if not self.use_shp:
             self.use_shp_recon = False
             print('shape model not used!, use_shp_recon set to False')
-        self.use_exp_recon = use_exp_recon        
-        self.use_full_vertex = use_full_vertex
+        self.use_exp_recon = use_exp_recon
         self.no_activation = no_activation
         self.use_pou = use_pou
         
@@ -76,9 +76,10 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         ## key_weight model | key_d_model 
         # 0: (src_p),        (def_p, src_p)
         # 1: (src_p, src_n), (def_p, def_n, src_p, src_n)
-        
+
+        print('This model only covers vertex displacement and transformation matrix')
         self.in_type = 1
-        self.out_type = 1 # vertex
+        self.out_type = 0 # vertex
         ######
         
         if self.opts is not None:
@@ -91,28 +92,21 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         elif self.in_type == 1:
             self.in_dim = 6
             in_dim_exp = self.in_dim*2
-        elif self.in_type == 2:
-            self.in_dim = 6+1
-            in_dim_exp = 6+6+1
         else:
             raise NotImplementedError('in_type not implemented')
             
         if self.out_type == 0: # delta form
-            self.use_full_vertex = False
-            self.out_dim = 3
-        elif self.out_type == 1: # vertex (linear precision)
-            self.use_full_vertex = True
-            self.out_dim = 3
+            self.out_dim = 3+3 # position + normal
+            
         elif self.out_type == 2: # transform matrix
-            self.use_full_vertex = False
             self.out_dim = 9 # (6D + translation 3) will be reshaped into 3x4 matrix
             M_ = num_cage_vertices
             num_cage_vertices = num_cage_vertices * 4
             
             from utils.exp_utils import from_6D_to_rotation_matrix_torch as _6D_to_rot_
             self._6D_to_rot_ = _6D_to_rot_
+            
         elif self.out_type == 3: # transform matrix (compskin setting)
-            self.use_full_vertex = False
             self.out_dim = 6 # (6D + translation 3) will be reshaped into 3x4 matrix
             M_ = num_cage_vertices
             num_cage_vertices = num_cage_vertices * 4
@@ -183,19 +177,6 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
                 num_layers=self.num_layers, 
                 out_type='global'
             ).to(device)
-
-        if self.is_train:
-            if self.use_exp_recon:
-                self.recon_exp_model = nn.ModuleList([
-                    LinearEncoder(in_dim=L, out_dim=N*3, num_layers=self.num_layers, out_type='global')
-                    for N in N_list
-                ]).to(device)
-            
-            if self.use_shp_recon:
-                self.recon_shp_model = nn.ModuleList([
-                    LinearEncoder(in_dim=L, out_dim=N*3, num_layers=self.num_layers, out_type='global')
-                    for N in N_list
-                ]).to(device)
         
     def reshape_key_d(self, key_d, B):        
         if self.out_type == 2:
@@ -216,11 +197,39 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
         
         else:
-            key_d = key_d.reshape(B, self.num_cage_vertices, 3)
-            # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
+            key_d = key_d.reshape(B, self.num_cage_vertices, -1)
+            # normalize last three dimension
+            key_d[...,3:] = F.normalize(key_d[...,3:], dim=-1)
         
         return key_d
         
+    @torch.no_grad()
+    def get_coordinate(self, source_vert, source_norm, out_kw=False):
+        """
+        Args:
+            source_vert (torch.tensor): [B, N, 3] source mesh vertice
+            source_norm (torch.tensor): [B, N, 3] source mesh vertex normals
+            mesh_data (int): indicator for data (0: voca, 1: biwi, 2: multiface)
+            epoch (int): train epoch (epoch != iteration)
+        Returns:
+            coordinates [B, N, C]
+        """
+        B, N, _ = source_vert.shape
+        
+        source_in = source_vert
+            
+        if self.in_type > 0:
+            source_in = torch.cat([source_in, source_norm], dim=-1)
+        if self.in_type==2:
+            hat_mask = plateau_hat_points(source_vert)
+            source_in = torch.cat([source_in, hat_mask], dim=-1)
+        
+        key_weight = self.key_weight_model(
+            source_in,
+            N=self.NZ # (not used!)
+        ) # (B, N, M)
+        
+        return key_weight
         
     def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False):
         """
@@ -249,12 +258,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             source_in = torch.cat([source_in, source_norm], dim=-1)
             deform_in = torch.cat([deform_in, deform_norm], dim=-1)
             
-        deform_in = torch.cat([deform_in, source_in], dim=-1)
-        
-        if self.in_type==2:
-            source_in = torch.cat([source_in, hat_mask], dim=-1)
-            deform_in = torch.cat([deform_in, hat_mask], dim=-1)
-        
+        deform_in = torch.cat([deform_in, source_in], dim=-1) # (B, N, 6+6)
+                
         
         if self.use_shp:
             z_ID_B = self.shape_model(source_in) # (B, 1, L)
@@ -265,66 +270,24 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             exp_z = self.exp_z_model(deform_in) # (B, 1, L)
             key_d = self.key_d_model(exp_z)
         
-        key_d = self.reshape_key_d(key_d, B)
+        key_d = self.reshape_key_d(key_d, B) # (B, M, 6)
             
-        key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+        src_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+        key_weight = self.key_weight_model(key_d, N=self.NZ) # (B, M, M)
+        
         # --> (B, N, 4M) if self.opts.out_type == 2
-        delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
-
+        deform_v = torch.einsum('bnc,bci->bni', src_weight, key_d)
+        pred_deformed = deform_v
         
-        if self.use_full_vertex:
-            pred_deformed = delta_v
-        else:
-            pred_deformed = delta_v + source_vert
-        
-        ## necessary
-        if self.use_shp_recon:
-            recon_source = self.recon_shp_model[mesh_data](z_ID_B)
-            recon_source = recon_source.reshape(B, -1, 3)
-        else:
-            recon_source = 0
-        
-        ## unnecessary
-        if self.use_exp_recon:
-            recon_delta_v = self.recon_exp_model[mesh_data](exp_z)
-            recon_delta_v = recon_delta_v.reshape(B, -1, 3)
-            recon_deformed = recon_delta_v + source_vert
-        else:
-            recon_deformed = 0
-        
-        ## optional
-        if self.use_full_vertex:
-            source_in_s = source_vert
-            deform_in_s = source_vert-source_vert # as a delta
-            # deform_in_s = source_vert # as a vertex
-            
-            if self.in_type > 0:
-                source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
-                deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
-                
-            deform_in_s = torch.cat([deform_in_s, source_in_s], dim=-1)
-            
-            if self.in_type == 2:
-                source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
-                deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
-            
-            if self.use_shp:
-                exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)    
-                key_s = self.key_d_model(exp_z_s, z_ID_B)
-            else:
-                exp_z_s = self.exp_z_model(deform_in_s) # (B, 1, L)    
-                key_s = self.key_d_model(exp_z_s)
-            key_s = self.reshape_key_d(key_s, B)
-            
-            pred_source = torch.einsum('bnc,bci->bni',key_weight,key_s)
-        else:
-            pred_source = 0
-            key_s = 0
+        ## dummy ....
+        recon_source = 0        
+        recon_deformed = 0        
+        pred_source = 0
         
         if out_kw:
-            return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
+            return pred_deformed, recon_deformed, recon_source, exp_z, key_d, src_weight
             
-        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_weight, key_s, key_d
+        return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_weight
 
     def retarget(self, 
                  src_neu_vert, src_neu_norm, src_def_vert, src_def_norm, tgt_neu_vert, tgt_neu_norm,
@@ -362,16 +325,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             
         deform_in_d = torch.cat([deform_in_d, src_in], dim=-1)
         deform_in_s = torch.cat([deform_in_s, src_in], dim=-1)
-
-        if self.in_type == 2:
-            src_hat_mask = plateau_hat_points(src_neu_vert)
-            src_in = torch.cat([src_in, src_hat_mask], dim=-1)
-            deform_in_s = torch.cat([deform_in_s, src_hat_mask], dim=-1)
-            deform_in_d = torch.cat([deform_in_d, src_hat_mask], dim=-1)
-            
-            tgt_hat_mask = plateau_hat_points(tgt_neu_vert)
-            tgt_in = torch.cat([tgt_in, tgt_hat_mask], dim=-1)
-            
+        
         with torch.no_grad():
             if self.use_shp:
                 z_ID_B = self.shape_model(src_in) # (B, 1, L)
@@ -397,14 +351,10 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             delta_dv = torch.einsum('bnc,bci->bni',key_weight,key_d)
             delta_sv = torch.einsum('bnc,bci->bni',key_weight,key_s)
         
-        
-        if self.use_full_vertex:
-            pred_deformed = delta_dv
-            pred_source = delta_sv
-        else:
-            pred_deformed = delta_dv + tgt_neu_vert
-            pred_source = delta_sv + tgt_neu_vert
-        
+    
+        pred_deformed = delta_dv + tgt_neu_vert
+        pred_source = delta_sv + tgt_neu_vert
+    
         # supple networks -------------------------------------
         # ## necessary -- not really...
         # if self.use_shp_recon and recon_out:
@@ -426,15 +376,15 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             return pred_deformed, pred_source, exp_z_d, key_d, exp_z_s, key_s, key_weight
 
         return pred_deformed, pred_source
-                
+        
     @torch.no_grad()
     def predict_coordinate(self, tgt_neu_vert, tgt_neu_norm):
         """
         Args:
-            tgt_neu_vert (torch.tensor): [B, N, 3] target neutral mesh vertex positions
-            tgt_neu_norm (torch.tensor): [B, N, 3] target neutral mesh vertex normals            
+            tgt_neu_vert (torch.tensor): [B, M, 3] target neutral mesh vertex positions
+            tgt_neu_norm (torch.tensor): [B, M, 3] target neutral mesh vertex normals            
         Returns:
-            key_weight, cooridnate w.r.t the cage vertices  [B, N, M]
+            key_weight, cooridnate w.r.t the cage vertices
             
         """
         B, N, _ = tgt_neu_vert.shape
@@ -447,10 +397,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             tgt_hat_mask = plateau_hat_points(tgt_neu_vert)
             tgt_in = torch.cat([tgt_in, tgt_hat_mask], dim=-1)
         
-        key_weight = self.key_weight_model(
-            tgt_in,
-            N=self.NZ # (not used!)
-        ) # (B, N, M)
+        key_weight = self.key_weight_model(tgt_in, N=self.NZ) # (B, M, K)
             
         return key_weight
 
@@ -535,9 +482,6 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         src_neu_norm=None,
     ):
         """
-        Animate target mesh using blendshape coefficient
-        *available if the model is trained with `align_latent==True`
-        
         Args:
             exp_z (torch.tensor): [B, 1, 128] blendshape coefficient for the expression
             

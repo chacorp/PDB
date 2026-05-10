@@ -566,7 +566,6 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             in_dim=self.in_dim,
             out_dim=M, 
             hid_dim=self.hid_dim,
-            use_residual=True,
             use_softmax=use_softmax,
             use_relu=use_relu, # default setting
             use_elu=use_elu,
@@ -588,7 +587,7 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             hid_dim=self.hid_dim,
             num_layers=self.num_layers, 
             use_id_feat=True,
-            use_residual=True,
+            # use_residual=True,
             out_type='global',
             nrm='none',
         ).to(device)
@@ -598,7 +597,7 @@ class NeuralBarycentricCoordinatev3(nn.Module):
             out_dim=M_*self.out_dim if self.out_type == 2 else M*self.out_dim,
             hid_dim=self.hid_dim,
             num_layers=self.num_layers,
-            use_residual=True,
+            # use_residual=True,
             use_id_feat=False,
             nrm='none',
         ).to(device)
