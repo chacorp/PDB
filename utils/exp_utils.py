@@ -77,7 +77,9 @@ def plateau_hat_r(
         r: torch.Tensor,
         r0: float,
         r1: float,
-        kind: str = "quintic"
+        kind: str = "quintic",
+        min_val=0.0,
+        max_val=1.0,
     ):
     """
     Top-hat function for range r
@@ -87,15 +89,15 @@ def plateau_hat_r(
         
     t = (r - r0) / (r1 - r0)
     S = _smoothstep(t, kind=kind)
-    f = torch.where(r <= r0, torch.ones_like(r), 1 - S)
-    f = torch.where(r >= r1, torch.zeros_like(r), f)
+    f = torch.where(r <= r0, torch.ones_like(r)*max_val, max_val - S)
+    f = torch.where(r >= r1, torch.zeros_like(r)*min_val, f)
     return f
 
 def plateau_hat_points(
         X: torch.Tensor,
         C: torch.Tensor=torch.tensor([[0.0, 0.0, 0.5]]), 
-        r0: float=0.75,
-        r1: float=1.65,
+        r0: float=1.0,
+        r1: float=2.25,
         kind: str = "quintic",
         normalize=None,
         eps=1e-12
@@ -1098,6 +1100,24 @@ def from_6D_to_rotation_matrix_torch(in_6d, eps=1e-12):
     
     return torch.stack((b1, b2, b3), dim=-2)
 
+def create_BN(B):
+    """
+    reference from compressed skinning for facial blendshape
+    Args:
+        B (torch.tensor): input feature (B, V, 6)
+    Returns:
+        BN (torch.tensor): transformation matrix (B, V, 3, 4)
+    """
+    N = torch.tensor([
+        [ 0., -1.,  1., 1.],
+        [ 1.,  0., -1., 1.],
+        [-1.,  1.,  0., 1.]
+    ]).to(B.device)
+    BN = N[None,None,...].repeat(B.shape[0], B.shape[1], 1, 1)
+    BN[...,0,1], BN[...,0,2], BN[...,0,3] = N[0,1]*B[...,2], N[0,2]*B[...,1], N[0,3]*B[...,3]
+    BN[...,1,0], BN[...,1,2], BN[...,1,3] = N[1,0]*B[...,2], N[1,2]*B[...,0], N[1,3]*B[...,4]
+    BN[...,2,0], BN[...,2,1], BN[...,2,3] = N[2,0]*B[...,1], N[2,1]*B[...,0], N[2,3]*B[...,5]
+    return BN
 
 def rodrigues_rotation_matrix_torch(rotvec):
     """
@@ -1977,10 +1997,10 @@ class Model_mk1(nn.Module):
             MLP = nn.Sequential(
                     nn.Linear(dim_list[i], dim_list[i]//2),
                     self.act,
-                    nn.LayerNorm(dim_list[i]//2),
+                    # nn.LayerNorm(dim_list[i]//2),
                     nn.Linear(dim_list[i]//2, dim_list[i]//4),
                     self.act,
-                    nn.LayerNorm(dim_list[i]//4),
+                    # nn.LayerNorm(dim_list[i]//4),
                     nn.Linear(dim_list[i]//4, dim_list[i+1]),
                 )
             self.linears.append(MLP)

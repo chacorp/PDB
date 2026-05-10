@@ -26,11 +26,12 @@ from .CNN import TextureEncoder
 from .decoder import *
 from .encoder import *
 
-from utils import (
+from utils.remesh_utils import (
     ICT_face_model, 
     calc_norm_torch,
-    nfr_utils
+#     nfr_utils
 )
+import utils.nfr_utils as nfr_utils
 from utils.deformation_transfer import deformation_gradient
 
 import logging

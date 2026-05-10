@@ -36,8 +36,11 @@ elif [[ $MODE == "1" ]]; then
     pip install easydict h5py protobuf==3.20.0
 elif [[ $MODE == "3" ]]; then
     pip install h5py
+    pip install --upgrade setuptools wheel
     cp cpp_extension.py /opt/conda/lib/python3.10/site-packages/torch/utils/cpp_extension.py
-    pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.6"
+    pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.8" --no-build-isolation
+    #pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+    pip install cython gdist torch_geometric
 else
     pip install torch_cluster -f https://data.pyg.org/whl/torch-2.1.0+cu121.html --no-cache-dir
     pip install torch_scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html --no-cache-dir

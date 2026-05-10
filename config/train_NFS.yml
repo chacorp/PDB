@@ -39,13 +39,10 @@ sc_gamma: 0.85
 
 # loss
 lambda_vert: 10.0
-lambda_normal: 0.1
-lambda_jacob: 0.1
-# lambda_vert: 10.0
-# lambda_normal: 1.0
-# lambda_jacob: 1.0
-
-lambda_bs: 1.0
+lambda_loss: 1.0
+lambda_normal: 1.0
+lambda_jacob: 1.0
+lambda_bs: 1.0 # not used
 lambda_seg: 1.0
 lambda_enc: 1.0
 lambda_temp: 0.0
@@ -58,7 +55,7 @@ window_size: 1
 batch_size: 1
 
 # Data directory
-data_dir: "/data/ICT-audio2face/split_set"
+data_dir: "/data/sihun/ICT-audio2face/split_set"
 log_dir: "./ckpts"
 
 ckpt: ''
@@ -67,7 +64,7 @@ is_train: True
 tb: True
 ict_face_only: False
 
-data_rand_scale: False
+data_rand_scale: True
 data_rand_trans: True
 data_cfg: 'Real_Synth' # 'Real', 'Synth', 'Real_Synth' 
 selection: 20 # ICT-all (ICT-capture + ICT-synthetic) + Multiface

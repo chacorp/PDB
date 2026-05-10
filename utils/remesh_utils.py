@@ -8,12 +8,13 @@ import torch
 from scipy.spatial import cKDTree
 
 from matplotlib_rnd import *
+from torch_scatter import scatter_add
 
 import trimesh
 import random
+from torch_scatter import scatter_add
 
-torch.arange(4)
-qwe = torch.randperm(4)
+
 
 class load_obj_mesh():
     def __init__(self, obj_file, to_torch=False, device='cpu'):
@@ -247,6 +248,35 @@ def mesh_standardization(
     if return_idx:
         return new_mesh, info_dict['v_idx']
     return new_mesh
+
+
+def calc_norm_torch(batch_v, face, at='face'):
+    """
+    Args:
+        batch_v (torch.tensor): [B*T, V, 3] vertices for current batch
+        face (torch.tensor): [F, 3] vertex index for each face
+        at (str): mode 'face', 'vertex' (default: 'face')
+        
+    Returns:
+        norm | face_norm (torch.tensor): corresponding normal vector
+    """
+    B_S = batch_v.shape[0]
+    N_V = batch_v.shape[1]
+
+    batch_vf = batch_v[:, face] # --> [B, F, 3, 3]
+    span = batch_vf[..., 1:, :] - batch_vf[..., :1, :] # --> [B, V, 2, 3]
+    cross = torch.linalg.cross(span[..., 0, :], span[..., 1, :], dim=-1) # --> [B, F, 3]
+    face_norm = torch.nn.functional.normalize(cross, p=2, dim=-1)  # --> [B, F, 3]
+    
+    if at == 'face':
+        return face_norm
+    else: # at == 'vertex'
+        idx = torch.cat([face[:, 0], face[:, 1], face[:, 2]], dim=0)
+        face_norm = face_norm.repeat(1, 3, 1)
+
+        norm = scatter_add(face_norm, idx, dim=1, dim_size=N_V)
+        norm = torch.nn.functional.normalize(norm, p=2, dim=-1)  # [N, 3]
+        return norm
 
 def compute_average_distance(points, mode='np'):
     """Compute the average Euclidean distance from the origin for a set of points.
@@ -562,7 +592,8 @@ class ICT_face_model():
         self.ict_deci = np.load(f'{base_dir}/utils/ict/ICT_decimate.npz')
         
         ## mesh faces
-        quad_Faces = torch.load(f'{base_dir}/ict_face_pt/quad_faces.pt')[:quad_f_idx] #, map_location='cuda:0')
+        self.quad_Faces = torch.load(f'{base_dir}/ict_face_pt/quad_faces.pt')
+        quad_Faces = self.quad_Faces[:quad_f_idx] #, map_location='cuda:0')
         self.faces = quad_Faces[:, [[0, 1, 2],[0, 2, 3]] ].permute(1, 0, 2).reshape(-1, 3).numpy()
         self.f_num = self.faces.shape[0]
         self.v_num = v_idx
@@ -661,21 +692,24 @@ class ICT_face_model():
             exp_coeffs (np.ndarray): [T, 53] ICT-facekit expression coeff
             mesh_v_idx (np.ndarray): <int> array of std mesh vertex indices
         """
+        v_idx, quad_f_idx = self.region[region]
         # id vertices
-        id_disps = self.get_id_disp(id_coeff)
+        id_disps = self.get_id_disp(id_coeff, region=region)
         
         # exp vertices
-        exp_disp = self.get_exp_disp(exp_coeffs)
-        
-        id_verts = self.neutral_verts + id_disps
+        exp_disp = self.get_exp_disp(exp_coeffs, region=region)
+        id_verts = self.neutral_verts[None, :v_idx] + id_disps
         id_exp_verts = id_verts + exp_disp
         
         # apply std
         if mesh_v_idx is not None:
-            id_exp_verts = id_exp_verts[mesh_v_idx]
+            id_exp_verts = id_exp_verts[:, mesh_v_idx]
         
-        id_verts = id_verts[:self.region[region][0]]
-        id_exp_verts = id_exp_verts[:self.region[region][0]]
+        # id_verts = id_verts[:self.region[region][0]]
+        # id_exp_verts = id_exp_verts[:self.region[region][0]]
+        # import pdb;pdb.set_trace()
+        # id_verts = id_verts[:, :self.region[region][0]]
+        # id_exp_verts = id_exp_verts[:, :self.region[region][0]]
         
         if return_all:
             return id_exp_verts, id_verts, exp_disp
@@ -806,7 +840,167 @@ class ICT_face_model():
             
         return exp_disps
 
+@torch.no_grad()
+def _one_hot_scatter(rows, cols, num_cols, device, dtype):
+    """Utility for fast on-vertex one-hot writing."""
+    out = torch.zeros((rows.numel(), num_cols), device=device, dtype=dtype)
+    out[torch.arange(rows.numel(), device=device), cols] = 1.0
+    return out
+
+def mvc_weights_torch(src_v, cage_v, cage_f, eps=1e-8):
+    """
+    Mean Value Coordinates (MVC) in PyTorch (vectorized).
     
+    Args:
+        src_v:  (V, 3) float tensor – query points
+        cage_v: (Nc, 3) float tensor – cage vertices
+        cage_f: (F, 3) long tensor – triangular cage faces (vertex indices into cage_v)
+        eps:    small epsilon for numerical stability
+
+    Returns:
+        weights_final: (V, Nc) float tensor, rows sum to ~1
+    """
+    assert src_v.dim() == 2 and src_v.size(-1) == 3
+    assert cage_v.dim() == 2 and cage_v.size(-1) == 3
+    assert cage_f.dim() == 2 and cage_f.size(-1) == 3
+    assert cage_f.dtype in (torch.int32, torch.int64)
+    
+    device = src_v.device
+    dtype  = src_v.dtype
+    V  = src_v.size(0)
+    Nc = cage_v.size(0)
+    F  = cage_f.size(0)
+
+    # (V, Nc) distances
+    dists_to_cage_verts = torch.cdist(src_v, cage_v, p=2)
+    # on-vertex if any cage vertex is within eps
+    min_dists, min_idx = dists_to_cage_verts.min(dim=1)
+    on_vertex_mask = min_dists < eps
+
+    # initialize output
+    weights_final = torch.zeros((V, Nc), device=device, dtype=dtype)
+
+    # Handle on-vertex points → exact one-hot
+    if on_vertex_mask.any():
+        ov_rows = torch.nonzero(on_vertex_mask, as_tuple=False).squeeze(1)
+        ov_cols = min_idx[on_vertex_mask]
+        weights_final[ov_rows] = _one_hot_scatter(ov_rows, ov_cols, Nc, device, dtype)
+
+    # Remaining points to process
+    processing_mask = ~on_vertex_mask
+    if not processing_mask.any():
+        return weights_final
+
+    src_v_proc = src_v[processing_mask]            # (Vproc, 3)
+    V_proc     = src_v_proc.size(0)
+
+    i0, i1, i2 = cage_f[:, 0], cage_f[:, 1], cage_f[:, 2]
+    P0, P1, P2 = cage_v[i0], cage_v[i1], cage_v[i2]  # (F, 3)
+
+    # Expand source points against faces
+    X  = src_v_proc[:, None, :]                    # (Vproc, 1, 3)
+    D0, D1, D2 = P0[None, :, :] - X, P1[None, :, :] - X, P2[None, :, :] - X  # (Vproc, F, 3)
+
+    d0 = D0.norm(dim=-1)  # (Vproc, F)
+    d1 = D1.norm(dim=-1)
+    d2 = D2.norm(dim=-1)
+
+    # Unit directions
+    U0 = D0 / (d0.unsqueeze(-1) + eps)             # (Vproc, F, 3)
+    U1 = D1 / (d1.unsqueeze(-1) + eps)
+    U2 = D2 / (d2.unsqueeze(-1) + eps)
+
+    # Edge lengths on the unit sphere
+    L0 = (U1 - U2).norm(dim=-1)                    # (Vproc, F)
+    L1 = (U2 - U0).norm(dim=-1)
+    L2 = (U0 - U1).norm(dim=-1)
+
+    # Spherical angles
+    half = torch.clamp(L0 * 0.5, -1.0, 1.0)
+    theta0 = 2.0 * torch.arcsin(half)
+    half = torch.clamp(L1 * 0.5, -1.0, 1.0)
+    theta1 = 2.0 * torch.arcsin(half)
+    half = torch.clamp(L2 * 0.5, -1.0, 1.0)
+    theta2 = 2.0 * torch.arcsin(half)
+
+    h = 0.5 * (theta0 + theta1 + theta2)
+    s_theta0 = torch.sin(theta0)
+    s_theta1 = torch.sin(theta1)
+    s_theta2 = torch.sin(theta2)
+
+    # Orientation sign via determinant of [U0 U1 U2]
+    M = torch.stack([U0, U1, U2], dim=-1)          # (Vproc, F, 3, 3); last dim=columns
+    dets = torch.linalg.det(M)                     # (Vproc, F)
+    sign = torch.sign(dets)
+    sign = torch.where(sign == 0, torch.ones_like(sign), sign)
+
+    # Guard divisions and NaNs
+    def safe_div(a, b):
+        return a / (b + eps)
+
+    # --- Case A: General case weights ---
+    # cosines via formula using half-sum h
+    c0 = safe_div(2 * torch.sin(h) * torch.sin(h - theta0), (s_theta1 * s_theta2)) - 1
+    c1 = safe_div(2 * torch.sin(h) * torch.sin(h - theta1), (s_theta2 * s_theta0)) - 1
+    c2 = safe_div(2 * torch.sin(h) * torch.sin(h - theta2), (s_theta0 * s_theta1)) - 1
+
+    s0 = sign * torch.sqrt(torch.clamp(1 - c0**2, min=0.0, max=1.0)+eps)
+    s1 = sign * torch.sqrt(torch.clamp(1 - c1**2, min=0.0, max=1.0)+eps)
+    s2 = sign * torch.sqrt(torch.clamp(1 - c2**2, min=0.0, max=1.0)+eps)
+
+    w_gen0 = safe_div((theta0 - c1 * theta2 - c2 * theta1), (2 * d0 * s1 * s_theta2))
+    w_gen1 = safe_div((theta1 - c2 * theta0 - c0 * theta2), (2 * d1 * s2 * s_theta0))
+    w_gen2 = safe_div((theta2 - c0 * theta1 - c1 * theta0), (2 * d2 * s0 * s_theta1))
+
+    # --- Case B: On-face weights (when h ≈ pi) ---
+    w_face0 = s_theta0 * L1 * L2
+    w_face1 = s_theta1 * L2 * L0
+    w_face2 = s_theta2 * L0 * L1
+    total_w_face = w_face0 + w_face1 + w_face2
+
+    # Normalize face weights safely
+    w_face0_norm = safe_div(w_face0, total_w_face)
+    w_face1_norm = safe_div(w_face1, total_w_face)
+    w_face2_norm = safe_div(w_face2, total_w_face)
+
+    on_face_mask = (torch.abs(torch.pi - h) < eps)  # (Vproc, F)
+    coplanar_outside_mask = (torch.abs(s0) < eps) | (torch.abs(s1) < eps) | (torch.abs(s2) < eps)
+
+    # Clean general weights
+    W0 = torch.nan_to_num(w_gen0, nan=0.0, posinf=0.0, neginf=0.0)
+    W1 = torch.nan_to_num(w_gen1, nan=0.0, posinf=0.0, neginf=0.0)
+    W2 = torch.nan_to_num(w_gen2, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # If coplanar but outside, zero
+    W0 = torch.where(coplanar_outside_mask, torch.zeros_like(W0), W0)
+    W1 = torch.where(coplanar_outside_mask, torch.zeros_like(W1), W1)
+    W2 = torch.where(coplanar_outside_mask, torch.zeros_like(W2), W2)
+
+    # If on the face, override with on-face weights
+    W0 = torch.where(on_face_mask, w_face0_norm, W0)
+    W1 = torch.where(on_face_mask, w_face1_norm, W1)
+    W2 = torch.where(on_face_mask, w_face2_norm, W2)
+
+    # --- Accumulate per-cage-vertex weights with scatter_add ---
+    # Prepare (Vproc, F) index tensors into Nc
+    idx0 = i0.unsqueeze(0).expand(V_proc, F)
+    idx1 = i1.unsqueeze(0).expand(V_proc, F)
+    idx2 = i2.unsqueeze(0).expand(V_proc, F)
+
+    W_vert = torch.zeros((V_proc, Nc), device=device, dtype=dtype)
+    W_vert.scatter_add_(1, idx0, W0)
+    W_vert.scatter_add_(1, idx1, W1)
+    W_vert.scatter_add_(1, idx2, W2)
+
+    # Row-normalize
+    row_sum = W_vert.sum(dim=1, keepdim=True)
+    W_vert_normalized = W_vert / (row_sum + eps)
+
+    # Write back to the final buffer
+    weights_final[processing_mask] = W_vert_normalized
+    return weights_final
+
+
 def compute_MVC(src_v, cage_v, cage_f, eps=1e-8):
     """
     Compute Mean Value Coordinates weights
@@ -948,6 +1142,10 @@ def compute_MVC_vertexwise(src_v, cage_v, cage_f, eps=1e-8):
     theta2 = 2 * torch.arcsin(torch.clamp(L2 * 0.5, -0.999999, 0.999999))
     h = 0.5 * (theta0 + theta1 + theta2)
 
+    dets = torch.linalg.det(torch.stack([U0, U1, U2], axis=3))
+    sign = torch.sign(dets)
+    sign[sign ==0] = 1.0
+    
     near_pi = torch.abs(torch.pi - h) < eps
     not_near_pi = ~near_pi
 
@@ -1065,6 +1263,49 @@ def apply_MVC_weights_batch(W, cage_f, deformed_cages, eps=1e-8):
     result = total / weight_sum.transpose(0, 1)  # (B, V, 3)
 
     return result
+
+## Wave kernel signiture
+def wks(evals, evecs, energy_list, sigma, scaled=False):
+    assert sigma > 0, f"Sigma should be positive ! Given value : {sigma}"
+
+    indices = (evals > 1e-5)
+    evals = evals[indices]
+    evecs = evecs[:, indices]
+
+    coefs = torch.exp(-torch.square(energy_list[:, None] - torch.log(torch.abs(evals))[None, :]) / (2 * sigma ** 2))
+
+    weighted_evecs = evecs[None, :, :] * coefs[:, None, :]
+    wks = torch.einsum('tnk,nk->nt', weighted_evecs, evecs)
+
+    if scaled:
+        inv_scaling = coefs.sum(1)
+        return (1 / inv_scaling)[None, :] * wks
+    else:
+        return wks
+
+def auto_wks(evals, evecs, n_descr, scaled=True):
+    abs_ev = torch.sort(evals.abs())[0]
+    e_min, e_max = torch.log(abs_ev[1]), torch.log(abs_ev[-1])
+    sigma = 7 * (e_max - e_min) / n_descr
+
+    e_min += 2 * sigma
+    e_max -= 2 * sigma
+
+    energy_list = torch.linspace(float(e_min), float(e_max), n_descr, device=evals.device, dtype=evals.dtype)
+
+    return wks(abs_ev, evecs, energy_list, sigma, scaled=scaled)
+
+def compute_wks_autoscale(evals, evecs, mass, n_descr=128, subsample_step=1, n_eig=128):
+    feats = []
+    for b in range(evals.shape[0]):
+        feat = auto_wks(evals[b, :n_eig], evecs[b, :, :n_eig], n_descr, scaled=True)
+        feat = feat[:, torch.arange(0, feat.shape[1], subsample_step)]
+        feat_norm = torch.einsum('np,np->p', feat, mass[b].unsqueeze(1) * feat)
+        feat /= torch.sqrt(feat_norm)
+        feats += [feat]
+    feats = torch.stack(feats, dim=0)
+    return feats
+
 
 if __name__ == '__main__':
     # original mesh

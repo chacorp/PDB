@@ -8,17 +8,20 @@ import pickle
 import trimesh
 from functools import partial
 
-from utils import (
+from utils.remesh_utils import (
     ICT_face_model, 
     procrustes_LDM, 
-    plot_image_array, 
     calc_norm_torch
+)
+from utils.matplotlib_rnd import (
+    plot_image_array, 
 )
 from utils.keys import get_data_splits, get_identity_num, ICT_KEYS, DATA_KEYS, KEYS
 from utils.remesh_utils import map_vertices, decimate_mesh_vertex
 from utils.mesh_utils import get_dfn_info2, get_mesh_operators
 from tqdm import tqdm
-import time
+# import time
+import igl
 
 def random_ict_exp_coeff(N=1000, min_ones=1, max_ones=5):
     identity = np.eye(53)
@@ -72,6 +75,8 @@ class MeshDataset(data.Dataset):
         # self.set_biwi()
         self.set_ict_base()
         ## ------------------------------------------------------------------------------
+        self.ict_seg=torch.tensor(np.load('utils/ict/ICT_segment_onehot_24.npy'))
+        self.mf_SEN_seg=torch.tensor(np.load('utils/mf/mf_seg_24.npy'))
         
         self.len_ict_synth = 0
         self.len_ict_real = 0
@@ -86,42 +91,46 @@ class MeshDataset(data.Dataset):
             total_len, id_sent_len = self.set_ict_real()
             self.total_len += total_len
             self.id_sent_len += id_sent_len
-            self.len_list.append([total_len, self.get_ICTcapture, torch.tensor(0), id_sent_len])
+            # self.len_list.append([total_len, self.get_ICTcapture, torch.tensor(5), id_sent_len])
+            self.len_list.append([total_len, self.get_ICTcapture, torch.tensor(5), 1])
         if self.use_ict_synth:
             total_len, id_sent_len = self.set_ict_synth()
             self.total_len += total_len
             self.id_sent_len += id_sent_len
-            self.len_list.append([self.total_len, self.get_ICTsynthetic, torch.tensor(0), id_sent_len])
-        if self.use_ict_synth_single:
-            total_len, id_sent_len = self.set_ict_synth_single()
-            self.total_len += total_len
-            self.id_sent_len += id_sent_len
-            self.len_list.append([self.total_len, self.get_ICTsynthetic, torch.tensor(0), id_sent_len])
-        if self.use_voca:
-            total_len, id_sent_len = self.set_voca()
-            self.total_len += total_len
-            self.id_sent_len += id_sent_len
-            self.len_list.append([self.total_len, self.get_voca, torch.tensor(1), id_sent_len])
-        if self.use_coma:
-            total_len, id_sent_len = self.set_coma()
-            self.total_len += total_len
-            self.id_sent_len += id_sent_len
-            self.len_list.append([self.total_len, self.get_coma, torch.tensor(1), id_sent_len])
-        if self.use_biwi:
-            total_len, id_sent_len = self.set_biwi()
-            self.total_len += total_len
-            self.id_sent_len += id_sent_len
-            self.len_list.append([self.total_len, self.get_biwi, torch.tensor(2), id_sent_len])
+            # self.len_list.append([self.total_len, self.get_ICTsynthetic, torch.tensor(5), id_sent_len])
+            self.len_list.append([self.total_len, self.get_ICTsynthetic, torch.tensor(5), 1])
+        # if self.use_ict_synth_single:
+        #     total_len, id_sent_len = self.set_ict_synth_single()
+        #     self.total_len += total_len
+        #     self.id_sent_len += id_sent_len
+        #     self.len_list.append([self.total_len, self.get_ICTsynthetic, torch.tensor(0), id_sent_len])
+        # if self.use_voca:
+        #     total_len, id_sent_len = self.set_voca()
+        #     self.total_len += total_len
+        #     self.id_sent_len += id_sent_len
+        #     self.len_list.append([self.total_len, self.get_voca, torch.tensor(1), id_sent_len])
+        # if self.use_coma:
+        #     total_len, id_sent_len = self.set_coma()
+        #     self.total_len += total_len
+        #     self.id_sent_len += id_sent_len
+        #     self.len_list.append([self.total_len, self.get_coma, torch.tensor(1), id_sent_len])
+        # if self.use_biwi:
+        #     total_len, id_sent_len = self.set_biwi()
+        #     self.total_len += total_len
+        #     self.id_sent_len += id_sent_len
+        #     self.len_list.append([self.total_len, self.get_biwi, torch.tensor(2), id_sent_len])
         if self.use_mf_SEN:
             total_len, id_sent_len = self.set_multiface_SEN()
             self.total_len += total_len
             self.id_sent_len += id_sent_len
-            self.len_list.append([total_len, self.get_multiface_SEN, torch.tensor(3), id_sent_len])
+            # self.len_list.append([total_len, self.get_multiface_SEN, torch.tensor(2), id_sent_len])
+            self.len_list.append([total_len, self.get_multiface_SEN, torch.tensor(2), 1])
         if self.use_mf_ROM:
             total_len, id_sent_len = self.set_multiface_ROM()
             self.total_len += total_len
             self.id_sent_len += id_sent_len
-            self.len_list.append([total_len, self.get_multiface_ROM, torch.tensor(3), id_sent_len])
+            # self.len_list.append([total_len, self.get_multiface_ROM, torch.tensor(4), id_sent_len])
+            self.len_list.append([total_len, self.get_multiface_ROM, torch.tensor(4), 1])
         #self.total_len = self.len_ict_real+self.len_ict_synth+self.len_mfSEN+self.len_mfROM
         
         if print_config:
@@ -143,22 +152,33 @@ class MeshDataset(data.Dataset):
     def data_config(self, opts=None, window_size=8):
         flag = True if opts is not None else False
         
-        self.use_ict_synth_single = opts.use_ict_synth_single if flag else False
+        self.use_ict_synth_single = False # opts.use_ict_synth_single if flag else False
         
-        self.use_ict_real = opts.use_ict_real if flag else False
-        self.use_ict_synth = opts.use_ict_synth if flag else False
-        self.use_mf_SEN = opts.use_mf_SEN if flag else False
-        self.use_mf_ROM = opts.use_mf_ROM if flag else False
-        self.use_voca = opts.use_voca if flag else False
-        self.use_coma = opts.use_coma if flag else False
-        self.use_biwi = opts.use_biwi if flag else False
+        # self.use_ict_real = opts.use_ict_real if flag else False
+        # self.use_ict_synth = opts.use_ict_synth if flag else False
+        # self.use_mf_SEN = opts.use_mf_SEN if flag else False
+        # self.use_mf_ROM = opts.use_mf_ROM if flag else False
+        # self.use_voca = opts.use_voca if flag else False
+        # self.use_coma = opts.use_coma if flag else False
+        # self.use_biwi = opts.use_biwi if flag else False
         
-        if flag:
-            self.use_decimate = False
-            self.WS = window_size
-        else:
-            self.use_decimate = self.opts.use_decimate
-            self.WS = self.opts.window_size
+        self.use_ict_real = False
+        self.use_ict_synth = True
+        self.use_mf_SEN = True
+        self.use_mf_ROM = True
+        self.use_voca = False
+        self.use_coma = False
+        self.use_biwi = False
+        
+        # if flag:
+        #     self.use_decimate = False
+        #     self.WS = window_size
+        # else:
+        #     self.use_decimate = self.opts.use_decimate
+        #     self.WS = self.opts.window_size
+    
+        self.use_decimate = False
+        self.WS = 1
             
     def set_multiface_SEN(self):
         self.mf_dir = os.path.join(self.data_basedir, 'multiface_align')
@@ -455,17 +475,18 @@ class MeshDataset(data.Dataset):
         with open("/data/sihun/ICT-audio2face/synth_set/ict_synth_templates.pkl", 'rb') as f:
             self.ict_synth_templates_dict = pickle.load(f)
         self.ict_face_model = ICT_face_model()
-        
-        if self.opts.seg_dim == 20:
-            self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot.npy'))
-        elif self.opts.seg_dim == 24:
-            self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot_24.npy'))
-        elif self.opts.seg_dim == 14:
-            self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot_14.npy'))
-        elif self.opts.seg_dim == 6:
-            self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot_06.npy'))
-        else:
-            raise NotImplementedError(f"no segment map for seg_dim: {self.opts.seg_dim}")
+
+        self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot.npy'))
+        # if self.opts.seg_dim == 20:
+        #     self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot.npy'))
+        # elif self.opts.seg_dim == 24:
+        #     self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot_24.npy'))
+        # elif self.opts.seg_dim == 14:
+        #     self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot_14.npy'))
+        # elif self.opts.seg_dim == 6:
+        #     self.ict_vert_segment = torch.from_numpy(np.load('./utils/ict/ICT_segment_onehot_06.npy'))
+        # else:
+        #     raise NotImplementedError(f"no segment map for seg_dim: {self.opts.seg_dim}")
         
     def set_ict_real(self):
         #self.iden_vecs = np.load('./ict_face_pt/random_identity_vecs.npy')
@@ -658,7 +679,8 @@ class MeshDataset(data.Dataset):
             
         return total_len, id_sent_len
     
-    def get_ICTcapture(self, index, select):
+    # def get_ICTcapture(self, index, select):
+    def get_ICTcapture(self, index):
         # sent_idx = index % self.ict_sent_len
         # id_idx = index // self.ict_sent_len
         
@@ -693,7 +715,7 @@ class MeshDataset(data.Dataset):
         #     precompute_dir = self.ict_real_precompute_fo
         v_num, quad_f_num = self.ict_face_model.region[0]
         f_num = quad_f_num*2
-        precompute_dir = self.ict_real_precompute
+        # precompute_dir = self.ict_real_precompute
             
         # start_time = time.time()
         ## most bottleneck
@@ -704,7 +726,10 @@ class MeshDataset(data.Dataset):
         # end_time = time.time()
         # print('01time elapsed:', end_time - start_time)
         
+        t_normal = igl.per_vertex_normals(template, faces)
+        
         v_normal = torch.from_numpy(v_normal).float()
+        t_normal = torch.from_numpy(t_normal).float()
         vertices = torch.from_numpy(vertices).float()
         template = torch.from_numpy(template).float()
         faces = torch.from_numpy(faces).long()
@@ -715,37 +740,39 @@ class MeshDataset(data.Dataset):
         
         
         # start_time = time.time()
-        dfn_info = os.path.join(precompute_dir, f"{id_key}_dfn_info.pkl")
-        operators = os.path.join(precompute_dir, f"{id_key}_operators.pkl")
+        # dfn_info = os.path.join(precompute_dir, f"{id_key}_dfn_info.pkl")
+        # operators = os.path.join(precompute_dir, f"{id_key}_operators.pkl")
         # end_time = time.time()
         # print('02time elapsed:', end_time - start_time)
         
         #start_time = time.time()
-        img = np.load(os.path.join(precompute_dir, f"{id_key}_img.npy"))
-        img = torch.from_numpy(img)[0]
-        # end_time = time.time()
-        #print('03time elapsed:', end_time - start_time)
+        # img = np.load(os.path.join(precompute_dir, f"{id_key}_img.npy"))
+        # img = torch.from_numpy(img)[0]
+        # # end_time = time.time()
+        # #print('03time elapsed:', end_time - start_time)
         
-        # get audio feature + slice w/ window
-        dummy = torch.zeros(1)
+        # # get audio feature + slice w/ window
+        # dummy = torch.zeros(1)
 
         ## correspondence feature
-        # corr_feat = torch.zeros(template.shape[0], 2048)
-        precompute_dir = self.ict_synth_precompute
-        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
-        corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        # # corr_feat = torch.zeros(template.shape[0], 2048)
+        # precompute_dir = self.ict_synth_precompute
+        # corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
+        # corr_feat = torch.load(corr_feat_file).float()[:v_num]
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        return template, vertices, faces, t_normal, v_normal, self.ict_seg, exp_coeff
         
-    def get_ICTsynthetic(self, index, select):
+    # def get_ICTsynthetic(self, index, select):
+    def get_ICTsynthetic(self, index):
         #e_index = index % self.expression_vecs.shape[0]
         #id_idx = index // self.expression_vecs.shape[0]
         # e_index = random.randint(0, self.expression_vecs.shape[0] -1)
 
         # id_idx = index
         id_idx = np.where(self.ict_synth_count > index)[0][0] - 1
-        e_index = random.randint(0, self.expression_vecs.shape[0] -1)
+        # e_index = random.randint(0, self.expression_vecs.shape[0] -1)
         # e_index = index - self.ict_synth_count[id_idx]
         # o_index = self.ict_synth_count[id_idx+1] - self.ict_synth_count[id_idx] - self.ict_synth_remain[id_idx+1]
         # if e_index >= o_index:
@@ -757,58 +784,78 @@ class MeshDataset(data.Dataset):
         # get id_coeff
         id_coeff  = torch.from_numpy(self.iden_vecs[id_idx]) #-------------------- [100]
         id_coeff  = torch.cat([id_coeff, torch.zeros(28)]).float() # ------------- [128]
-        
-        exp_coeff = torch.from_numpy(self.expression_vecs[e_index]) # ------------ [53]
+
+        if self.mode=='train':
+            if np.random.random(1) > 0.5:
+                exp_coeff = np.random.random(53)
+            else:
+                #exp_coeff = np.random.randint(2, size=(1, 53))
+                exp_coeff = np.where(np.random.random(53) > 0.9, 1, 0)
+        else:
+            exp_coeff = self.expression_vecs[index]
+        faces = self.ict_face_model.faces
+        vertices, template, _ = self.ict_face_model.apply_coeffs(
+            id_coeff, exp_coeff, return_all=True, #region=region_dice
+        )
+            
+        # exp_coeff = torch.from_numpy(self.expression_vecs[e_index]) # ------------ [53]
+        exp_coeff = torch.from_numpy(exp_coeff) # ------------ [53]
         exp_coeff = torch.cat([exp_coeff, torch.zeros(75)], dim=-1).float() # ---- [128]
                 
         id_key = f'{id_idx:03d}'
         
         #select = random.randint(0, 2)
-        v_num, faces = self.ict_face_model.get_random_v_and_f(select=select)
+        # v_num, faces = self.ict_face_model.get_random_v_and_f(select=select)
         
-        if select == 0:
-            precompute_dir = self.ict_synth_precompute
-        elif select == 1:
-            precompute_dir = self.ict_synth_precompute_fo
-        else:
-            precompute_dir = self.ict_synth_precompute_nf
+        # if select == 0:
+        #     precompute_dir = self.ict_synth_precompute
+        # elif select == 1:
+        #     precompute_dir = self.ict_synth_precompute_fo
+        # else:
+        #     precompute_dir = self.ict_synth_precompute_nf
         
         # v_num, quad_f_num = self.ict_face_model.region[0]
         # f_num = quad_f_num*2
         # precompute_dir = self.ict_synth_precompute
         
-        v_normal = np.load(self.ict_synth_n_npy_list[id_key][e_index])[:v_num]
-        vertices = np.load(self.ict_synth_v_npy_list[id_key][e_index])[:v_num]
-        template = self.ict_synth_templates_dict[id_key][:v_num]
+        # v_normal = np.load(self.ict_synth_n_npy_list[id_key][e_index])[:v_num]
+        # vertices = np.load(self.ict_synth_v_npy_list[id_key][e_index])[:v_num]
+        # template = self.ict_synth_templates_dict[id_key][:v_num]
         #faces = self.ict_synth_templates_dict['face'][:f_num]
+
+        
+        ## Random Augmentation ---------------------------------------------------
+        # template, vertices = self.random_trans_scale(template, vertices)
+        ## -----------------------------------------------------------------------
+        
+        v_normal = igl.per_vertex_normals(vertices, faces)
+        t_normal = igl.per_vertex_normals(template, faces)
         
         v_normal = torch.from_numpy(v_normal).float()
+        t_normal = torch.from_numpy(t_normal).float()
         vertices = torch.from_numpy(vertices).float()
         template = torch.from_numpy(template).float()
         faces = torch.from_numpy(faces).long()
         
-        ## Random Augmentation ---------------------------------------------------
-        template, vertices = self.random_trans_scale(template, vertices)
-        ## -----------------------------------------------------------------------
+        # dfn_info = os.path.join(precompute_dir, f"{id_key}_dfn_info.pkl")
+        # operators = os.path.join(precompute_dir, f"{id_key}_operators.pkl")
         
-        dfn_info = os.path.join(precompute_dir, f"{id_key}_dfn_info.pkl")
-        operators = os.path.join(precompute_dir, f"{id_key}_operators.pkl")
+        # img = np.load(os.path.join(precompute_dir, f"{id_idx:03d}_img.npy"))
+        # img = torch.from_numpy(img)[0]
         
-        img = np.load(os.path.join(precompute_dir, f"{id_idx:03d}_img.npy"))
-        img = torch.from_numpy(img)[0]
-        
-        dummy = torch.zeros(1)
+        # dummy = torch.zeros(1)
         
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
         ## correspondence feature
         # corr_feat = torch.zeros(template.shape[0], 2048)
-        precompute_dir = self.ict_synth_precompute
-        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
-        corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        # precompute_dir = self.ict_synth_precompute
+        # corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
+        # corr_feat = torch.load(corr_feat_file).float()[:v_num]
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        return template, vertices, faces, t_normal, v_normal, self.ict_seg, exp_coeff
         
     def get_multiface_SEN(self, index):
         
@@ -831,36 +878,39 @@ class MeshDataset(data.Dataset):
         faces = self.mf_std['new_f']
         
         # get template dfn_info (neutral face)
-        dfn_info = os.path.join(self.mf_precompute_path, f"{id_name}_dfn_info.pkl")
-        operators = os.path.join(self.mf_precompute_path, f"{id_name}_operators.pkl")
+        # dfn_info = os.path.join(self.mf_precompute_path, f"{id_name}_dfn_info.pkl")
+        # operators = os.path.join(self.mf_precompute_path, f"{id_name}_operators.pkl")
         
-        img = np.load(os.path.join(self.mf_precompute_path, f"{id_name}_img.npy"))
-        img = torch.from_numpy(img)[0]
-                
-        vertices = torch.from_numpy(vertices).float()
+        # img = np.load(os.path.join(self.mf_precompute_path, f"{id_name}_img.npy"))
+        # img = torch.from_numpy(img)[0]
+        
+        t_normal = igl.per_vertex_normals(template, faces.numpy())
+        t_normal = torch.from_numpy(t_normal).float()
         v_normal = torch.from_numpy(v_normal).float()
+        vertices = torch.from_numpy(vertices).float()
         template = torch.from_numpy(template).float()
-
+        
         ## Random Augmentation ---------------------------------------------------
-        template, vertices = self.random_trans_scale(template, vertices)
+        # template, vertices = self.random_trans_scale(template, vertices)
         ## -----------------------------------------------------------------------
         
         # get exp_coeff  (no GT == zeros!)
-        exp_coeff= torch.zeros(self.WS, 128).float()
+        # exp_coeff= torch.zeros(self.WS, 128).float()
         
         # get id_coeff (no GT == zeros!)
-        id_coeff = torch.zeros(128).float()
+        # id_coeff = torch.zeros(128).float()
         
-        dummy = torch.zeros(1)
+        # dummy = torch.zeros(1)
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
         ## correspondence feature
         # corr_feat = torch.zeros(template.shape[0], 2048)
-        corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
-        corr_feat = torch.load(corr_feat_file).float()
+        # corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
+        # corr_feat = torch.load(corr_feat_file).float()
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        return template, vertices, faces, t_normal, v_normal, self.mf_SEN_seg, torch.zeros(128)
     
     def get_multiface_ROM(self, index):
         """
@@ -891,8 +941,8 @@ class MeshDataset(data.Dataset):
         faces = self.mf_std['new_f']
 
         # get template dfn_info (neutral face)
-        dfn_info = os.path.join(self.mf_precompute_path, f"{id_name}_dfn_info.pkl")
-        operators = os.path.join(self.mf_precompute_path, f"{id_name}_operators.pkl")
+        # dfn_info = os.path.join(self.mf_precompute_path, f"{id_name}_dfn_info.pkl")
+        # operators = os.path.join(self.mf_precompute_path, f"{id_name}_operators.pkl")
         # dfn_info  = pickle.load(open(os.path.join(
         #     self.mf_precompute_path, 
         #     f"{id_name}_dfn_info.pkl"
@@ -901,32 +951,36 @@ class MeshDataset(data.Dataset):
         #     self.mf_precompute_path,
         #     f"{id_name}_operators.pkl"
         # )
-        img = np.load(os.path.join(self.mf_precompute_path, f"{id_name}_img.npy"))
-        img = torch.from_numpy(img)[0]
+        # img = np.load(os.path.join(self.mf_precompute_path, f"{id_name}_img.npy"))
+        # img = torch.from_numpy(img)[0]
         
-        vertices = torch.from_numpy(vertices).float()
+        t_normal = igl.per_vertex_normals(template, faces.numpy())
+        t_normal = torch.from_numpy(t_normal).float()
         v_normal = torch.from_numpy(v_normal).float()
+        vertices = torch.from_numpy(vertices).float()
         template = torch.from_numpy(template).float()
         
         ## Random Augmentation ---------------------------------------------------
-        template, vertices = self.random_trans_scale(template, vertices)
+        # template, vertices = self.random_trans_scale(template, vertices)
         ## -----------------------------------------------------------------------
         
+        
         # get id_coeff and exp_coeff (no GT == zeros!)
-        id_coeff = torch.zeros(128)
-        exp_coeff = torch.zeros(self.WS, 128)
-        dummy = torch.zeros(1)
+        # id_coeff = torch.zeros(128)
+        # exp_coeff = torch.zeros(self.WS, 128)
+        # dummy = torch.zeros(1)
         
         # v_normal = calc_norm_torch(vertices, faces, at='v')
         # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img
         
         ## correspondence feature
         # corr_feat = torch.zeros(template.shape[0], 2048)
-        corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
-        corr_feat = torch.load(corr_feat_file).float()
+        # corr_feat_file = os.path.join(self.mf_precompute_path, f"{id_name}_diff3f.pth")
+        # corr_feat = torch.load(corr_feat_file).float()
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        return template, vertices, faces, t_normal, v_normal, self.mf_SEN_seg, torch.zeros(128)
     
     def get_voca(self, index):
         
@@ -1808,7 +1862,7 @@ class NFSDataset(data.Dataset):
             self.iden_vecs = np.r_[self.iden_vecs, id_zero, id_vecs]
         
         self.ict_face_model = ICT_face_model(face_only=False)
-        self.ict_precompute_path = f'./ICT/precompute-fullhead'
+        self.ict_precompute_path = f'./ICT/precompute-real-fullhead'
         self.ict_precompute_path_synth = f'./ICT/precompute-synth-fullhead'
         
         self.ict_face_model_fo = ICT_face_model(face_only=True)
@@ -1979,13 +2033,14 @@ class NFSDataset(data.Dataset):
         v_normal = calc_norm_torch(vertices, faces, at='v').float()
         
         ## correspondence feature
-        # corr_feat = torch.zeros(template.shape[0], 2048)
-        precompute_dir = self.ict_precompute_path
-        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
-        v_num = vertices.shape[0]
-        corr_feat = torch.load(corr_feat_file).float()[:v_num]
-        #return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
-        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, sent
+        corr_feat = torch.zeros(template.shape[0], 2048)
+        # precompute_dir = self.ict_precompute_path
+        # corr_feat_file = os.path.join(precompute_dir, f"{id_}_diff3f.pth")
+        # v_num = vertices.shape[0]
+        # corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        
+        return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
+        # return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, sent
         
     def get_ICTsynthetic(self, index):
         e_index   = index % self.expression_vecs.shape[0]
@@ -2001,13 +2056,16 @@ class NFSDataset(data.Dataset):
         exp_coeff = torch.cat([exp_coeff, torch.zeros(self.WS, 75)], dim=-1) # --------------------------- [W, 128]
         
         # get template vertices and face indices (neutral face)
-        if not self.ict_face_only:
+        if not self.ict_face_only and self.mode!='test':
             if random.random() > 0.5:
                 ict_model = self.ict_face_model
                 ict_path_synth = self.ict_precompute_path_synth
             else:
                 ict_model = self.ict_face_model_fo
                 ict_path_synth = self.ict_precompute_path_fo_synth
+        else:
+            ict_model = self.ict_face_model
+            ict_path_synth = self.ict_precompute_path_synth
         
         vertices, template, _ = ict_model.apply_coeffs(
             id_coeff[:100].numpy(), 
@@ -2030,11 +2088,11 @@ class NFSDataset(data.Dataset):
         v_normal = calc_norm_torch(vertices, faces, at='v')
         
         ## correspondence feature
-        # corr_feat = torch.zeros(template.shape[0], 2048)
-        precompute_dir = self.ict_synth_precompute
-        corr_feat_file = os.path.join(precompute_dir, f"{id_key}_diff3f.pth")
-        v_num = vertices.shape[0]
-        corr_feat = torch.load(corr_feat_file).float()[:v_num]
+        corr_feat = torch.zeros(template.shape[0], 2048) ## dummy!
+        # precompute_dir = self.ict_precompute_path_synth
+        #corr_feat_file = os.path.join(precompute_dir, f"{id_idx:03d}_diff3f.pth")
+        #v_num = vertices.shape[0]
+        # corr_feat = torch.load(corr_feat_file).float()[:v_num]
         
         # v_normal = calc_norm_torch(vertices, faces, at='v').float()
         return dummy, id_coeff, exp_coeff, template, dfn_info, operators, vertices, v_normal, faces, img, corr_feat
@@ -2274,7 +2332,7 @@ class NFSDataset(data.Dataset):
         # self.identity_num[audio_path.split('/')[5]]
         
         ## Random Augmentation ---------------------------------------------------------
-        template, vertices = self.augment_trans_scale(template, vertices)
+        # template, vertices = self.augment_trans_scale(template, vertices)
         ## -----------------------------------------------------------------------------
         
         torch.cuda.empty_cache()
