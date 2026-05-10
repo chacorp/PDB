@@ -29,6 +29,7 @@ Use the provided Docker image:
 ```bash
 docker pull chacorp/audio2face:1.0  # CUDA 11.8
 # docker pull chacorp/diff3f:latest  # CUDA 12.1 [WIP]
+docker pull jeolpyeoni0/gltorch:cu124-vessl # CUDA 12.4
 ```
 
 Install all dependencies via:
