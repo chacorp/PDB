@@ -175,7 +175,8 @@ def _load_nfs_model(nfs_ckpt='ckpts_comparison/NFS-best', device='cpu'):
 
     nfs_model = NFS(opts=opts).to(dev)
     ckpt_path = os.path.join(nfs_ckpt, 'model_best.pth')
-    nfs_model.load_state_dict(torch.load(ckpt_path, map_location=dev, weights_only=False))
+    nfs_model.load_state_dict(torch.load(ckpt_path, map_location=dev, weights_only=False),
+                              strict=False)
     nfs_model.eval()
     print(f"[NFS] Loaded: {ckpt_path}")
 

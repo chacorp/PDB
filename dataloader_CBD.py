@@ -90,10 +90,21 @@ class EvalDataset(data.Dataset):
             else:
                 self.iden_vecs = np.zeros((100,))
 
-            if ict_cap_exp_num==0:
-                self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240318_MySlate_922_exp_coeffs.npy')
-            else:
-                self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240325_MySlate_924_exp_coeffs.npy')
+            _cap_name = ('20240318_MySlate_922_exp_coeffs.npy' if ict_cap_exp_num == 0
+                         else '20240325_MySlate_924_exp_coeffs.npy')
+            # Search _cap/ in: (1) script dir, (2) data_basedir, (3) data_basedir/_cap
+            _cap_candidates = [
+                f'{__abs_path__}/_cap/{_cap_name}',
+                f'{data_basedir}/_cap/{_cap_name}',
+                f'{data_basedir}/{_cap_name}',
+            ]
+            _cap_path = next((p for p in _cap_candidates if os.path.exists(p)), None)
+            if _cap_path is None:
+                raise FileNotFoundError(
+                    f'ict-cap expression coeffs not found. Tried:\n  '
+                    + '\n  '.join(_cap_candidates)
+                )
+            self.expression_vecs = np.load(_cap_path)
             
             self.len = len(self.expression_vecs)
             self.get_data = self.get_ict_cap

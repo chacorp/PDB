@@ -69,6 +69,13 @@ def main():
                     help='joint_landmark_map.json (joint_name → DTU3D landmark idx, null for fallback)')
     ap.add_argument('--landmark_vidx_dir', type=str, default=None,
                     help='Dir with landmark_vidx_{topo}.npy. Defaults to --rig_path.')
+    ap.add_argument('--per_id_landmarks_dir', type=str, default=None,
+                    help='Dir with per-id landmarks {id}_landmarks.npy [73, 3]. When provided, '
+                         'per-id vertex index = argmin ||V_id[v] - per_id_landmark[k]|| (instead of '
+                         'inheriting mean_vidx). Use for MF (scan-registered, mean inheritance noisy). '
+                         'ICT (parametric morph) does not need this.')
+    ap.add_argument('--per_id_landmarks_for', nargs='+', default=['mf'],
+                    help='Datasets for which to apply per-id landmarks (default: mf only).')
     ap.add_argument('--feat_dir',     type=str, default='nfs_features_seg',
                     help='Output dir for {id_name}_bind_pos_landmark.npy')
     ap.add_argument('--datasets',     nargs='+', default=['ict', 'mf'],
@@ -111,24 +118,35 @@ def main():
         if V_mean.shape[0] != landmark_vidx.max() + 1 and landmark_vidx.max() >= V_mean.shape[0]:
             raise ValueError(f'{topo}: landmark_vidx max ({landmark_vidx.max()}) ≥ V ({V_mean.shape[0]})')
 
-        # ── Compute offsets per joint ──────────────────────────────────
+        # ── Compute offsets per joint (always derived on mean) ──────────
         # mapped[j] = True iff joint j has landmark mapping
-        # offset[j] = bind_pos_mean_GT[j] - V_mean[lvidx[lm_idx]]
+        # offset[j] = bind_pos_mean_GT[j] - V_mean[mean_vidx[lm_idx]]
+        # (per-id formula will use per-id vertex idx but the SAME offset)
         mapped   = np.zeros(J, dtype=bool)
         offsets  = np.zeros((J, 3), dtype=np.float32)
-        lvidx_per_joint = np.full(J, -1, dtype=np.int64)
+        mean_lvidx_per_joint = np.full(J, -1, dtype=np.int64)
+        joint_lm_idx = np.full(J, -1, dtype=np.int64)   # which DTU3D landmark per joint
         for j, jname in enumerate(rig.joint_names):
             lm = joint_lm_map.get(jname)
             if lm is not None:
                 mapped[j] = True
-                lvidx_per_joint[j] = int(landmark_vidx[lm])
-                offsets[j] = bind_pos_mean_GT[j] - V_mean[lvidx_per_joint[j]]
+                joint_lm_idx[j] = int(lm)
+                mean_lvidx_per_joint[j] = int(landmark_vidx[lm])
+                offsets[j] = bind_pos_mean_GT[j] - V_mean[mean_lvidx_per_joint[j]]
         n_mapped = int(mapped.sum())
         print(f'  joints: mapped={n_mapped}/{J}, fallback={J-n_mapped}')
         if n_mapped > 0:
             print(f'  offset ||δ||: min={np.linalg.norm(offsets[mapped], axis=-1).min():.4f}  '
                   f'mean={np.linalg.norm(offsets[mapped], axis=-1).mean():.4f}  '
                   f'max={np.linalg.norm(offsets[mapped], axis=-1).max():.4f}')
+
+        # Whether to use per-id landmarks for THIS dataset
+        use_per_id_lm = (
+            args.per_id_landmarks_dir is not None
+            and ds in args.per_id_landmarks_for
+        )
+        if use_per_id_lm:
+            print(f'  [per-id mode] reading per-id landmarks from {args.per_id_landmarks_dir}')
 
         # ── Per-id bind_pose GT ─────────────────────────────────────────
         templates = _load_templates(ds, args.data_basedir)
@@ -142,9 +160,24 @@ def main():
             assert V_id.shape[0] == V_mean.shape[0], \
                 f'{name}: V_id={V_id.shape[0]} vs V_mean={V_mean.shape[0]}'
 
-            bind_pos_id = bind_pos_mean_GT.copy()                                       # default
+            # Determine per-id vertex idx per joint
+            if use_per_id_lm:
+                _lm_path = os.path.join(args.per_id_landmarks_dir, f'{name}_landmarks.npy')
+                if not os.path.exists(_lm_path):
+                    print(f'  [skip] {name}: per-id landmark file not found ({_lm_path})')
+                    continue
+                per_id_lm = np.load(_lm_path).astype(np.float32)                     # [73, 3]
+                # argmin per joint's mapped landmark
+                lvidx_per_joint = np.full(J, -1, dtype=np.int64)
+                for j in np.where(mapped)[0]:
+                    lm_pt = per_id_lm[joint_lm_idx[j]]                                # [3]
+                    d2 = ((V_id - lm_pt[None, :]) ** 2).sum(axis=-1)                  # [V]
+                    lvidx_per_joint[j] = int(d2.argmin())
+            else:
+                lvidx_per_joint = mean_lvidx_per_joint                                # mean-inherited
+
+            bind_pos_id = bind_pos_mean_GT.copy()                                     # fallback
             if n_mapped > 0:
-                # bind_pose_id[j] = V_id[lvidx] + offset[j]   for mapped j
                 bind_pos_id[mapped] = V_id[lvidx_per_joint[mapped]] + offsets[mapped]
 
             os.makedirs(args.feat_dir, exist_ok=True)
