@@ -113,6 +113,13 @@ def Options():
                              'bind_pose_net output. Keeps helpers near parent unless '
                              'reconstruction losses justify a larger offset. Active only '
                              'when --use_helpers=1.')
+    parser.add_argument("--lambda_cross_cyclic", type=float, default=0.0,
+                        help='Cyclic consistency loss for cross-retarget (Track B). '
+                             'After first retarget produces pred_tgt_def (A→B), runs a '
+                             'reverse retarget (B→A) using pred_tgt_def as new source-deformed '
+                             'and src_neu(A) as new target-neutral. '
+                             'L_cross_cyclic = MSE(reconstructed src_def, original src_def). '
+                             'Encourages bijective expression encoding/decoding.')
     parser.add_argument("--lambda_mirror", type=float, default=0.0,
                         help='Bilateral symmetry loss for L/R helper joint pairs. '
                              'L_mirror = MSE(pos[L], mirror_x(pos[R])), with '
@@ -628,9 +635,20 @@ class HLBSTrainer:
 
         V    : [N, 3]
         K    : int (number of samples)
-        seed : optional int for reproducibility (None = use random first point)
+        seed : optional int (used only by the manual fallback path)
         Returns: [K] long indices.
+
+        Prefers PyTorch3D's CUDA kernel (sample_farthest_points) when GPU build
+        is available — orders of magnitude faster than the Python loop fallback
+        (no per-iteration GPU→CPU sync from .item()).
         """
+        try:
+            from pytorch3d.ops import sample_farthest_points
+            idx, _ = sample_farthest_points(V.unsqueeze(0), K=K)        # [1, K]
+            return idx.squeeze(0).long()
+        except Exception:
+            pass
+        # Fallback: pure-PyTorch manual FPS (slow due to .item() sync per step).
         N = V.shape[0]
         device = V.device
         indices = torch.zeros(K, dtype=torch.long, device=device)
@@ -929,6 +947,7 @@ class HLBSTrainer:
 
         os.makedirs(opts.log_dir, exist_ok=True)
         os.makedirs(f"{opts.log_dir}/img/train/mesh", exist_ok=True)
+        os.makedirs(f"{opts.log_dir}/img/train/cross_retarget", exist_ok=True)
         os.makedirs(f"{opts.log_dir}/img/valid/mesh", exist_ok=True)
 
         with open(os.path.join(opts.log_dir, "opts.json"), 'w') as f:
@@ -1598,6 +1617,7 @@ class HLBSTrainer:
 
         os.makedirs(opts.log_dir, exist_ok=True)
         os.makedirs(f"{opts.log_dir}/img/train/mesh", exist_ok=True)
+        os.makedirs(f"{opts.log_dir}/img/train/cross_retarget", exist_ok=True)
         os.makedirs(f"{opts.log_dir}/img/valid/mesh", exist_ok=True)
 
         with open(os.path.join(opts.log_dir, "opts.json"), 'w') as f:
@@ -2116,7 +2136,7 @@ class HLBSTrainer:
                             _gd = _gd[:V_c]
                             _tgt_geo = (_gd.unsqueeze(0).expand(B_c, -1, -1)) ** 2
 
-                    # Forward retarget
+                    # Forward retarget: A → B
                     pred_tgt = self.model.retarget(
                         cb.src_template, cb.src_template_normal,
                         cb.src_vertices,  cb.src_vertices_normal,
@@ -2126,6 +2146,57 @@ class HLBSTrainer:
                         tgt_dist_sq_geo=_tgt_geo,
                     )
                     loss_dict["L_cross_retarget"] = F.mse_loss(pred_tgt, cb.tgt_vertices)
+
+                    # ── Cyclic retarget: B → A reconstruction ────────────
+                    # Use pred_tgt (B's predicted deformed) as the new source-deformed,
+                    # cb.tgt_template (B's neutral) as new source-neutral, and
+                    # cb.src_template (A's neutral) as the new target.
+                    # Expected: reconstructed src_def should match cb.src_vertices.
+                    # Notes:
+                    #  - pred_tgt's normals are unknown at runtime; we use cb.tgt_vertices_normal
+                    #    as a practical proxy (close to true normals once pred_tgt ≈ GT).
+                    #  - NFS feat / bind pos cache must reflect the SOURCE id (A) now in the
+                    #    target slot of the retarget call.
+                    pred_src_recon = None
+                    if getattr(opts, 'lambda_cross_cyclic', 0) > 0:
+                        _src_nfs = None
+                        if opts.nfs_feat_dir and self._nfs_feat_cache:
+                            _feats = []
+                            for b in range(B_c):
+                                _idn = cb.src_id_name[b]
+                                if _idn in self._nfs_feat_cache:
+                                    _f = self._nfs_feat_cache[_idn]
+                                    if _f.shape[0] > V_c: _f = _f[:V_c]
+                                    if self._nfs_on_cpu: _f = _f.to(self.device, non_blocking=True)
+                                    _feats.append(_f)
+                                else:
+                                    _feats.append(torch.zeros(V_c, 256, device=self.device))
+                            _src_nfs = torch.stack(_feats, dim=0)
+
+                        _src_bp = None
+                        _bp_items_src = []
+                        for b in range(B_c):
+                            _idn = cb.src_id_name[b]
+                            if _idn in self._per_id_bind_pose_gt:
+                                _bp_items_src.append(self._per_id_bind_pose_gt[_idn])
+                            elif _idn in self._bind_pos_cache:
+                                _bp_items_src.append(self._bind_pos_cache[_idn])
+                            elif hasattr(self.model, 'bind_pos_target_ict'):
+                                _bp_items_src.append(self.model.bind_pos_target_ict)
+                            else:
+                                _bp_items_src = None; break
+                        if _bp_items_src is not None and len(_bp_items_src) == B_c:
+                            _src_bp = torch.stack(_bp_items_src, dim=0).detach()
+
+                        pred_src_recon = self.model.retarget(
+                            cb.tgt_template,        cb.tgt_template_normal,       # new src_neu (B)
+                            pred_tgt,               cb.tgt_vertices_normal,       # new src_def (B)
+                            cb.src_template,        cb.src_template_normal,       # new tgt_neu (A)
+                            tgt_nfs_feat=_src_nfs,
+                            tgt_bind_pos_cache=_src_bp,
+                            tgt_dist_sq_geo=_tgt_geo,                              # ICT geo (shared)
+                        )
+                        loss_dict["L_cross_cyclic"] = F.mse_loss(pred_src_recon, cb.src_vertices)
 
                 # ── Total loss ───────────────────────────────────────────
                 loss_lambda = {
@@ -2145,6 +2216,7 @@ class HLBSTrainer:
                     "L_sigma": opts.lambda_sigma_reg,
                     "L_net_center": opts.lambda_net_center,
                     "L_cross_retarget": opts.lambda_cross_retarget,
+                    "L_cross_cyclic": getattr(opts, 'lambda_cross_cyclic', 0.0),
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
                 loss.backward()
@@ -2188,6 +2260,42 @@ class HLBSTrainer:
                             size=1, bg_black=False, mode='shade',
                             logdir=f"{opts.log_dir}/img/train/mesh",
                             name=f"{epoch:03d}_{idx:04d}", save=True)
+
+                    # Cross-retarget vis — match main mesh vis pattern: 4 GT + 4 pred.
+                    if (getattr(opts, 'lambda_cross_retarget', 0) > 0
+                            and self._cross_pair_loader is not None):
+                        _d = lambda t: t.cpu().detach()
+                        B_c_vis = cb.src_template.shape[0]
+                        _sc = lambda i: min(i, B_c_vis - 1)
+                        HBc = B_c_vis // 2
+                        faces_cr = cb.faces.cpu()
+                        # cross_retarget.png: 4 GT (cb.tgt_vertices) + 4 pred (pred_tgt)
+                        v_list_cr = [
+                            _d(cb.tgt_vertices[0]),     _d(cb.tgt_vertices[_sc(1)]),
+                            _d(cb.tgt_vertices[_sc(HBc)]), _d(cb.tgt_vertices[B_c_vis-1]),
+                            _d(pred_tgt[0]),            _d(pred_tgt[_sc(1)]),
+                            _d(pred_tgt[_sc(HBc)]),     _d(pred_tgt[B_c_vis-1]),
+                        ]
+                        f_list_cr = [faces_cr] * len(v_list_cr)
+                        plot_image_array(
+                            v_list_cr, f_list_cr, rot_list=[[0,0,0]]*len(v_list_cr),
+                            size=1, bg_black=False, mode='shade',
+                            logdir=f"{opts.log_dir}/img/train/cross_retarget",
+                            name=f"{epoch:03d}_{idx:04d}", save=True)
+                        # cross_cyclic.png (if active): 4 GT (cb.src_vertices) + 4 recon (pred_src_recon)
+                        if pred_src_recon is not None:
+                            v_list_cyc = [
+                                _d(cb.src_vertices[0]),     _d(cb.src_vertices[_sc(1)]),
+                                _d(cb.src_vertices[_sc(HBc)]), _d(cb.src_vertices[B_c_vis-1]),
+                                _d(pred_src_recon[0]),      _d(pred_src_recon[_sc(1)]),
+                                _d(pred_src_recon[_sc(HBc)]), _d(pred_src_recon[B_c_vis-1]),
+                            ]
+                            f_list_cyc = [faces_cr] * len(v_list_cyc)
+                            plot_image_array(
+                                v_list_cyc, f_list_cyc, rot_list=[[0,0,0]]*len(v_list_cyc),
+                                size=1, bg_black=False, mode='shade',
+                                logdir=f"{opts.log_dir}/img/train/cross_retarget",
+                                name=f"{epoch:03d}_{idx:04d}_cyclic", save=True)
 
                 if opts.debug:
                     break
