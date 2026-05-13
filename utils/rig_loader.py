@@ -52,6 +52,7 @@ class RigData:
     # key -> [J, 3] per-topology bind positions
     B_inv_dict    : Dict[str, torch.Tensor] = field(default_factory=dict)
     # key -> [J, 4, 4] per-topology inverse bind matrices
+    process_order : torch.Tensor = None    # [J] long, topological order (defaults to arange(J))
 
 
 def load_rig(
@@ -130,13 +131,32 @@ def load_rig(
         bind_pos_dict[topo] = torch.tensor(bp, dtype=torch.float32).to(device)
         B_inv_dict[topo]    = torch.tensor(bi, dtype=torch.float32).to(device)
 
-    # Validate topological order
-    for idx, p in enumerate(parent_arr):
-        if p != -1 and p >= idx:
-            raise ValueError(
-                f"Joint '{joint_names[idx]}' (idx={idx}) has parent_idx={p} >= itself. "
-                "Joints must be in topological order (parent before child)."
-            )
+    # Validate topological order (legacy: parent must come before child).
+    # If strict order is violated (e.g., reparented helper joints), fall back to
+    # a topological-sort-derived process_order; consumers should use this when
+    # available instead of naive 0..J-1 iteration.
+    n_inversions = sum(1 for i, p in enumerate(parent_arr) if p != -1 and p >= i)
+    if n_inversions == 0:
+        process_order = np.arange(J, dtype=np.int64)        # legacy fast path
+    else:
+        # Topological sort via DFS (cycle-detecting).
+        _visited = [0] * J     # 0 unvisited, 1 in-stack, 2 done
+        _order = []
+        def _dfs(i):
+            if _visited[i] == 1:
+                raise ValueError(f"Cycle detected at joint '{joint_names[i]}' (idx={i})")
+            if _visited[i] == 2: return
+            _visited[i] = 1
+            p = int(parent_arr[i])
+            if p != -1:
+                _dfs(p)
+            _visited[i] = 2
+            _order.append(i)
+        for i in range(J):
+            _dfs(i)
+        process_order = np.asarray(_order, dtype=np.int64)
+        print(f"[rig_loader] note: {n_inversions} joint(s) have parent_idx >= self_idx; "
+              f"using process_order for kinematic chain traversal.")
 
     # ------------------------------------------------------------------
     # 2. Load skin weights
@@ -174,6 +194,7 @@ def load_rig(
         W_init=W_init,
         bind_pos_dict=bind_pos_dict,
         B_inv_dict=B_inv_dict,
+        process_order=torch.tensor(process_order, dtype=torch.int64).to(device),
     )
 
 

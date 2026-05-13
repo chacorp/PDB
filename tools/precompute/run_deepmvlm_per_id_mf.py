@@ -23,7 +23,9 @@ import argparse
 import pickle
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from run_deepmvlm_on_meshes import run_deepmvlm, render_landmarks_on_mesh
 
 

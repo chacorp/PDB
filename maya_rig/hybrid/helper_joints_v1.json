@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "description": "Option A — 19 helper joints reassigned to face regions (cheek/mouth-heavy).",
+  "default_sigma": 0.4,
+  "default_init_anchor_lambda": 0.1,
+
+  "_parent_aliases": {
+    "Left_Eye_Socket":   11,
+    "Right_Eye_Socket":  20,
+    "Left_Orbital":       9,
+    "Right_Orbital":     19,
+    "Left_Cheek_Bone":   16,
+    "Right_Cheek_Bone":  25,
+    "Maxilla":           51,
+    "Jaw_Front":         41,
+    "Lower_Face_Root":   39
+  },
+
+  "helpers": [
+    {"joint": "hybrid_jnt_Cranium",                "region": "L_eye",   "parent": "Left_Eye_Socket"},
+    {"joint": "hybrid_jnt_Left_Crown_Outer",       "region": "L_eye",   "parent": "Left_Eye_Socket"},
+
+    {"joint": "hybrid_jnt_Crown",                  "region": "R_eye",   "parent": "Right_Eye_Socket"},
+    {"joint": "hybrid_jnt_Right_Crown_Outer",      "region": "R_eye",   "parent": "Right_Eye_Socket"},
+
+    {"joint": "hybrid_jnt_Nose_Root_A",            "region": "L_brow",  "parent": "Left_Orbital"},
+
+    {"joint": "hybrid_jnt_Nose_Root_B",            "region": "R_brow",  "parent": "Right_Orbital"},
+
+    {"joint": "hybrid_jnt_Nose_Ridge_A",           "region": "L_cheek", "parent": "Left_Cheek_Bone"},
+    {"joint": "hybrid_jnt_Left_Ear_Position",      "region": "L_cheek", "parent": "Left_Cheek_Bone"},
+    {"joint": "hybrid_jnt_Left_Jaw_Root",          "region": "L_cheek", "parent": "Left_Cheek_Bone"},
+
+    {"joint": "hybrid_jnt_Nose_Ridge_B",           "region": "R_cheek", "parent": "Right_Cheek_Bone"},
+    {"joint": "hybrid_jnt_Right_Ear_Position",     "region": "R_cheek", "parent": "Right_Cheek_Bone"},
+    {"joint": "hybrid_jnt_Right_Jaw_Root",         "region": "R_cheek", "parent": "Right_Cheek_Bone"},
+
+    {"joint": "hybrid_jnt_Chin",                   "region": "mouth",   "parent": "Maxilla"},
+    {"joint": "hybrid_jnt_Right_Chin",             "region": "mouth",   "parent": "Maxilla"},
+    {"joint": "hybrid_jnt_Left_Chin",              "region": "mouth",   "parent": "Maxilla"},
+    {"joint": "hybrid_jnt_Nose_Bridge",            "region": "mouth",   "parent": "Jaw_Front"},
+    {"joint": "hybrid_jnt_Ears",                   "region": "mouth",   "parent": "Jaw_Front"},
+    {"joint": "hybrid_jnt_Left_Ear_Rotate_Scale",  "region": "mouth",   "parent": "Jaw_Front"},
+    {"joint": "hybrid_jnt_Right_Ear_Rotate_Scale", "region": "mouth",   "parent": "Jaw_Front"}
+  ],
+
+  "mirror_pairs": [
+    ["hybrid_jnt_Cranium",             "hybrid_jnt_Crown"],
+    ["hybrid_jnt_Left_Crown_Outer",    "hybrid_jnt_Right_Crown_Outer"],
+    ["hybrid_jnt_Nose_Root_A",         "hybrid_jnt_Nose_Root_B"],
+    ["hybrid_jnt_Nose_Ridge_A",        "hybrid_jnt_Nose_Ridge_B"],
+    ["hybrid_jnt_Left_Ear_Position",   "hybrid_jnt_Right_Ear_Position"],
+    ["hybrid_jnt_Left_Jaw_Root",       "hybrid_jnt_Right_Jaw_Root"],
+    ["hybrid_jnt_Left_Chin",           "hybrid_jnt_Right_Chin"],
+    ["hybrid_jnt_Left_Ear_Rotate_Scale","hybrid_jnt_Right_Ear_Rotate_Scale"]
+  ],
+
+  "region_counts": {
+    "L_eye": 2, "R_eye": 2,
+    "L_brow": 1, "R_brow": 1,
+    "L_cheek": 3, "R_cheek": 3,
+    "mouth": 7
+  }
+}

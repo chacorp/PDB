@@ -21,7 +21,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from utils.rig_loader import load_rig
 
 

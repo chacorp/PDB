@@ -18,7 +18,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from run_deepmvlm_on_meshes import (
     _xrot_mat, _yrot_mat, _perspective, _translate, _normalize_unit
 )

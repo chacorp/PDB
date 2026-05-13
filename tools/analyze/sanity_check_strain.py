@@ -11,7 +11,9 @@ import random
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from utils.mesh_utils import compute_vertex_strain
 from utils.matplotlib_rnd import vis_mesh_key_weight
 

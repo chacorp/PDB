@@ -20,7 +20,9 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
 from sklearn.decomposition import PCA
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from utils.matplotlib_rnd import normalize_homogeneous, perspective, translate, yrotate, xrotate, calc_face_norm
 
 

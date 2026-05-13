@@ -30,7 +30,11 @@ from matplotlib.collections import PolyCollection
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, 'tools', 'vis'))  # vis_hlbs_weights_multi
 
 from utils.rig_loader import load_rig
 from models.hierarchical_lbs import HierarchicalLBS_FullPred

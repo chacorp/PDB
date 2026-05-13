@@ -25,7 +25,11 @@ import argparse
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, 'tools', 'precompute'))  # extract_nfs_feat
 from utils.rig_loader import load_rig
 from utils.anchor_pool import compute_bind_pos
 from extract_nfs_feat import (

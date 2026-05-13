@@ -106,7 +106,22 @@ def Options():
 
     # bind pose regularization (independent of lambda_init, not annealed)
     parser.add_argument("--lambda_bind_reg", type=float, default=0.0,
-                        help='Bind pose MSE to Maya init (always on, 0=disabled)')
+                        help='Bind pose MSE to Maya init (always on, 0=disabled). '
+                             'Excludes helper joints when --use_helpers=1.')
+    parser.add_argument("--lambda_helper_residual", type=float, default=0.0,
+                        help='L2 penalty on helper joint parent-relative residual '
+                             'bind_pose_net output. Keeps helpers near parent unless '
+                             'reconstruction losses justify a larger offset. Active only '
+                             'when --use_helpers=1.')
+    parser.add_argument("--lambda_mirror", type=float, default=0.0,
+                        help='Bilateral symmetry loss for L/R helper joint pairs. '
+                             'L_mirror = MSE(pos[L], mirror_x(pos[R])), with '
+                             'mirror_x([x,y,z]) = [-x, y, z]. Encourages predicted '
+                             'helper positions to be left-right symmetric. Active only '
+                             'when --use_helpers=1.')
+    parser.add_argument("--helper_joints_json", type=str,
+                        default='maya_rig/hybrid/helper_joints_v1.json',
+                        help='Path to helper_joints config (used for mirror_pairs).')
 
     # regional weight constraint
     parser.add_argument("--lambda_rwc", type=float, default=0.0,
@@ -188,10 +203,47 @@ def Options():
                              'Skips face-dependent losses (normal, curvature). Landmark vertices are '
                              'pinned to ensure anchor preservation.')
     parser.add_argument("--subsample_mode", type=str, default='random',
-                        choices=['random', 'importance', 'mixed'],
-                        help='random: uniform. importance: face region (eye/brow/lip) ×3 vs non-face '
-                             '×1. mixed: per-batch-sample split — even index uses random, odd index '
-                             'uses importance, so each batch sees both distributions.')
+                        choices=['random', 'fps', 'importance', 'importance_strict',
+                                 'mixed', 'mix3', 'mix4'],
+                        help='random: uniform random. '
+                             'fps: farthest point sampling (PointNet++ style spatial spread). '
+                             'importance: soft contour weighting w = 1 + α·bump (non-contour '
+                             'still possible). '
+                             'importance_strict: hard contour-only (w = bump; non-contour w=0). '
+                             'mixed: per-sample alternation (even=random, odd=importance). '
+                             'mix3: per-batch 1/3 of full / random / importance(α=99). '
+                             'mix4: per-batch 1/4 of full / fps / random / importance_strict '
+                             '(each non-full mode draws its own ratio per batch).')
+    parser.add_argument("--subsample_mix3_alpha", type=float, default=99.0,
+                        help='[mix3 mode] alpha for the importance sub-mode (near-100% contour).')
+    parser.add_argument("--subsample_ratio_min", type=float, default=0.1,
+                        help='[mix4 mode] lower bound for per-batch ratio sampling.')
+    parser.add_argument("--subsample_ratio_max", type=float, default=0.5,
+                        help='[mix4 mode] upper bound for fps/random ratio. '
+                             'For importance_strict the cap is min(this, n_contour/N) '
+                             'per topology (ICT ≈ 0.44, MF ≈ 0.38).')
+    parser.add_argument("--subsample_contour_r0", type=float, default=0.1,
+                        help='[importance mode] inner radius (full weight) of bump around each '
+                             'contour landmark vertex.')
+    parser.add_argument("--subsample_contour_r1", type=float, default=0.3,
+                        help='[importance mode] outer radius (zero weight) of bump.')
+    parser.add_argument("--subsample_contour_alpha", type=float, default=4.0,
+                        help='[importance mode] contour oversample factor. weight = 1 + α·bump; '
+                             'contour vertices are sampled ~(1+α)× more often than far vertices.')
+    parser.add_argument("--subsample_contour_kind", type=str, default='segment',
+                        choices=['point', 'segment', 'region'],
+                        help='[importance mode] bump geometry. '
+                             'point=ball at each landmark (union of balls, max over centers); '
+                             'segment=curve via segments connecting consecutive landmarks '
+                             '(true contour band); '
+                             'region=per-region plateau (centroid+max-radius ball, filled inside).')
+    parser.add_argument("--subsample_region_falloff", type=float, default=0.1,
+                        help='[importance/region mode] absolute falloff distance beyond region '
+                             'radius. r0=R (max landmark dist from centroid), r1=R+falloff.')
+    parser.add_argument("--normal_knn_k", type=int, default=16,
+                        help='[subsample mode] kNN neighborhood size for PCA-based pred normal '
+                             'estimation when faces are unusable (Hoppe 1992 / Klasing 2009). '
+                             'GT normal uses pre-computed batch.vertices_normal directly.')
     parser.add_argument("--init_log_sigma", type=float, default=-1.2,
                         help='Initial log σ for GMM hybrid (σ = exp(-1.2) ≈ 0.3). '
                              'Overridden by --sigma_targets_npy if given.')
@@ -216,6 +268,14 @@ def Options():
                              'Net keeps shape freedom but center is pinned. 0 = disabled.')
 
     # Option A: face-mask mode (restrict W prediction to face joints, non-face → base joint)
+    parser.add_argument("--use_helpers", type=int, default=1, choices=[0, 1],
+                        help='Enable helper-joint-aware training. When 1: '
+                             '(a) L_bind_reg excludes helpers (so helper position '
+                             'is not locked to parent), '
+                             '(b) [planned] helper position as parent+residual with L2 reg, '
+                             '(c) [planned] L_mirror loss for L/R helper pairs. '
+                             'When 0: helpers loaded from active_joints_json are treated as '
+                             'regular face joints (full L_bind_reg, no mirror, no residual reg).')
     parser.add_argument("--active_joints_json", type=str, default=None,
                         help='Path to active_joints.json from analyze_active_joints.py. '
                              'If set, enables face-mask mode in HLBS.')
@@ -512,63 +572,244 @@ class HLBSTrainer:
         z_ge = self.nfs_exp_encoder(nfs_input)                         # [B, 128]
         return self.nfs_z_adapter(z_ge)                                # [B, hid_dim]
 
+    # DTU3D 73-point landmark groupings (1-indexed) + segment connectivity for
+    # contour-curve-based importance sampling. Per-vertex distance to nearest
+    # segment → plateau_hat bump → weight = 1 + alpha * bump.
+    _DTU3D_BROW_R = (1, 3, 5, 7)
+    _DTU3D_BROW_L = (9, 11, 13, 15)
+    _DTU3D_EYE_R  = (17, 19, 21, 23)
+    _DTU3D_EYE_L  = (25, 27, 29, 31)
+    _DTU3D_NOSE   = (36, 37, 43, 44)
+    _DTU3D_MOUTH  = (40, 47, 48, 50, 52, 53, 54, 55, 56)
+    _DTU3D_SEGMENTS = [
+        # Brow (open curves)
+        (1, 3), (3, 5), (5, 7),
+        (9, 11), (11, 13), (13, 15),
+        # Eye (closed loops)
+        (17, 19), (19, 21), (21, 23), (23, 17),
+        (25, 27), (27, 29), (29, 31), (31, 25),
+        # Nose wings (two short separate curves)
+        (36, 37), (43, 44),
+        # Mouth ring (closed) + 40-50 nose-base→top-lip connector
+        (47, 48), (48, 50), (50, 52), (52, 53),
+        (53, 54), (54, 55), (55, 56), (56, 47),
+        (40, 50),
+    ]
+    # Per-region groupings for region-mode plateau (centroid+max-radius ball).
+    _REGION_GROUPS = [
+        ('brow_R', _DTU3D_BROW_R),
+        ('brow_L', _DTU3D_BROW_L),
+        ('eye_R',  _DTU3D_EYE_R),
+        ('eye_L',  _DTU3D_EYE_L),
+        ('nose',   _DTU3D_NOSE),
+        ('mouth',  _DTU3D_MOUTH),
+    ]
+
+    @staticmethod
+    def _point_to_segments_min_dist(V, seg_starts, seg_ends):
+        """Distance from each vertex to the closest line segment.
+
+        V          : [N, 3]
+        seg_starts : [S, 3]
+        seg_ends   : [S, 3]
+        Returns    : [N] min distance to any segment.
+        """
+        seg     = seg_ends - seg_starts                          # [S, 3]
+        seg_len = (seg ** 2).sum(-1).clamp_min(1e-12)            # [S]
+        diff    = V.unsqueeze(1) - seg_starts.unsqueeze(0)       # [N, S, 3]
+        t       = (diff * seg.unsqueeze(0)).sum(-1) / seg_len.unsqueeze(0)
+        t       = t.clamp(0.0, 1.0)
+        foot    = seg_starts.unsqueeze(0) + t.unsqueeze(-1) * seg.unsqueeze(0)
+        return (V.unsqueeze(1) - foot).norm(dim=-1).min(dim=-1).values
+
+    @staticmethod
+    def _fps(V, K, seed=None):
+        """Farthest Point Sampling [PointNet++, Qi 2017].
+
+        V    : [N, 3]
+        K    : int (number of samples)
+        seed : optional int for reproducibility (None = use random first point)
+        Returns: [K] long indices.
+        """
+        N = V.shape[0]
+        device = V.device
+        indices = torch.zeros(K, dtype=torch.long, device=device)
+        distances = torch.full((N,), float('inf'), device=device)
+        if seed is not None:
+            g = torch.Generator(device=device).manual_seed(seed)
+            farthest = int(torch.randint(0, N, (1,), generator=g, device=device).item())
+        else:
+            farthest = int(torch.randint(0, N, (1,), device=device).item())
+        for i in range(K):
+            indices[i] = farthest
+            dist = ((V - V[farthest]) ** 2).sum(dim=-1)
+            distances = torch.minimum(distances, dist)
+            farthest = int(distances.argmax().item())
+        return indices
+
+    def _build_bump_strict(self, V_b, lm_vidx, N, r0, r1, kind, region_falloff):
+        """Compute per-vertex importance bump in [0, 1] for STRICT mode.
+        Outside contour: bump=0 (zero weight → excluded from multinomial).
+
+        Returns: bump [N] or None if landmarks unavailable.
+        """
+        from utils.exp_utils import plateau_hat_r, plateau_hat_points
+        if lm_vidx is None:
+            return None
+        lm_to_vidx = {}
+        for lm in (self._DTU3D_BROW_R + self._DTU3D_BROW_L
+                   + self._DTU3D_EYE_R + self._DTU3D_EYE_L
+                   + self._DTU3D_NOSE  + self._DTU3D_MOUTH):
+            idx0 = lm - 1
+            if 0 <= idx0 < lm_vidx.shape[0]:
+                v_idx = int(lm_vidx[idx0].item())
+                if 0 <= v_idx < N:
+                    lm_to_vidx[lm] = v_idx
+        if not lm_to_vidx:
+            return None
+        if kind == 'point':
+            C = torch.stack([V_b[v] for v in lm_to_vidx.values()], dim=0)
+            return plateau_hat_points(V_b, C, r0=r0, r1=r1).max(dim=-1).values
+        elif kind == 'region':
+            region_bumps = []
+            for _, lm_ids in self._REGION_GROUPS:
+                valid_vidx = [lm_to_vidx[lm] for lm in lm_ids if lm in lm_to_vidx]
+                if len(valid_vidx) < 2:
+                    continue
+                pts = V_b[torch.tensor(valid_vidx, dtype=torch.long, device=V_b.device)]
+                centroid = pts.mean(dim=0)
+                R = (pts - centroid).norm(dim=-1).max().item()
+                dist_r = (V_b - centroid).norm(dim=-1)
+                region_bumps.append(plateau_hat_r(dist_r, r0=R, r1=R + region_falloff))
+            if not region_bumps:
+                return None
+            return torch.stack(region_bumps, dim=-1).max(dim=-1).values
+        else:  # 'segment'
+            seg_pairs = [(a, b_) for (a, b_) in self._DTU3D_SEGMENTS
+                         if a in lm_to_vidx and b_ in lm_to_vidx]
+            if not seg_pairs:
+                return None
+            seg_starts = torch.stack([V_b[lm_to_vidx[a]]  for a, _ in seg_pairs], dim=0)
+            seg_ends   = torch.stack([V_b[lm_to_vidx[b_]] for _, b_ in seg_pairs], dim=0)
+            dist = self._point_to_segments_min_dist(V_b, seg_starts, seg_ends)
+            return plateau_hat_r(dist, r0=r0, r1=r1)
+
     def _build_subsample_perm(self, src_v, batch, ratio, mode):
         """Build [B, K] long perm_idx for vertex subsampling.
 
-        - K = round(N * ratio). Returns None if K >= N (no-op).
-        - Pins landmark vertices (when available for the topology) so anatomical
-          anchors are preserved in the subsample.
-        - Mode 'random': uniform sample over non-anchor vertices.
-        - Mode 'importance': weights by face-region indicator (plateau_hat),
-          face-area vertices ×3 vs non-face ×1.
+        Modes:
+          - 'random'             : uniform random.
+          - 'fps'                : farthest point sampling (uniform spatial spread).
+          - 'importance'         : weighted by w = 1 + α·bump (soft, allows non-contour).
+          - 'importance_strict'  : weight = bump (zero outside contour; multinomial
+                                   only picks from contour-area vertices).
+          - 'mixed'              : per-sample alternation (even=random, odd=importance).
+          - 'mix3'               : per-batch 1/3 of full/random/importance(α=99).
+          - 'mix4'               : per-batch 1/4 of full/fps/random/importance_strict.
+                                   For each non-full mode, ratio is sampled per batch
+                                   from a uniform range:
+                                     fps/random       : U[ratio_min, ratio_max]
+                                     importance_strict: U[ratio_min, n_contour/N]
+                                   (max for importance auto-capped by contour vertex
+                                   count to avoid CAPPED sampling.)
         """
-        from utils.exp_utils import plateau_hat_points
         B, N, _ = src_v.shape
+        opts = self.opts
+        r0    = getattr(opts, 'subsample_contour_r0',    0.1)
+        r1    = getattr(opts, 'subsample_contour_r1',    0.3)
+        alpha = getattr(opts, 'subsample_contour_alpha', 4.0)
+        kind  = getattr(opts, 'subsample_contour_kind', 'segment')
+        region_falloff = getattr(opts, 'subsample_region_falloff', 0.1)
+        ratio_min = getattr(opts, 'subsample_ratio_min', 0.1)
+        ratio_max = getattr(opts, 'subsample_ratio_max', 0.5)
+
+        # ── mix3 (legacy 3-way): full / random / importance(soft, high α) ──
+        if mode == 'mix3':
+            roll = int(torch.randint(0, 3, (1,)).item())
+            if roll == 0:
+                return None
+            mode  = 'random' if roll == 1 else 'importance'
+            if mode == 'importance':
+                alpha = getattr(opts, 'subsample_mix3_alpha', 99.0)
+
+        # ── mix4: full / fps / random / importance_strict, per-batch dynamic ratio ──
+        if mode == 'mix4':
+            roll = int(torch.randint(0, 4, (1,)).item())
+            if roll == 0:
+                return None                                              # full mesh
+            mode = ['fps', 'random', 'importance_strict'][roll - 1]
+            if mode == 'importance_strict':
+                # Need to know n_contour for THIS batch (first sample's topology).
+                idn0 = batch.id_name[0] if hasattr(batch, 'id_name') else ''
+                topo0 = ('ict' if idn0.startswith('ict_') else
+                         'mf'  if idn0.startswith('m--')   else None)
+                lm_vidx_0 = self._landmark_vidx_per_topo.get(topo0) if topo0 else None
+                bump0 = self._build_bump_strict(src_v[0], lm_vidx_0, N,
+                                                r0, r1, kind, region_falloff)
+                if bump0 is None:
+                    mode = 'random'
+                    ratio = float(np.random.uniform(ratio_min, ratio_max))
+                else:
+                    n_contour = int((bump0 > 1e-8).sum().item())
+                    imp_max = max(ratio_min, min(ratio_max, n_contour / N))
+                    ratio = float(np.random.uniform(ratio_min, imp_max))
+            else:
+                ratio = float(np.random.uniform(ratio_min, ratio_max))
+
         K = int(round(N * ratio))
         if K >= N or K <= 0:
             return None
+
         out = []
         for b in range(B):
             idn = batch.id_name[b] if hasattr(batch, 'id_name') else ''
             topo = ('ict' if idn.startswith('ict_') else
                     'mf'  if idn.startswith('m--')   else None)
-            anchor = self._landmark_vidx_per_topo.get(topo) if topo else None
-            if anchor is not None:
-                # filter out indices outside current N (safety)
-                anchor = anchor[anchor < N]
-                if len(anchor) >= K:
-                    anchor = anchor[:K]
+            lm_vidx = self._landmark_vidx_per_topo.get(topo) if topo else None
+            V_b = src_v[b]                                                # [N, 3]
 
-            # 'mixed' splits batch per-sample: even idx → random, odd idx → importance
             _eff_mode = mode
             if mode == 'mixed':
                 _eff_mode = 'random' if (b % 2 == 0) else 'importance'
 
-            if _eff_mode == 'importance':
-                t = plateau_hat_points(src_v[b:b+1]).squeeze(-1).squeeze(0)   # [N]
-                w = 1.0 + 2.0 * t                                               # face=3, non-face=1
-            else:
-                w = None
+            if _eff_mode == 'fps':
+                # Random first-point seed each call → stochastic across epochs.
+                perm = self._fps(V_b, K)
 
-            if anchor is not None and len(anchor) < K:
-                K_rest = K - len(anchor)
-                if w is None:
-                    avail_mask = torch.ones(N, dtype=torch.bool, device=src_v.device)
-                    avail_mask[anchor] = False
-                    others = avail_mask.nonzero(as_tuple=False).squeeze(-1)
-                    rest = others[torch.randperm(len(others), device=src_v.device)[:K_rest]]
-                else:
-                    w_others = w.clone()
-                    w_others[anchor] = 0.0
-                    rest = torch.multinomial(w_others, K_rest, replacement=False)
-                perm = torch.cat([anchor, rest])
-            else:
-                if w is None:
+            elif _eff_mode == 'importance_strict':
+                bump = self._build_bump_strict(V_b, lm_vidx, N,
+                                               r0, r1, kind, region_falloff)
+                if bump is None:
                     perm = torch.randperm(N, device=src_v.device)[:K]
                 else:
+                    # weight = bump; vertices with bump=0 cannot be picked.
+                    # Cap K if contour vertex count is smaller.
+                    n_contour = int((bump > 1e-8).sum().item())
+                    K_eff = min(K, n_contour)
+                    perm = torch.multinomial(bump + 1e-12, K_eff, replacement=False)
+                    if K_eff < K:
+                        # Pad with random non-contour to keep [B, K] tensor shape consistent.
+                        mask = torch.ones(N, dtype=torch.bool, device=src_v.device)
+                        mask[perm] = False
+                        remain = mask.nonzero(as_tuple=False).squeeze(-1)
+                        extra = remain[torch.randperm(len(remain), device=src_v.device)[:K - K_eff]]
+                        perm = torch.cat([perm, extra])
+
+            elif _eff_mode == 'importance':
+                # Soft importance: w = 1 + α·bump (existing behavior).
+                bump = self._build_bump_strict(V_b, lm_vidx, N,
+                                               r0, r1, kind, region_falloff)
+                if bump is None:
+                    perm = torch.randperm(N, device=src_v.device)[:K]
+                else:
+                    w = 1.0 + alpha * bump
                     perm = torch.multinomial(w, K, replacement=False)
+
+            else:  # 'random'
+                perm = torch.randperm(N, device=src_v.device)[:K]
+
             out.append(perm)
-        return torch.stack(out, dim=0)   # [B, K]
+        return torch.stack(out, dim=0)                                    # [B, K]
 
     @torch.no_grad()
     def _visualize_curriculum_bases(self, epoch, save_dir):
@@ -1069,14 +1310,37 @@ class HLBSTrainer:
         # ── Load active-joint config (Option A: face-mask mode) ──────────
         self._face_joint_idx = None
         self._base_joint_idx = None
+        self._helper_joint_idx = None
+        self._use_helpers = bool(getattr(opts, 'use_helpers', 1))
         if getattr(opts, 'active_joints_json', None):
             with open(opts.active_joints_json) as f:
                 _aj = json.load(f)
             self._face_joint_idx = _aj['face_joint_idx']
             self._base_joint_idx = _aj['base_joint_idx']
+            _helper_list = _aj.get('helper_joint_idx', [])
+            # use_helpers=0 → don't apply helper-aware logic (helpers learned as regular joints).
+            self._helper_joint_idx = list(_helper_list) if self._use_helpers else []
             print(f"[Option A] Loaded {len(self._face_joint_idx)} face joints, "
-                  f"base={_aj['base_joint_name']} (idx={self._base_joint_idx}) "
+                  f"base={_aj['base_joint_name']} (idx={self._base_joint_idx}), "
+                  f"helpers={len(_helper_list)} "
+                  f"({'use_helpers=ON' if self._use_helpers else 'use_helpers=OFF — treated as regular face joints'}) "
                   f"from {opts.active_joints_json}")
+
+        # ── Load helper mirror pairs (for L_mirror loss) ─────────────────
+        # Reads name pairs from helper_joints_*.json; resolves to joint indices
+        # via rig.joint_names (loaded later via rig). Stored as [n_pairs, 2] long.
+        self._mirror_pair_idx = None
+        if (self._use_helpers and getattr(opts, 'lambda_mirror', 0) > 0
+                and getattr(opts, 'helper_joints_json', None)
+                and os.path.exists(opts.helper_joints_json)):
+            with open(opts.helper_joints_json) as f:
+                _hj = json.load(f)
+            self._mirror_pair_names = _hj.get('mirror_pairs', [])
+            # rig.joint_names is available after rig loading below; resolve there.
+            print(f"[L_mirror] {len(self._mirror_pair_names)} mirror pairs declared "
+                  f"in {opts.helper_joints_json}")
+        else:
+            self._mirror_pair_names = []
 
         # ── Load σ targets (per-joint init + shrinkage target) ───────────
         self._sigma_targets = None
@@ -1199,6 +1463,23 @@ class HLBSTrainer:
         # ── Build FullPred model ─────────────────────────────────────────
         from utils.rig_loader import load_rig
         rig = load_rig(opts.rig_path)
+
+        # Resolve mirror pair names → indices using rig.joint_names
+        if self._mirror_pair_names:
+            _name_to_idx = {n: i for i, n in enumerate(rig.joint_names)}
+            _pair_idx = []
+            for (n_l, n_r) in self._mirror_pair_names:
+                if n_l in _name_to_idx and n_r in _name_to_idx:
+                    _pair_idx.append([_name_to_idx[n_l], _name_to_idx[n_r]])
+                else:
+                    print(f"[L_mirror] WARNING: pair ({n_l}, {n_r}) not found in rig.joint_names")
+            if _pair_idx:
+                self._mirror_pair_idx = torch.tensor(_pair_idx, dtype=torch.long,
+                                                    device=self.device)
+                print(f"[L_mirror] resolved {len(_pair_idx)}/{len(self._mirror_pair_names)} pairs")
+            else:
+                self._mirror_pair_idx = None
+
         self.model = HierarchicalLBS_FullPred(
             rig=rig,
             topology=opts.topo_key,
@@ -1229,6 +1510,8 @@ class HLBSTrainer:
             base_joint_idx=getattr(self, '_base_joint_idx', None),
             face_mask_r0=getattr(opts, 'face_mask_r0', 1.0),
             face_mask_r1=getattr(opts, 'face_mask_r1', 2.25),
+            helper_joint_idx=(self._helper_joint_idx if self._use_helpers
+                              and self._helper_joint_idx else None),
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
@@ -1619,11 +1902,27 @@ class HLBSTrainer:
                             + F.mse_loss(src_v * inv_mask, pred_neutral * inv_mask)
                         )
 
-                # ── Normal consistency loss (skip when vertex-permuted) ──────
-                if opts.lambda_normal > 0 and not is_permed:
-                    from utils.mesh_utils import calc_norm_torch
-                    pred_n = calc_norm_torch(pred_lbs, batch.faces, at='verts')
-                    gt_n_recomp = calc_norm_torch(target_v, batch.faces, at='verts')
+                # ── Normal consistency loss ─────────────────────────────────
+                # Non-permed: classic face-based per-vertex normals (calc_norm_torch).
+                # Permed: GT normals are pre-computed on full mesh (in batch.vertices_normal)
+                # and already gathered into gt_n at the sampled indices — use directly.
+                # Pred normals must still be estimated since pred_lbs is the model output:
+                # use PCA-on-kNN (Hoppe '92, Klasing '09; PyTorch3D estimate_pointcloud_normals)
+                # with sign alignment against template normal src_n.
+                if opts.lambda_normal > 0:
+                    if is_permed:
+                        from pytorch3d.ops import estimate_pointcloud_normals
+                        k = max(4, int(getattr(opts, 'normal_knn_k', 16)))
+                        pred_n_raw = estimate_pointcloud_normals(
+                            pred_lbs, neighborhood_size=k, disambiguate_directions=False)
+                        pred_sign = torch.sign((pred_n_raw * src_n).sum(dim=-1, keepdim=True))
+                        pred_sign = torch.where(pred_sign == 0, torch.ones_like(pred_sign), pred_sign)
+                        pred_n      = pred_n_raw * pred_sign
+                        gt_n_recomp = gt_n                            # pre-computed, already permed
+                    else:
+                        from utils.mesh_utils import calc_norm_torch
+                        pred_n      = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+                        gt_n_recomp = calc_norm_torch(target_v, batch.faces, at='verts')
                     normal_diff = 1 - F.cosine_similarity(pred_n, gt_n_recomp, dim=-1)
                     if not opts.no_t_mask:
                         normal_diff = normal_diff * t_mask.squeeze(-1)
@@ -1669,7 +1968,43 @@ class HLBSTrainer:
                         targets.append(tgt)
                         n_per_topo += 1
                     target_batch = torch.stack(targets, dim=0)               # [B, J, 3]
-                    loss_dict["L_bind_reg"] = F.mse_loss(_joint_pos, target_batch.detach())
+                    # Exclude helper joints: their per-id GT = parent's per-id pos,
+                    # so MSE would lock helpers onto parent, killing the helper's
+                    # degree of freedom. Restrict L_bind_reg to non-helper joints.
+                    if self._helper_joint_idx:
+                        J_total = _joint_pos.shape[1]
+                        non_helper = [j for j in range(J_total)
+                                      if j not in self._helper_joint_idx]
+                        nh_idx = torch.tensor(non_helper, dtype=torch.long,
+                                              device=_joint_pos.device)
+                        loss_dict["L_bind_reg"] = F.mse_loss(
+                            _joint_pos.index_select(1, nh_idx),
+                            target_batch.index_select(1, nh_idx).detach())
+                    else:
+                        loss_dict["L_bind_reg"] = F.mse_loss(_joint_pos, target_batch.detach())
+
+                # ── Helper residual L2 regularization ────────────────────
+                # Helper joints predict parent-relative residual in model._get_bind_pose;
+                # L2 penalty keeps residuals small (helper stays near parent unless
+                # other losses justify a larger offset).
+                if (self._use_helpers and getattr(opts, 'lambda_helper_residual', 0) > 0
+                        and getattr(self.model, '_last_bind_pose_residual', None) is not None):
+                    res = self.model._last_bind_pose_residual               # [B, n_helpers, 3]
+                    loss_dict["L_helper_residual"] = (res ** 2).sum(dim=-1).mean()
+
+                # ── Bilateral mirror loss for L/R helper pairs ──────────
+                # L_mirror = MSE(pos[L], mirror_x(pos[R])), mirror_x([x,y,z]) = [-x, y, z].
+                # Encourages predicted helper positions to be left-right symmetric.
+                if (self._use_helpers and getattr(opts, 'lambda_mirror', 0) > 0
+                        and self._mirror_pair_idx is not None
+                        and _joint_pos is not None):
+                    L_idx = self._mirror_pair_idx[:, 0]
+                    R_idx = self._mirror_pair_idx[:, 1]
+                    pos_L = _joint_pos.index_select(1, L_idx)               # [B, P, 3]
+                    pos_R = _joint_pos.index_select(1, R_idx)               # [B, P, 3]
+                    mirror_R = pos_R.clone()
+                    mirror_R[..., 0] = -mirror_R[..., 0]                    # flip x
+                    loss_dict["L_mirror"] = F.mse_loss(pos_L, mirror_R)
 
                 # ── σ shrinkage penalty (active joints only if face-mask on) ──
                 if opts.lambda_sigma_reg > 0 and getattr(self.model, 'use_gmm_hybrid', False):
@@ -1801,6 +2136,8 @@ class HLBSTrainer:
                     "L_W_init": lambda_init,
                     "L_bind_init": lambda_init,
                     "L_bind_reg": opts.lambda_bind_reg,
+                    "L_helper_residual": getattr(opts, 'lambda_helper_residual', 0.0),
+                    "L_mirror": getattr(opts, 'lambda_mirror', 0.0),
                     "L_rwc_init": opts.lambda_rwc,
                     "L_rwc_min": opts.lambda_rwc,
                     "L_hier": opts.lambda_hier,

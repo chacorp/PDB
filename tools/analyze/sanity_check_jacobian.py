@@ -20,7 +20,9 @@ import numpy as np
 import torch
 from PIL import Image
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from utils.vis_loader import CheckpointVisLoader
 from utils.mesh_utils import compute_strain_signal, compute_jacobian_det, taubin_smooth_np
 from utils.matplotlib_rnd import vis_mesh_key_weight

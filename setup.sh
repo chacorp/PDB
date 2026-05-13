@@ -31,13 +31,13 @@ elif [[ $MODE == "1" ]]; then
     # ## comment out requirements.txt -> # numpy pyopengl opencv-python
     # cd mesh && make all && cd ..
     ## For the case when you have error installing pytorch3d ...
-    cp cpp_extension.py /usr/local/lib/python3.8/dist-packages/torch/utils/cpp_extension.py
+    cp legacy/cpp_extension.py /usr/local/lib/python3.8/dist-packages/torch/utils/cpp_extension.py
     pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.6"
     pip install easydict h5py protobuf==3.20.0
 elif [[ $MODE == "3" ]]; then
     pip install h5py
     pip install --upgrade setuptools wheel
-    cp cpp_extension.py /opt/conda/lib/python3.10/site-packages/torch/utils/cpp_extension.py
+    cp legacy/cpp_extension.py /opt/conda/lib/python3.10/site-packages/torch/utils/cpp_extension.py
     pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.8" --no-build-isolation
     #pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
     pip install cython gdist torch_geometric

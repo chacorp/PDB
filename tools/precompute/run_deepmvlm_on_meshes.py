@@ -32,7 +32,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 # NOTE: Deep-MVLM's sys.path is added LAZILY inside run_deepmvlm() to avoid
 # its `utils/` package shadowing our project's `utils/` (e.g., utils.remesh_utils).
 
@@ -141,7 +143,8 @@ def _normalize_unit(V):
 
 def render_landmarks_on_mesh(verts, faces, landmarks, save_path,
                              xrot=0, yrots=(-30, 0, 30),
-                             figsize_per_view=2.5, point_size=1.0):
+                             figsize_per_view=2.5, point_size=1.0,
+                             label_idx=False):
     """Render mesh + landmark overlay to a multi-view PNG."""
     V = _normalize_unit(np.asarray(verts, dtype=np.float64))
     L = (np.asarray(landmarks, dtype=np.float64) - np.asarray(verts, dtype=np.float64).mean(axis=0))
@@ -195,6 +198,11 @@ def render_landmarks_on_mesh(verts, faces, landmarks, save_path,
         ax.add_collection(coll)
         ax.scatter(Lndc[:, 0], Lndc[:, 1], s=point_size, c='red',
                    edgecolors='none', linewidths=0.0, zorder=10)
+        if label_idx:
+            for k in range(Lndc.shape[0]):
+                ax.text(Lndc[k, 0] + 0.009, Lndc[k, 1] + 0.009,
+                        str(k + 1), fontsize=3, color='darkred',
+                        ha='left', va='bottom', zorder=11)
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_xlim(cx - half, cx + half)
         ax.set_ylim(cy - half, cy + half)

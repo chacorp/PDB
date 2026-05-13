@@ -86,6 +86,10 @@ class HierarchicalLBS(nn.Module):
         self.register_buffer('B_inv',      rig.B_inv.to(device))        # [J, 4, 4]
         self.register_buffer('parent_idx', rig.parent_idx.to(device))   # [J]
         self.register_buffer('bind_pos',   rig.bind_pos.to(device))     # [J, 3]
+        _po = getattr(rig, 'process_order', None)
+        if _po is None:
+            _po = torch.arange(len(rig.joint_names), dtype=torch.int64)
+        self.register_buffer('process_order', _po.to(device))           # [J] long
 
         # Precompute T_bind_local[j] = B_inv[parent] @ inv(B_inv[j])
         B_inv_t  = rig.B_inv.to(device)                              # [J, 4, 4]
@@ -279,7 +283,7 @@ class HierarchicalLBS(nn.Module):
         T_bind_local = self.T_bind_local.unsqueeze(0).expand(B, -1, -1, -1)
 
         T_world_list = [None] * J
-        for j in range(J):
+        for j in self.process_order.tolist():
             p        = self.parent_idx[j].item()
             combined = torch.bmm(T_bind_local[:, j], T_delta[:, j])   # [B, 4, 4]
             if p == -1:
@@ -526,6 +530,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         joint_anchors: 'np.ndarray | torch.Tensor | None' = None,
         joint_offsets: 'np.ndarray | torch.Tensor | None' = None,
         attn_temperature_init: float = 0.1,
+        helper_joint_idx: 'list | None' = None,
     ):
         super().__init__()
 
@@ -570,6 +575,22 @@ class HierarchicalLBS_FullPred(nn.Module):
                   f'base_idx={self.base_joint_idx} ({self.joint_names[self.base_joint_idx]}) | '
                   f'r0={face_mask_r0}, r1={face_mask_r1}')
 
+        # ── Helper joint reparameterization (parent + residual) ──────────
+        # When helper_joint_idx is provided, bind_pose_net's raw output for
+        # helper joints is treated as a parent-relative residual instead of an
+        # absolute position. Net output for non-helpers stays absolute.
+        # The residual tensor [B, n_helpers, 3] is stored as a side-effect
+        # attribute (_last_bind_pose_residual) for L2 penalty in the trainer.
+        if helper_joint_idx is not None and len(helper_joint_idx) > 0:
+            h_t = torch.tensor(sorted(helper_joint_idx), dtype=torch.long, device=device)
+            self.register_buffer('helper_joint_idx_buf', h_t)
+            self._helper_joint_set = set(int(x) for x in helper_joint_idx)
+            print(f'[HLBS HelperReparam] enabled | {len(helper_joint_idx)} helpers '
+                  f'predicted as parent + residual')
+        else:
+            self._helper_joint_set = set()
+        self._last_bind_pose_residual = None
+
         # ── Anchor-pool bind-pose mode ───────────────────────────────────
         # Closed-form: bind_pos = pool_attn(NFS_feat, anchor) + offset
         # Anchors & offsets derived once on ICT mean (precompute_joint_anchors.py).
@@ -597,6 +618,10 @@ class HierarchicalLBS_FullPred(nn.Module):
         # ── Fixed hierarchy buffers ──────────────────────────────────────
         self.register_buffer('parent_idx', rig.parent_idx.to(device))
         self.register_buffer('bind_pos',   rig.bind_pos.to(device))
+        _po = getattr(rig, 'process_order', None)
+        if _po is None:
+            _po = torch.arange(len(rig.joint_names), dtype=torch.int64)
+        self.register_buffer('process_order', _po.to(device))
 
         # Log hierarchy verification
         _p = rig.parent_idx.numpy()
@@ -915,13 +940,32 @@ class HierarchicalLBS_FullPred(nn.Module):
         return torch.cat([top, bot], dim=-2)
 
     def _get_bind_pose(self, source_feat, adain_input=None):
-        """Net-based bind pose prediction (mode='net' path)."""
+        """Net-based bind pose prediction (mode='net' path).
+
+        With helper_joint_idx set, the bind_pose_net output for helper joints
+        is interpreted as a parent-relative RESIDUAL (additive). Helpers have
+        non-helper parents (by Option-A construction), so a single pass works:
+            joint_pos[helper] = joint_pos[parent_of_helper] + raw[helper]
+        The raw helper-only slice is stored as _last_bind_pose_residual for
+        the trainer's L2 regularization.
+        """
         B = source_feat.shape[0]
         J = self.num_joints
         if self.dfn_bind:
-            joint_pos = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
+            raw = self.bind_pose_net(source_feat).squeeze(1).reshape(B, J, 3)
         else:
-            joint_pos = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
+            raw = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
+
+        if self._helper_joint_set:
+            joint_pos = raw.clone()
+            for j in self._helper_joint_set:
+                p = int(self.parent_idx[j].item())
+                if p >= 0:
+                    joint_pos[:, j] = joint_pos[:, p] + raw[:, j]
+            self._last_bind_pose_residual = raw.index_select(1, self.helper_joint_idx_buf)
+        else:
+            joint_pos = raw
+            self._last_bind_pose_residual = None
         return self._build_B_inv(joint_pos), joint_pos
 
     def _get_bind_pose_anchor(self, source_vert, nfs_feat, bind_pos_cache=None):
@@ -955,7 +999,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         B, J, _, _ = T_delta.shape
         T_bind_local = self.T_bind_local.unsqueeze(0).expand(B, -1, -1, -1)
         T_world_list = [None] * J
-        for j in range(J):
+        for j in self.process_order.tolist():
             p = self.parent_idx[j].item()
             combined = torch.bmm(T_bind_local[:, j], T_delta[:, j])
             if p == -1:

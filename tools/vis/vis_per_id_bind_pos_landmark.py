@@ -26,7 +26,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from utils.rig_loader import load_rig
 
 
@@ -61,6 +63,10 @@ def _build(label, positions, color_rgb):
 
 
 def main():
+    for _lbl in ('maya_mean', 'landmark'):
+        _g = f'{{_PREFIX}}_{{_lbl}}'
+        if cmds.objExists(_g):
+            cmds.delete(_g)
     _build('maya_mean', _MEAN_POS, 6)    # blue
     _build('landmark',  _PRED_POS, 14)   # green
     print(f'Created: {{_PREFIX}}_maya_mean (blue)  +  {{_PREFIX}}_landmark (green)')
@@ -75,6 +81,36 @@ def _topo_for_id(id_name):
     if id_name.startswith('m--'):  return 'mf'
     if id_name.startswith('biwi_'):return 'biwi'
     return 'voca'
+
+
+_TEMPLATE_CACHE = {}   # (dataset, data_basedir) → list[(V, faces, name)]
+
+
+def _get_template_mesh(id_name, topo, data_basedir):
+    """Look up per-id (V, faces) by id_name. Returns (None, None) on miss."""
+    ds = {'ict': 'ict', 'mf': 'mf'}.get(topo)
+    if ds is None:
+        return None, None
+    key = (ds, data_basedir)
+    if key not in _TEMPLATE_CACHE:
+        from extract_nfs_feat import load_templates_ict, load_templates_mf
+        if ds == 'ict':
+            _TEMPLATE_CACHE[key] = load_templates_ict()
+        else:
+            _TEMPLATE_CACHE[key] = load_templates_mf(data_basedir)
+    for V, F_, n in _TEMPLATE_CACHE[key]:
+        if n == id_name:
+            return V, F_
+    return None, None
+
+
+def _write_obj(path, verts, faces):
+    """Simple OBJ writer (1-indexed faces)."""
+    with open(path, 'w') as f:
+        for v in verts:
+            f.write(f'v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n')
+        for tri in faces:
+            f.write(f'f {int(tri[0])+1} {int(tri[1])+1} {int(tri[2])+1}\n')
 
 
 def _scatter_views(mean_pos, pred_pos, joint_names, save_path,
@@ -133,7 +169,8 @@ def main():
                     default='maya_rig/hybrid/active_joints_manual.json',
                     help='Restrict scatter to face joints (cleaner view)')
     ap.add_argument('--maya',     action='store_true',
-                    help='Also emit per-id Maya import script')
+                    help='Also emit per-id Maya import script + per-id template .obj')
+    ap.add_argument('--data_basedir', type=str, default='/data/sihun')
     args = ap.parse_args()
 
     rig = load_rig(args.rig_path, device='cpu')
@@ -190,21 +227,37 @@ def main():
         _scatter_views(mean_GT, per_id, rig.joint_names, png_path, face_idx=face_idx)
         print(f'  saved → {png_path}')
 
-        # Maya script
+        # Maya script + OBJ
         if args.maya:
             mean_d = {n: mean_GT[i].tolist() for i, n in enumerate(rig.joint_names)}
             pred_d = {n: per_id[i].tolist()  for i, n in enumerate(rig.joint_names)}
+            # Reorder joint creation by topological order so parents are built first
+            # (rig may have parent_idx > self_idx after helper reparenting).
+            _po = getattr(rig, 'process_order', None)
+            if _po is not None:
+                _po = _po.cpu().numpy().tolist()
+            else:
+                _po = list(range(len(rig.joint_names)))
+            names_ordered   = [rig.joint_names[i] for i in _po]
+            parents_ordered = [parent_names[i]    for i in _po]
             py = _MAYA_TEMPLATE.format(
                 mean_positions=mean_d,
                 pred_positions=pred_d,
-                joint_names=rig.joint_names,
-                parent_names=parent_names,
+                joint_names=names_ordered,
+                parent_names=parents_ordered,
                 prefix=idn.replace('--', '_').replace('-', '_'),
             )
             py_path = os.path.join(args.out_dir, f'{idn}_bind_pos_maya.py')
             with open(py_path, 'w') as f:
                 f.write(py)
             print(f'  saved → {py_path}')
+
+            # OBJ for the per-id mesh (for Maya import)
+            V_id, faces_id = _get_template_mesh(idn, topo, args.data_basedir)
+            if V_id is not None:
+                obj_path = os.path.join(args.out_dir, f'{idn}_template.obj')
+                _write_obj(obj_path, V_id, faces_id)
+                print(f'  saved → {obj_path}')
 
         print()
 
