@@ -6,8 +6,8 @@ Timeline (video frames):
   [30, 49]  20-frame cosine zoom-out + weight face / ctrl-pts fade in
   [50, 139] Wide 3-face view: left=skin | middle=weight colormap | right=ctrl spheres
   [140,159] Simultaneous: weight face + ctrl-pts fade out AND camera cosine zoom back in;
-            mesh vertices lerp data[140]→data[0]
-  [160+]    Hold at frame 0 close-up (35 extra frames)
+            mesh animation continues uninterrupted
+  [160,199] Close-up, animation plays to the end
 
 Pre-requisite:
     python save_weight_vis_data.py   # saves key_weight.npy + key_d/*.npy
@@ -56,8 +56,8 @@ FADE_OUT_START = 140   # weight + ctrl start fading out (simultaneous with zoom-
 FADE_OUT_END   = 160   # fully gone (vanished by this frame)
 RETURN_START   = 140   # camera zoom-in + mesh-lerp begins (simultaneous with fade-out)
 RETURN_END     = 160   # at frame-0 position
-TOTAL_FRAMES   = 195   # 5 hold frames after return
-MAX_DATA       = 180   # last available data frame
+TOTAL_FRAMES   = 200
+MAX_DATA       = 200   # last available data frame
 
 # ── Scene layout (matching dynamic_6faces X spacing) ───────────────────────────
 FACE_SPACING = 0.65
@@ -96,7 +96,7 @@ CFG = RenderConfig(
     rim_pos=(  0.2,  4.0, -3.5), rim_radius=0.4,  rim_intensity=20.0,
 )
 
-DEBUG_FRAMES = [0, 30, 49, 90, 140, 150, 159, 160, 194]
+DEBUG_FRAMES = [0, 30, 49, 90, 140, 150, 159, 160, 180, 199]
 
 
 # ── Easing / timeline helpers ───────────────────────────────────────────────────
@@ -141,14 +141,7 @@ def wc_alpha_at(frame: int) -> float:
 
 
 def mesh_verts_at(frame: int, verts_all: list) -> np.ndarray:
-    """Vertex positions with cosine lerp back to frame 0 during return phase."""
-    if frame < RETURN_START:
-        return verts_all[min(frame, MAX_DATA)]
-    if frame < RETURN_END:
-        t = (frame - RETURN_START) / (RETURN_END - RETURN_START)
-        e = _ease(t)
-        return verts_all[RETURN_START] * (1.0 - e) + verts_all[0] * e
-    return verts_all[0]
+    return verts_all[min(frame, len(verts_all) - 1)]
 
 
 # ── Color maps ──────────────────────────────────────────────────────────────────
@@ -451,7 +444,7 @@ def render_all(debug: bool = False):
         cam_dist, cam_tx = camera_at(i)
         alpha_wc         = wc_alpha_at(i)
         verts            = mesh_verts_at(i, verts_all)
-        kd               = key_d_all[min(i, MAX_DATA)]
+        kd               = key_d_all[min(i, len(key_d_all) - 1)]
 
         img = render_frame(
             verts, faces, vertex_rgb, kd, cage_rgb,
