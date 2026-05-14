@@ -113,6 +113,56 @@ def render_joint_weight(verts, faces, W, joint_idx, joint_name, save_path,
     plt.close(fig)
 
 
+# ── Bind pose viz (predicted joint positions overlaid on mesh) ──────────────
+
+def render_bind_pose(verts, faces, joint_pos, joint_names, save_path,
+                     active_idx=None, point_size=18.0):
+    """Frontal (XY) + Side (ZY) scatter of predicted joint_pos on mesh wireframe.
+
+    verts      : [N, 3]
+    faces      : [F, 3]
+    joint_pos  : [J, 3]   predicted bind pose from model
+    joint_names: list[str]
+    active_idx : optional list of face joint indices (other joints rendered fainter)
+    """
+    fig = plt.figure(figsize=(8, 4))
+
+    # Mesh wireframe (light gray) + joint scatter
+    for ax_i, axis_x, axis_y, xlabel, ylabel, title in [
+        (1, 0, 1, 'x', 'y', 'Frontal (XY)'),
+        (2, 2, 1, 'z', 'y', 'Side (ZY)'),
+    ]:
+        ax = fig.add_subplot(1, 2, ax_i)
+        polys = verts[faces][:, :, [axis_x, axis_y]]
+        pc = PolyCollection(polys, facecolors='#dddddd', edgecolors='#bbbbbb',
+                            linewidths=0.08, alpha=0.35, zorder=1)
+        ax.add_collection(pc)
+
+        # Active vs non-active joints
+        J = joint_pos.shape[0]
+        active_mask = np.zeros(J, dtype=bool)
+        if active_idx is not None and len(active_idx) > 0:
+            active_mask[np.asarray(active_idx, dtype=int)] = True
+        else:
+            active_mask[:] = True
+
+        non_act = ~active_mask
+        ax.scatter(joint_pos[non_act, axis_x], joint_pos[non_act, axis_y],
+                   s=point_size * 0.5, c='#9ca3af', alpha=0.5,
+                   edgecolors='k', linewidths=0.2, zorder=5)
+        ax.scatter(joint_pos[active_mask, axis_x], joint_pos[active_mask, axis_y],
+                   s=point_size, c='#e63946', alpha=0.95,
+                   edgecolors='k', linewidths=0.3, zorder=10)
+
+        ax.set_aspect('equal'); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=9)
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
 # ── Template loaders ─────────────────────────────────────────────────────────
 
 def load_template(dataset, identity_idx=0, data_basedir='/data/inyup'):
@@ -236,6 +286,11 @@ def main():
                         help="Comma-separated Y rotation angles")
     parser.add_argument("--view_xrot", type=float, default=0,
                         help="X rotation (0 = normal orientation)")
+    parser.add_argument("--datasets", type=str, default='ict:0,mf:12,biwi:1,coma:6',
+                        help='Comma-separated dataset:idx pairs '
+                             '(e.g. ict:2,mf:12). Overrides default dataset_configs.')
+    parser.add_argument("--save_bind_pose", action='store_true',
+                        help='Also render predicted bind pose (joint_pos) overlaid on mesh.')
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -250,14 +305,28 @@ def main():
     # Load model — replicate training-time options EXACTLY so eval path matches.
     rig = load_rig(opts['rig_path'])
 
-    # Resolve face_mask config from active_joints_json (if used in training)
+    # Peek at checkpoint state_dict to recover the EXACT face_joint_idx the
+    # checkpoint was trained with (avoids size mismatch when active_joints_json
+    # has been modified since training).
+    _ckpt_path_peek = (os.path.join(args.ckpt_dir, 'model_hlbs_best.pth')
+                       if args.epoch == 'best'
+                       else os.path.join(args.ckpt_dir, f'model_hlbs_{int(args.epoch):03d}.pth'))
+    _sd_peek = torch.load(_ckpt_path_peek, map_location='cpu', weights_only=False)
+    _face_idx_ckpt = (_sd_peek['face_joint_idx'].tolist()
+                      if 'face_joint_idx' in _sd_peek else None)
+
+    # Resolve face_mask config: prefer ckpt buffer; fall back to active_joints_json.
     _face_idx, _base_idx = None, None
     _aj_path = opts.get('active_joints_json')
     if _aj_path and os.path.exists(_aj_path):
         with open(_aj_path) as f:
             _aj = yaml.safe_load(f) if _aj_path.endswith(('.yml', '.yaml')) else __import__('json').load(f)
         _face_idx = _aj['face_joint_idx']
-        _base_idx = _aj['base_joint_idx']
+        _base_idx = _aj.get('base_joint_idx')
+    if _face_idx_ckpt is not None:
+        _face_idx = _face_idx_ckpt
+        print(f"[vis] using face_joint_idx from ckpt ({len(_face_idx)} joints) — "
+              f"avoids mismatch with current {_aj_path}")
 
     # Resolve sigma_targets (per-joint init if set in training)
     _sig = None
@@ -313,13 +382,15 @@ def main():
     joint_names = model.joint_names
     nfs_feat_dir = opts.get('nfs_feat_dir', None)
 
-    # Dataset configs: (dataset_key, identity_idx, display_name)
-    dataset_configs = [
-        ('ict',  0,  'ICT'),
-        ('mf',   12, 'MF'),       # test identity: m--20190828--1318--002645310--GHS
-        ('biwi', 1,  'BIWI'),     # F2 (test set)
-        ('coma', 6,  'COMA'),     # FaceTalk_170809_00138_TA (test set)
-    ]
+    # Dataset configs: parsed from --datasets flag (dataset_key:idx[, ...])
+    dataset_configs = []
+    for pair in args.datasets.split(','):
+        pair = pair.strip()
+        if not pair: continue
+        ds_key, _id_idx = pair.split(':')
+        dataset_configs.append((ds_key.strip(), int(_id_idx),
+                                ds_key.strip().upper() + f'_id{_id_idx}'))
+    print(f"Dataset configs: {dataset_configs}")
 
     base_out_dir = os.path.join(args.ckpt_dir, f'weight_vis_{args.epoch}_individual')
     os.makedirs(base_out_dir, exist_ok=True)
