@@ -7,3 +7,6 @@
 apt-get install -y llvm-6.0 freeglut3 freeglut3-dev libosmesa6-dev
 pip install pyrender ffmpeg-python
 pip install pyopengl==3.1.4
+
+## for mitsuba renderer
+# apt-get update -y && apt-get install -y libnvidia-gl-535 ffmpeg && pip install ffmpeg-python mitsuba numpy==1.26.4

@@ -1,136 +1,93 @@
 import os
 import torch
-import torch.nn as nn
 import numpy as np
-import subprocess
-import trimesh
-import time
-from tqdm import tqdm
-# import mediapy as mp
 import tempfile
 import pickle
-
+import trimesh
+from concurrent.futures import ThreadPoolExecutor
 from subprocess import call
-os.environ['PYOPENGL_PLATFORM'] = 'osmesa' #'osmesa' # 
-# os.environ['PYOPENGL_EGL_DEVICE_ID'] = 'egl'
-import pyrender
-try:
-    import cv2
-except:
-    import os
-    # os.sys.cmd("pip install opencv-python==4.5.5.64")
-    exit(f"install opencv-python==4.5.5.64")
+from tqdm import tqdm
+from glob import glob
+import cv2
 
 import sys
 from pathlib import Path
 abs_path = str(Path.cwd().parents[0].absolute())
-sys.path+=[abs_path, f'{abs_path}/utils']
+sys.path += [abs_path, f'{abs_path}/utils']
 
-from glob import glob
-import matplotlib.pyplot as plt
-import torch.nn.functional as F
-from utils.matplotlib_rnd import xrotate
 from utils.remesh_utils import ICT_face_model
-import ffmpeg
 
-def render_mesh_helper(\
-                       mesh,\
-                       t_center, \
-                       camera_params, \
-                       rot=np.zeros(3), \
-                       tex_img=None, \
-                       z_offset=0, \
-                       vertex_color=None,
-                       H=800,
-                       W=800):
+from pytorch3d.structures import Meshes
+from pytorch3d.renderer import (
+    look_at_view_transform,
+    PerspectiveCameras,
+    RasterizationSettings,
+    MeshRenderer,
+    MeshRasterizer,
+    HardPhongShader,
+    DirectionalLights,
+    TexturesVertex,
+)
 
-    frustum = {'near': 0.001, 'far': 10.0, 'height': H, 'width': W}
-    
-    # mesh_copy = trimesh.Trimesh(vertices=mesh.vertices - np.array([0, -0.15, 1.5]), faces=mesh.faces)
-    mesh_copy = trimesh.Trimesh(vertices=mesh.vertices - np.array([0, 0, 3.6]), faces=mesh.faces)
-    # mesh_copy = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces)
-    mesh_copy.vertices[:] = cv2.Rodrigues(rot)[0].dot((mesh_copy.vertices-t_center).T).T+t_center
-    # intensity = 2.0
-    intensity = 1.0
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+RENDER_BATCH_SIZE = 4  # frames rendered together per GPU call
 
-    primitive_material = pyrender.material.MetallicRoughnessMaterial(
-                alphaMode='BLEND',
-                # baseColorFactor=[0.8, 0.8, 0.8, 1.0],
-                baseColorFactor=[0.3, 0.3, 0.3, 1.0],
-                metallicFactor=0.8, 
-                roughnessFactor=0.8, 
-            )
-    
-    tri_mesh = trimesh.Trimesh(vertices=mesh_copy.vertices, faces=mesh_copy.faces, vertex_colors=vertex_color)
-    # tri_mesh = trimesh.Trimesh(vertices=mesh_copy.vertices, faces=mesh_copy.faces, vertex_colors=vertex_color)
-    render_mesh = pyrender.Mesh.from_trimesh(tri_mesh, material=None, smooth=True)
-    # render_mesh = pyrender.Mesh.from_trimesh(tri_mesh, material=primitive_material,smooth=True)
+def build_renderer(H, W, camera_params, device):
+    """Build a pytorch3d MeshRenderer (CUDA). Reuse across all frames."""
+    # Camera at (0,0,1) looking toward origin — matches the original pyrender setup
+    R, T = look_at_view_transform(
+        eye=torch.tensor([[0., 0., 1.]]),
+        at=torch.tensor([[0., 0., 0.]]),
+        up=torch.tensor([[0., 1., 0.]])
+    )
+    cameras = PerspectiveCameras(
+        focal_length=((float(camera_params['f'][0]), float(camera_params['f'][1])),),
+        principal_point=((float(camera_params['c'][0]), float(camera_params['c'][1])),),
+        image_size=((H, W),),
+        in_ndc=False,
+        R=R, T=T,
+        device=device,
+    )
+    raster_settings = RasterizationSettings(
+        image_size=(H, W),
+        blur_radius=0.0,
+        faces_per_pixel=1,
+        cull_backfaces=False,
+    )
+    # Strong ambient + front key light approximates the original 5-directional setup
+    lights = DirectionalLights(
+        ambient_color=((0.4, 0.4, 0.4),),
+        diffuse_color=((1.0, 1.0, 1.0),),
+        specular_color=((0.1, 0.1, 0.1),),
+        direction=((0., 0., -1.),),
+        device=device,
+    )
+    return MeshRenderer(
+        rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
+        shader=HardPhongShader(device=device, cameras=cameras, lights=lights),
+    )
 
-    if True: # background black
-        scene = pyrender.Scene(ambient_light=[.2, .2, .2], bg_color=[0, 0, 0])
-    else:
-        scene = pyrender.Scene(ambient_light=[.2, .2, .2], bg_color=[255, 255, 255])
-    
-    camera = pyrender.IntrinsicsCamera(fx=camera_params['f'][0],
-                                      fy=camera_params['f'][1],
-                                      cx=camera_params['c'][0],
-                                      cy=camera_params['c'][1],
-                                      znear=frustum['near'],
-                                      zfar=frustum['far'])
-    # pc = pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=1.414)
-    # camera = pyrender.OrthographicCamera(xmag=1.0, ymag=1.0)
 
-    scene.add(render_mesh, pose=np.eye(4))
-        
-    # #camera_pose = np.eye(4)
-    # camera_pose = xrotate(-6)
-    # camera_pose[:3,3] = np.array([0, 0.32, 1.0+z_offset])
-    # # import pdb; pdb.set_trace()
-    # scene.add(camera, pose=camera_pose)
-    
-    camera_pose = np.eye(4)
-    camera_pose[:3,3] = np.array([0, 0, 1.0-z_offset])
-    scene.add(camera, pose=[[1, 0, 0, 0],
-                            [0, 1, 0, 0],
-                            [0, 0, 1, 1],
-                            [0, 0, 0, 1]])
-
-    # angle = np.pi / 6.0
-    angle = np.pi / 4.0
-    
-    pos = camera_pose[:3,3]
-    light_color = np.array([1.0, 1.0, 1.0]) #* 0.8
-    light = pyrender.DirectionalLight(color=light_color, intensity=intensity)
-
-    light_pose = np.eye(4)
-    light_pose[:3,3] = pos
-    scene.add(light, pose=light_pose.copy())
-    
-    light_pose[:3,3] = cv2.Rodrigues(np.array([angle, 0, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    light_pose[:3,3] = cv2.Rodrigues(np.array([-angle, 0, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    light_pose[:3,3] = cv2.Rodrigues(np.array([0, -angle, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    light_pose[:3,3] = cv2.Rodrigues(np.array([0, angle, 0]))[0].dot(pos)
-    scene.add(light, pose=light_pose.copy())
-
-    flags = pyrender.RenderFlags.SKIP_CULL_FACES
-    # flags = pyrender.RenderFlags.NONE
-#     flags = pyrender.RenderFlags.ALL_WIREFRAME # | pyrender.RenderFlags.FLAT
-    
-    
-    # try:
-    r = pyrender.OffscreenRenderer(viewport_width=frustum['width'], viewport_height=frustum['height'])
-    color, _ = r.render(scene, flags=flags)
-    # except:
-    #     print('pyrender: Failed rendering frame')
-    #     color = np.zeros((frustum['height'], frustum['width'], 3), dtype='uint8')
-
-    return color[..., ::-1]
+def render_batch_gpu(verts_list, faces_t, renderer, device):
+    """Render B frames in one GPU call. Returns list of BGR uint8 arrays."""
+    B = len(verts_list)
+    verts_t = torch.stack([
+        torch.tensor(v, dtype=torch.float32, device=device) for v in verts_list
+    ])  # (B, V, 3)
+    colors = torch.full_like(verts_t, 0.7)  # neutral gray
+    faces_batch = faces_t.expand(B, -1, -1)
+    meshes = Meshes(
+        verts=verts_t,
+        faces=faces_batch,
+        textures=TexturesVertex(verts_features=colors),
+    )
+    with torch.no_grad():
+        images = renderer(meshes)  # (B, H, W, 4) RGBA float [0,1]
+    out = []
+    for i in range(B):
+        rgb = (images[i, ..., :3].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        out.append(rgb[..., ::-1])  # RGB→BGR for cv2
+    return out
 
 def get_mesh(selection, SELECT_MESH=0):
     if selection=='ict'or selection=='ict-cap':
@@ -261,45 +218,36 @@ def render_sequence(
         
     tmp_video_file_pred = tempfile.NamedTemporaryFile('w', suffix='.mp4', dir=savepath_name)
     writer_pred = cv2.VideoWriter(tmp_video_file_pred.name, cv2.VideoWriter_fourcc(*'mp4v'), fps, (W, H), True)
-    
-    # render video
-    frames = []
-    # for i_frame in tqdm(range(num_frames)):
-    for i_frame, predicted_vertices_npy in tqdm(enumerate(frame_vertices)):
-        predicted_vertices = np.load(predicted_vertices_npy)
-        #render_mesh = Mesh(predicted_vertices[i_frame], template.f)
-        # render_mesh = trimesh.Trimesh(vertices=predicted_vertices[i_frame], faces=template.faces)
-        # render_mesh = trimesh.Trimesh(vertices=predicted_vertices*0.1, faces=tmp_f)
-        render_mesh = trimesh.Trimesh(vertices=predicted_vertices*0.5, faces=tmp_f)
-        pred_img = render_mesh_helper(render_mesh, center, camera_params, vertex_color=vertex_color, z_offset=1.3, H=H,W=W)
-        pred_img = pred_img.astype(np.uint8)
-        
-        # cv2.imwrite(
-        #     os.path.join(savepath_name, f'{i_frame:06d}.png'), 
-        #     cv2.cvtColor(pred_img, cv2.COLOR_RGB2BGR)
-        # )
-        writer_pred.write(pred_img)
-        # frames.append(pred_img)
-    # frames = np.stack(frames, axis=0)
+
+    # Build pytorch3d renderer once (CUDA)
+    renderer = build_renderer(H, W, camera_params, DEVICE)
+    # Faces never change — upload to GPU once
+    faces_t = torch.tensor(tmp_f, dtype=torch.int64, device=DEVICE).unsqueeze(0)  # (1, F, 3)
+    vertex_offset = np.array([0.0, 0.0, 3.6], dtype=np.float32)
+
+    def _load(path):
+        return np.load(path).astype(np.float32)
+
+    batch_verts = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(_load, p) for p in frame_vertices]
+        for future in tqdm(futures):
+            verts = future.result() * 0.5 - vertex_offset
+            batch_verts.append(verts)
+            if len(batch_verts) == RENDER_BATCH_SIZE:
+                for frame in render_batch_gpu(batch_verts, faces_t, renderer, DEVICE):
+                    writer_pred.write(frame)
+                batch_verts = []
+        # flush remaining frames
+        if batch_verts:
+            for frame in render_batch_gpu(batch_verts, faces_t, renderer, DEVICE):
+                writer_pred.write(frame)
 
     writer_pred.release()
     cmd = ('ffmpeg' + ' -i {0} -pix_fmt yuv420p -qscale 0 {1}'.format(
        tmp_video_file_pred.name, video_fname_pred
     )).split()
     call(cmd)
-
-
-    
-    # write
-    #tmp_video_file = tempfile.NamedTemporaryFile('w', suffix='.mp4', dir=output_path)
-    #mp.write_video(f"{tmp_video_file.name}", frames, fps=30)
-    
-    # # ffmpeg video
-    # #video_filename = os.path.join(output_path, 'tmp.mp4')
-    # filename=filename+'.mp4'
-    # video_filename = os.path.join(output_path, filename)
-    # #cmd = f'ffmpeg -y -i {tmp_video_file.name} -pix_fmt yuv420p -qscale 0 {video_filename}'
-    # #call(cmd, shell=True)
 
     # ########### mediapy #################################
     # mp.write_video(f"{video_filename}", frames, fps=30)

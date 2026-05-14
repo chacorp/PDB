@@ -8,7 +8,7 @@ SSS note: Mitsuba 3.6.1 principled BSDF approximates SSS via `flatness`
 
 Install:
     # use docker jeolpyeoni0/gltorch:cu124-vessl
-    # may need to run:  apt-get update -Y && apt-get install libnvidia-gl-535 ffmpeg && pip install ffmpeg-python mitsuba numpy==1.26.4
+    # may need to run: apt-get update -y && apt-get install -y libnvidia-gl-535 ffmpeg && pip install ffmpeg-python mitsuba numpy==1.26.4
 
     ##### deprecated ########################################
     # may need to run: apt-get update && apt-get install libnvidia-gl-{*} 
