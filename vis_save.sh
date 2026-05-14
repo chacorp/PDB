@@ -1,3 +1,4 @@
+python vis_CBD.py --version 5 --ckpt ./ckpts_CBD/2026-04-27-15-36-49-NGBCv5 --align_latent --continue_ckpt --start_epoch 990
 
 # python vis_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-11-05-16-32-53-NGBCv5 --align_latent --continue_ckpt --start_epoch 100
 # python vis_CBD.py --version 5 --ckpt ./ckpts_CBD/2025-11-08-22-53-46-NGBCv5 --align_latent --continue_ckpt --start_epoch 400

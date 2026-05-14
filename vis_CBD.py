@@ -136,7 +136,11 @@ class Pipeline():
         self.device = opts.device
         
     def get_mesh(self, selection, dataset, SELECT_MESH):
-        if selection=='ict'or selection=='ict-cap':
+        if selection == 'ict-neutral':
+            ict_face = ICT_face_model()
+            mesh_v = ict_face.neutral_verts.squeeze()
+            return mesh_v, ict_face.faces, 'neutral'
+        elif selection=='ict'or selection=='ict-cap':
             ict_face = ICT_face_model()
             id_vecs = torch.load(f'./ict_face_pt/ict_id_vecs_test.pt').numpy()
             id_disps = ict_face.get_id_disp(id_vecs[SELECT_MESH])
@@ -169,17 +173,21 @@ class Pipeline():
         
     def save_test_frames(self):
         src_tgt_set_list = [
-            [4, 12, 6, 9, 0],
-            [4, 12, 4, 12, 0],
-            [4, 12, 4, 0, 0],
-            [4, 12, 6, 0, 0],
+            # [6, 0, 1, 12, 1],  # ict-cap-ID_000_test-to-biwi-ID_012_test_01-masked
+            # [6, 0, 3, 6, 1],   # ict-cap-ID_000_test-to-coma-ID_006_test_01-masked
+            # [6, 0, 3, 8, 1],   # ict-cap-ID_000_test-to-coma-ID_008_test_01-masked
+            [6, 0, 7, 0, 1],   # ict-cap-ID_000_test-to-ict-neutral
+            [4, 12, 6, 0, 0],  # mf_ROM_test-to-ict-cap_test-ID_000
+            [4, 12, 6, 9, 0],  # mf_ROM_test-to-ict-cap_test-ID_009
+            [4, 12, 4, 12, 0], # mf_ROM_test-to-mf_ROM_test
+            [4, 12, 4, 0, 0],  # mf_ROM_test-to-mf_ROM_train
             [6, 0, 6, 0, 1],
             [6, 0, 6, 3, 1],
             [6, 0, 6, 9, 1],
+            [6, 0, 4, 12, 1],
             [6, 2, 6, 2, 0],
             [6, 2, 6, 0, 0],
             [6, 2, 6, 5, 0],
-            [6, 0, 4, 12, 1],
             [6, 2, 4, 12, 0],
         ]
         for src_tgt_set in src_tgt_set_list:
@@ -205,10 +213,10 @@ class Pipeline():
         ##########################################################################################################
         
         
-        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict','ict-cap'] # 0 1 2 3 4 5 6
-        
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict','ict-cap','ict-neutral'] # 0 1 2 3 4 5 6 7
+
         src_selection = data_name_list[SRC_SELECT_DATA]
-        
+
         src_dataset = EvalDataset(
             data_name=src_selection, 
             toggle=False, 
@@ -252,11 +260,14 @@ class Pipeline():
         ##########################################################################################################
         tgt_selection = data_name_list[TGT_SELECT_DATA]
 
-        tgt_dataset = EvalDataset(
-            data_name=tgt_selection,
-            toggle=False,
-            ict_cap_id_num=TGT_SELECT_mesh
-        ) # if eve-s01
+        if tgt_selection == 'ict-neutral':
+            tgt_dataset = None
+        else:
+            tgt_dataset = EvalDataset(
+                data_name=tgt_selection,
+                toggle=False,
+                ict_cap_id_num=TGT_SELECT_mesh
+            )
 
         tgt_v, tgt_f, tgt_mesh_id = self.get_mesh(tgt_selection, tgt_dataset, TGT_SELECT_mesh)
         # if 'mf' in tgt_selection:
@@ -295,10 +306,16 @@ class Pipeline():
         
         ckpt_path = self.opts.ckpt.split('/')[-1]
         if src_selection == 'ict-cap':
-            file_name = f'{src_selection}-ID_{SRC_SELECT_MESH:03d}_test-to-{tgt_selection}-ID_{TGT_SELECT_mesh:03d}_test_{EXP_NUM:02d}'
+            if tgt_selection == 'ict-neutral':
+                file_name = f'{src_selection}-ID_{SRC_SELECT_MESH:03d}_test-to-{tgt_selection}_{EXP_NUM:02d}'
+            else:
+                file_name = f'{src_selection}-ID_{SRC_SELECT_MESH:03d}_test-to-{tgt_selection}-ID_{TGT_SELECT_mesh:03d}_test_{EXP_NUM:02d}'
         else:
-            if 'ict' in  tgt_selection:
-                file_name = f'{src_selection}_test-to-{tgt_selection}_test-ID_{TGT_SELECT_mesh:03d}'
+            if 'ict' in tgt_selection:
+                if tgt_selection == 'ict-neutral':
+                    file_name = f'{src_selection}_test-to-{tgt_selection}'
+                else:
+                    file_name = f'{src_selection}_test-to-{tgt_selection}_test-ID_{TGT_SELECT_mesh:03d}'
             else:
                 if 'mf' in tgt_selection:
                     if TGT_SELECT_mesh==12:
@@ -309,11 +326,8 @@ class Pipeline():
                         file_name = f'{src_selection}_test-to-{tgt_selection}_train'
                 else:
                     file_name = f'{src_selection}_test-to-{tgt_selection}_test'
-                # file_name = f'{src_selection}_test-to-{tgt_selection}_test'
-                # file_name = f'{src_selection}_test-to-{tgt_selection}_val'
-                # file_name = f'{src_selection}_test-to-{tgt_selection}_train'
                 
-        self.opts.log_dir = './vis_CBD/' + opts.ckpt.split('/')[-1]+'/'+file_name
+        self.opts.log_dir = './vis_CBD/' + self.opts.ckpt.split('/')[-1]+'/'+file_name
         if self.opts.use_t_mask:
             self.opts.log_dir = self.opts.log_dir + '-masked'
         os.makedirs(self.opts.log_dir, exist_ok=True)
@@ -322,7 +336,7 @@ class Pipeline():
         os.makedirs(self.opts.log_dir_vert, exist_ok=True)        
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
         
-        SELF_RETARGET = SRC_SELECT_MESH==TGT_SELECT_mesh
+        SELF_RETARGET = (SRC_SELECT_MESH==TGT_SELECT_mesh) and (SRC_SELECT_DATA==TGT_SELECT_DATA)
         if SELF_RETARGET and self.opts.save_gt:
             GT_file_name = f'GT-{src_selection}_test-to-{tgt_selection}_test_{EXP_NUM:02d}'
             GT_log_dir = './vis_CBD/'+ GT_file_name
@@ -387,8 +401,8 @@ class Pipeline():
             losses_val["MSE-out"] = 0.0
             
         #mesh_data = src_dataset.data_name
-        SELF_RETARGET = SRC_SELECT_MESH==TGT_SELECT_mesh
-        
+        SELF_RETARGET = (SRC_SELECT_MESH==TGT_SELECT_mesh) and (SRC_SELECT_DATA==TGT_SELECT_DATA)
+
         if self.opts.version==0:
             if opts.NFR==False:
                 if SELF_RETARGET:
@@ -615,92 +629,7 @@ class Pipeline():
                             for b_idx in range(CurrBS):
                                 save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
                                 np.save(save_out_name, pred_outputs_np[b_idx])
-            else:
-                ## from NFR checkpoint
-                if SELF_RETARGET:
-                    print('self-retargeting! (src == tgt)')
-
-                    pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
-                    for index, batch in pbar:
-                        if index==0:
-                            src_verts = batch.template[0]
-                            src_faces = batch.faces[0]
-                            src_m = trimesh.Trimesh(
-                                vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
-                            )
-
-                            src_img = self.model.renderer.render_img(src_m).float().to(device)
-                            src_img_feat = self.model.get_img_feat(src_img)[None]
-                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                            src_operators = self.model.get_mesh_operators(src_m)
-                        else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:            
-                                src_verts = batch.template[0]
-                                src_faces = batch.faces[0]
-                                src_m = trimesh.Trimesh(
-                                    vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
-                                )
-
-                                src_img = self.model.renderer.render_img(src_m).float().to(device)
-                                src_img_feat = self.model.get_img_feat(src_img)[None]
-                                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                                src_operators = self.model.get_mesh_operators(src_m)
-
-                        with torch.no_grad():
-                            inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
-
-                            ## get expression
-                            self.model.model.update_precomputes(src_dfn_info)
-                            pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
-                            pred_outputs, _, _ = self.model.calc_new_mesh(
-                                src_verts, src_faces, pred_exp, src_operators, src_dfn_info, src_img
-                            )
-                            pred_outputs_np = pred_outputs.detach().cpu().numpy()
-
-                            CurrBS=pred_outputs_np.shape[0]
-                            for b_idx in range(CurrBS):
-                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
-                                np.save(save_out_name, pred_outputs_np[b_idx])
-                else:
-                    print('cross-retargeting!')
-                    tgt_m = trimesh.Trimesh(vertices=tgt_v, faces=tgt_f)
-                    tgt_dfn_info = nfr_utils.get_dfn_info(tgt_m, map_location=device)
-                    tgt_verts = tgt_v_th[0]
-                    tgt_faces = torch.from_numpy(tgt_m.faces).to(device)
-                    tgt_img = trainer.model.renderer.render_img(tgt_m).float().to(device)
-                    tgt_operators = trainer.model.get_mesh_operators(tgt_m)
-                    
-                    pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
-                    for index, batch in pbar:
-                        if index==0:
-                            src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-
-                            src_img = trainer.model.renderer.render_img(src_m).float().to(device)
-                            src_img_feat = trainer.model.get_img_feat(src_img)[None]
-                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                        else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
-                                src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
-
-                                src_img = trainer.model.renderer.render_img(src_m).float().to(device)
-                                src_img_feat = trainer.model.get_img_feat(src_img)[None]
-                                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-
-                        with torch.no_grad():
-                            inputs_v = trainer.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
-
-                            ## get expression
-                            trainer.model.model.update_precomputes(src_dfn_info)
-                            pred_exp = trainer.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
-                            pred_outputs, _, _ = trainer.model.calc_new_mesh(
-                                tgt_verts, tgt_faces, pred_exp, tgt_operators, tgt_dfn_info, tgt_img
-                            )
-                            pred_outputs_np = pred_outputs.detach().cpu().numpy()
-
-                            CurrBS=pred_outputs_np.shape[0]
-                            for b_idx in range(CurrBS):
-                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
-                                np.save(save_out_name, pred_outputs_np[b_idx])
+            
         elif self.opts.version == 1:
             if SELF_RETARGET:
                 print('self-retargeting! (src == tgt)')
@@ -855,7 +784,7 @@ if __name__ == "__main__":
     
     # load training configs from checkpoints (yaml)
     if opts.version==0:
-        opts.config='config/train.yml'
+        opts.config='config/train_NFS.yml'
         opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
     else:
         config = f'{opts.ckpt}/train_opts.yml'
@@ -866,7 +795,7 @@ if __name__ == "__main__":
     opts_yaml.update(opts_)
     opts = argparse.Namespace(**opts_yaml)
     opts.use_t_mask = True
-    opts.continue_ckpt=False
+    # opts.continue_ckpt=False
     
     ## helper for loading NFR ans NFS
     if opts.NFR:
