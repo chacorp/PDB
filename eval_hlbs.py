@@ -310,6 +310,25 @@ class HLBSEvaluator:
             _face_joint_idx = _aj['face_joint_idx']
             _base_joint_idx = _aj['base_joint_idx']
 
+        # Peek at checkpoint state_dict early to recover the EXACT
+        # face_joint_idx and helper_joint_idx the ckpt was trained with —
+        # avoids size mismatch when active_joints_json has been modified since
+        # training, and ensures helper-aware models get helper buffer registered.
+        if str(opts.start_epoch) == 'best':
+            _ckpt_peek_path = os.path.join(opts.ckpt, "model_hlbs_best.pth")
+        else:
+            _ckpt_peek_path = os.path.join(opts.ckpt, f"model_hlbs_{int(opts.start_epoch):03d}.pth")
+        _helper_idx_ckpt = None
+        if os.path.isfile(_ckpt_peek_path):
+            _sd_peek = torch.load(_ckpt_peek_path, map_location='cpu', weights_only=False)
+            if 'face_joint_idx' in _sd_peek:
+                _face_joint_idx = _sd_peek['face_joint_idx'].tolist()
+                print(f"[eval] using face_joint_idx from ckpt ({len(_face_joint_idx)} joints)")
+            if 'helper_joint_idx_buf' in _sd_peek:
+                _helper_idx_ckpt = _sd_peek['helper_joint_idx_buf'].tolist()
+                print(f"[eval] using helper_joint_idx from ckpt "
+                      f"({len(_helper_idx_ckpt)} helpers — residual reparameterization active)")
+
         _sigma_targets = None
         if getattr(opts, 'sigma_targets_npy', None):
             _sigma_targets = np.load(opts.sigma_targets_npy).astype(np.float32)
@@ -351,6 +370,7 @@ class HLBSEvaluator:
                 base_joint_idx=_base_joint_idx,
                 face_mask_r0=getattr(opts, 'face_mask_r0', 1.0),
                 face_mask_r1=getattr(opts, 'face_mask_r1', 2.25),
+                helper_joint_idx=_helper_idx_ckpt,
             ).to(self.device)
         else:
             self.model = HierarchicalLBS(
