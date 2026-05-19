@@ -1309,15 +1309,19 @@ class HLBSTrainer:
                     writer_valid.add_scalar(k, v / vcnt, epoch)
 
             total_val = running_val["total"] / vcnt
+            # Per-component val line — always written so log.txt covers every val epoch
+            parts = " ".join(f"{k}: {running_val[k]/vcnt:.6e}"
+                             for k in ["recon-lbs", "recon-neu", "recon-normal", "recon-curvature"])
+            val_line = (f"[{epoch:03d}] Val: {parts} total: {total_val:.6e} "
+                        f"(Best: {min(total_val, BEST_LOSS):.6e} "
+                        f"[{epoch if total_val < BEST_LOSS else BEST_EPOCH}])")
+            print(val_line); logger.write(val_line + "\n")
             if total_val < BEST_LOSS:
                 BEST_LOSS  = total_val
                 BEST_EPOCH = epoch
                 torch.save(self.model.state_dict(), f'{opts.log_dir}/model_hlbs_best.pth')
-                print(f"[{epoch:03d}] Best: {BEST_LOSS:.6e} (epoch {BEST_EPOCH})")
-                logger.write(f"[{epoch:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-            else:
-                print(f"[{epoch:03d}] Val: {total_val:.6e} (Best: {BEST_LOSS:.6e} [{BEST_EPOCH}])")
-                logger.write(f"[{epoch:03d}] Val: {total_val:.6e} (Best: {BEST_LOSS:.6e} [{BEST_EPOCH}])\n")
+                print(f"[{epoch:03d}] Best updated: {BEST_LOSS:.6e}")
+                logger.write(f"[{epoch:03d}] Best updated: {BEST_LOSS:.6e}\n")
 
 
     def train_full_prediction(self, epochs):
@@ -2328,7 +2332,10 @@ class HLBSTrainer:
                 continue
 
             self.model.eval()
-            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0, "L_net_center": 0.0, "total": 0.0}
+            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0,
+                           "recon-normal": 0.0, "L_bind_reg": 0.0,
+                           "L_sigma": 0.0, "L_net_center": 0.0,
+                           "total": 0.0}
             vcnt = 0
 
             pbar = tqdm(enumerate(valid_loader), total=len_valid, ncols=120,
@@ -2411,10 +2418,14 @@ class HLBSTrainer:
                         if _all_hit:
                             _dist_sq_geo_val = (torch.stack(_per_b, dim=0)) ** 2
 
-                    pred_lbs  = self.model(src_v, deform_in, source_normal=src_n,
-                                           nfs_feat=_nfs_feat,
-                                           bind_pos_cache=_bind_pos_cache_val,
-                                           dist_sq_geo=_dist_sq_geo_val)
+                    pred_lbs, _extras = self.model(
+                        src_v, deform_in, source_normal=src_n,
+                        nfs_feat=_nfs_feat,
+                        bind_pos_cache=_bind_pos_cache_val,
+                        dist_sq_geo=_dist_sq_geo_val,
+                        return_extras=True)
+                    _joint_pos_val = _extras.get('joint_pos')
+                    _logit_net_val = _extras.get('logit_net')
 
                     target_v_val = gt_v
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * opts.lambda_vert
@@ -2431,6 +2442,78 @@ class HLBSTrainer:
                         val_neu = F.mse_loss(src_v, pred_neutral).item() * opts.lambda_neu
                         running_val["recon-neu"] += val_neu
                         running_val["total"]     += val_neu
+
+                    # ── recon-normal (mirror of train) ───────────────────
+                    if opts.lambda_normal > 0:
+                        from utils.mesh_utils import calc_norm_torch
+                        _pn = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+                        _gn = calc_norm_torch(target_v_val, batch.faces, at='verts')
+                        val_nrm = (1 - F.cosine_similarity(_pn, _gn, dim=-1)).mean().item() * opts.lambda_normal
+                        running_val["recon-normal"] += val_nrm
+                        running_val["total"]        += val_nrm
+
+                    # ── L_bind_reg (per-id GT > per-topo mean fallback) ───
+                    if (opts.lambda_bind_reg > 0 and _joint_pos_val is not None
+                            and getattr(opts, 'bind_pose_mode', 'net') == 'net'):
+                        B_cur = _joint_pos_val.shape[0]
+                        _targets = []
+                        for b in range(B_cur):
+                            idn = batch.id_name[b] if hasattr(batch, 'id_name') else ''
+                            if idn in self._per_id_bind_pose_gt:
+                                _targets.append(self._per_id_bind_pose_gt[idn])
+                            elif idn.startswith('ict_') and hasattr(self.model, 'bind_pos_target_ict'):
+                                _targets.append(self.model.bind_pos_target_ict)
+                            elif idn.startswith('m--') and hasattr(self.model, 'bind_pos_target_mf'):
+                                _targets.append(self.model.bind_pos_target_mf)
+                            else:
+                                _targets.append(self.model.bind_pos_target)
+                        _tgt_batch = torch.stack(_targets, dim=0)
+                        if self._helper_joint_idx:
+                            _J = _joint_pos_val.shape[1]
+                            _nh = [j for j in range(_J) if j not in self._helper_joint_idx]
+                            _nh_t = torch.tensor(_nh, dtype=torch.long, device=_joint_pos_val.device)
+                            v_bind = F.mse_loss(
+                                _joint_pos_val.index_select(1, _nh_t),
+                                _tgt_batch.index_select(1, _nh_t)).item()
+                        else:
+                            v_bind = F.mse_loss(_joint_pos_val, _tgt_batch).item()
+                        v_bind *= opts.lambda_bind_reg
+                        running_val["L_bind_reg"] += v_bind
+                        running_val["total"]      += v_bind
+
+                    # ── L_sigma (parameter-only, but lambda-scaled) ───────
+                    if opts.lambda_sigma_reg > 0 and getattr(self.model, 'use_gmm_hybrid', False):
+                        v_sig = self.model.sigma_shrink_loss(active_idx=self._face_joint_idx).item() \
+                                * opts.lambda_sigma_reg
+                        running_val["L_sigma"] += v_sig
+                        running_val["total"]   += v_sig
+
+                    # ── L_net_center (geodesic or euclidean variant) ──────
+                    if (opts.lambda_net_center > 0 and _logit_net_val is not None
+                            and (_joint_pos_val is not None or _dist_sq_geo_val is not None)):
+                        _Wn = F.softmax(_logit_net_val, dim=1)
+                        if _dist_sq_geo_val is not None:
+                            if self._face_joint_idx:
+                                _fi = torch.tensor(self._face_joint_idx, dtype=torch.long,
+                                                   device=_Wn.device)
+                                _Wa = _Wn.index_select(2, _fi)
+                                _Da = _dist_sq_geo_val.index_select(2, _fi)
+                            else:
+                                _Wa, _Da = _Wn, _dist_sq_geo_val
+                            v_nc = (_Wa * _Da).sum(dim=1).mean().item()
+                        else:
+                            _mu = torch.einsum('bvj,bvk->bjk', _Wn, src_v)
+                            if self._face_joint_idx:
+                                _fi = torch.tensor(self._face_joint_idx, dtype=torch.long,
+                                                   device=_mu.device)
+                                _mu_a = _mu.index_select(1, _fi)
+                                _jp_a = _joint_pos_val.index_select(1, _fi)
+                            else:
+                                _mu_a, _jp_a = _mu, _joint_pos_val
+                            v_nc = F.mse_loss(_mu_a, _jp_a).item()
+                        v_nc *= opts.lambda_net_center
+                        running_val["L_net_center"] += v_nc
+                        running_val["total"]        += v_nc
 
                 pbar.set_description(f"[{epoch:03d}] val lbs: {val_loss:.5e}")
 
@@ -2460,15 +2543,21 @@ class HLBSTrainer:
                     writer_valid.add_scalar(k, v / vcnt, epoch)
 
             total_val = running_val["total"] / vcnt
-            if total_val < BEST_LOSS:
+            # Per-component val line — written every val epoch (incl. best-update)
+            parts = " ".join(f"{k}: {running_val[k]/vcnt:.6e}"
+                             for k in running_val if k != "total")
+            updated = total_val < BEST_LOSS
+            cur_best   = total_val if updated else BEST_LOSS
+            cur_best_e = epoch     if updated else BEST_EPOCH
+            val_line = (f"[{epoch:03d}] Val: {parts} total: {total_val:.6e} "
+                        f"(Best: {cur_best:.6e} [{cur_best_e}])")
+            print(val_line); logger.write(val_line + "\n")
+            if updated:
                 BEST_LOSS  = total_val
                 BEST_EPOCH = epoch
                 torch.save(self.model.state_dict(), f'{opts.log_dir}/model_hlbs_best.pth')
-                print(f"[{epoch:03d}] Best: {BEST_LOSS:.6e} (epoch {BEST_EPOCH})")
-                logger.write(f"[{epoch:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-            else:
-                print(f"[{epoch:03d}] Val: {total_val:.6e} (Best: {BEST_LOSS:.6e} [{BEST_EPOCH}])")
-                logger.write(f"[{epoch:03d}] Val: {total_val:.6e} (Best: {BEST_LOSS:.6e} [{BEST_EPOCH}])\n")
+                msg = f"[{epoch:03d}] Best updated: {BEST_LOSS:.6e}"
+                print(msg); logger.write(msg + "\n")
 
 
 if __name__ == "__main__":
