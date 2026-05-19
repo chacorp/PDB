@@ -23,12 +23,31 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.abspath(os.path.join(_HERE, '..', '..')))
 from utils.rig_loader import load_rig
-from extract_nfs_feat import load_templates_ict, load_templates_mf
+from extract_nfs_feat import load_templates_mf
 
 
-def _load_templates(dataset, data_basedir):
+def _load_templates_ict_from(iden_vecs_path, n_ids=None):
+    """Build ICT (V, F, id_name) list from a given iden_vecs npy.
+    id_name follows the dataloader convention: f'ict_{idx:03d}' where idx is
+    the position in iden_vecs[:n_ids].
+    """
+    from utils.remesh_utils import ICT_face_model
+    m = ICT_face_model()
+    iden_vecs = np.load(iden_vecs_path)
+    if n_ids is not None:
+        iden_vecs = iden_vecs[:n_ids]
+    F = m.faces.astype(np.int32)
+    out = []
+    for i, v in enumerate(iden_vecs):
+        disps = m.get_id_disp(v).squeeze()
+        V = (m.neutral_verts + disps).astype(np.float32)
+        out.append((V, F, f'ict_{i:03d}'))
+    return out
+
+
+def _load_templates(dataset, data_basedir, ict_iden_vecs_path, n_ict_ids):
     if dataset == 'ict':
-        return load_templates_ict()
+        return _load_templates_ict_from(ict_iden_vecs_path, n_ids=n_ict_ids)
     if dataset == 'mf':
         return load_templates_mf(data_basedir)
     raise ValueError(f'unknown dataset: {dataset}')
@@ -57,6 +76,14 @@ def main():
     ap.add_argument('--feat_dir',  type=str, default='nfs_features_seg',
                     help='Output dir for {id_name}_bind_pos_landmark.npy')
     ap.add_argument('--datasets',  nargs='+', default=['ict', 'mf'], choices=['ict', 'mf'])
+    ap.add_argument('--ict_iden_vecs', type=str,
+                    default='ict_face_pt/random_identity_vecs.npy',
+                    help='ICT iden vecs npy. Default = train_hlbs.py training source '
+                         '(random_identity_vecs.npy[:n_ict_ids]). For val/test cache, '
+                         "use 'data/ICT_live_100/iden_vecs.npy' and a separate --feat_dir.")
+    ap.add_argument('--n_ict_ids', type=int, default=111,
+                    help='Number of ICT identities to slice from --ict_iden_vecs. '
+                         'train_hlbs.py train mode uses [:111].')
     ap.add_argument('--data_basedir', type=str, default='/data/sihun')
     ap.add_argument('--overwrite', action='store_true')
     ap.add_argument('--active_json', type=str,
@@ -101,7 +128,8 @@ def main():
               f'mean={np.linalg.norm(offsets, axis=-1).mean():.4f}  '
               f'max={np.linalg.norm(offsets, axis=-1).max():.4f}')
 
-        templates = _load_templates(ds, args.data_basedir)
+        templates = _load_templates(ds, args.data_basedir,
+                                     args.ict_iden_vecs, args.n_ict_ids)
         for V_id, _faces, name in templates:
             out_path = os.path.join(args.feat_dir, f'{name}_bind_pos_landmark.npy')
             if os.path.exists(out_path) and not args.overwrite:
