@@ -56,14 +56,19 @@ def load_templates_mf(data_basedir):
     return [(np.array(templates[n], dtype=np.float32), faces, n) for n in id_names]
 
 
-def load_templates_ict():
+def load_templates_ict(n_ids=111):
+    """ICT templates from ict_face_pt/random_identity_vecs.npy — the training
+    identity source (train_hlbs.py train mode + precompute_per_id_bind_pos_v2.py).
+    random_identity_vecs[0:100] == data/ICT_live_100/iden_vecs.npy, plus 11 more
+    (ids 100-110). `ict_NNN` naming matches the per-id GT cache.
+    """
     from utils.remesh_utils import ICT_face_model
     ict = ICT_face_model()
     ict_faces = ict.faces.astype(np.int32)
 
-    ict_id_path = 'data/ICT_live_100/iden_vecs.npy'
+    ict_id_path = 'ict_face_pt/random_identity_vecs.npy'
     if os.path.exists(ict_id_path):
-        iden_vecs = np.load(ict_id_path)
+        iden_vecs = np.load(ict_id_path)[:n_ids]
     else:
         iden_vecs = np.zeros((1, 100))
 
@@ -116,6 +121,9 @@ def main():
     parser.add_argument("--datasets", nargs='+', default=['biwi', 'coma', 'mf', 'ict'],
                         choices=['biwi', 'coma', 'mf', 'ict'],
                         help="Datasets to process (default: all)")
+    parser.add_argument("--n_ict_ids", type=int, default=111,
+                        help="ICT ids sliced from random_identity_vecs.npy "
+                             "(train_hlbs.py train mode uses [:111]).")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -147,7 +155,7 @@ def main():
         'biwi': load_templates_biwi,
         'coma': load_templates_coma,
         'mf': lambda: load_templates_mf(args.data_basedir),
-        'ict': load_templates_ict,
+        'ict': lambda: load_templates_ict(args.n_ict_ids),
     }
 
     for ds in args.datasets:
