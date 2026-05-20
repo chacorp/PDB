@@ -67,12 +67,14 @@ _DTU3D_SEGMENTS = [
 
 def _load_ict_identities(data_basedir, n_ids):
     """Return list of (V, faces, id_name) for n_ids ICT identities.
-    Uses the SAME identity source as precompute_per_id_bind_pos_v2.py to keep
-    `ict_NNN` naming consistent with the per-id GT cache.
+    Loads `ict_face_pt/random_identity_vecs.npy` — the SAME identity source as
+    precompute_per_id_bind_pos_v2.py (default) and train_hlbs.py train mode —
+    so `ict_NNN` naming matches the regenerated per-id GT cache (111 entries).
+    Note: random_identity_vecs[0:100] == data/ICT_live_100/iden_vecs.npy.
     """
     from utils.remesh_utils import ICT_face_model
     m = ICT_face_model()
-    iden_vecs = np.load('data/ICT_live_100/iden_vecs.npy')
+    iden_vecs = np.load('ict_face_pt/random_identity_vecs.npy')[:n_ids]
     faces = m.faces.astype(np.int32)
     out = []
     for i in range(min(n_ids, iden_vecs.shape[0])):
@@ -102,6 +104,39 @@ def _load_nfs_feat(id_name, nfs_dir):
     if not nfs_dir: return None
     p = os.path.join(nfs_dir, f'{id_name}_nfs_feat.npy')
     return np.load(p).astype(np.float32) if os.path.exists(p) else None
+
+
+def _load_unseen_identities(nfs_feat_dir, coma_pkl, biwi_pkl):
+    """COMA + BIWI identities for pred-only vis (no GT — landmark-less topos).
+
+    Returns list of dicts {V, F, normals, GT(None), nfs, name, topo}.
+    bind_pose_net inference needs only mesh+normal+NFS, so these run fine; they
+    are NEVER merged into train/valid pools (vis-only).
+    """
+    out = []
+    for topo, pkl in (('coma', coma_pkl), ('biwi', biwi_pkl)):
+        if not pkl or not os.path.exists(pkl):
+            print(f'  [unseen] {topo}: template pkl not found ({pkl}) — skip')
+            continue
+        try:
+            with open(pkl, 'rb') as f:
+                t = pickle.load(f)
+        except Exception as e:
+            print(f'  [unseen] {topo}: failed to load {pkl}: {e}'); continue
+        faces = np.array(t['face'], dtype=np.int32)
+        names = [k for k in t if k != 'face']
+        n_ok = 0
+        for name in names:
+            nfs = _load_nfs_feat(name, nfs_feat_dir)
+            if nfs_feat_dir and nfs is None:
+                print(f'  [unseen][skip] {name}: no NFS feat'); continue
+            V = np.array(t[name], dtype=np.float32)
+            normals = igl.per_vertex_normals(V, faces).astype(np.float32)
+            out.append({'V': V, 'F': faces, 'normals': normals,
+                        'GT': None, 'nfs': nfs, 'name': name, 'topo': topo})
+            n_ok += 1
+        print(f'  [unseen] {topo}: {n_ok}/{len(names)} identities loaded')
+    return out
 
 
 # ── Augmentation ────────────────────────────────────────────────────────
@@ -164,45 +199,66 @@ def _augment(V, normals, GT, nfs_feat, opts, rng):
     return V_aug, n_aug, GT_aug, nfs_feat
 
 
-def _render_bind_vs_gt(V, faces_arr, pred_jp, gt_jp, save_path, title=''):
-    """Mesh wireframe (XY + ZY views) + GT joint pos (blue) + pred (red).
+def _render_bind_grid(items, save_path=None, title='', return_fig=False):
+    """Tile multiple meshes into ONE figure — one COLUMN per identity, 2 rows
+    (XY frontal on top, ZY side on bottom). Identities laid out left-to-right.
+    Each cell: mesh wireframe + pred joints (red) and, if present, GT joints
+    (blue) + GT↔pred connecting lines.
 
-    V       : [N, 3]
-    faces   : [F, 3]
-    pred_jp : [J, 3]
-    gt_jp   : [J, 3]
+    items : list of dict {V[N,3], F[Fc,3], pred[J,3], gt[J,3] or None, label}.
+    save_path / return_fig : as in the per-id renderer.
     """
-    fig = plt.figure(figsize=(9, 4.5))
-    for ax_i, axx, axy, xlab, ylab, view_name in [
-        (1, 0, 1, 'x', 'y', 'Frontal (XY)'),
-        (2, 2, 1, 'z', 'y', 'Side (ZY)'),
-    ]:
-        ax = fig.add_subplot(1, 2, ax_i)
-        polys = V[faces_arr][:, :, [axx, axy]]
-        pc = PolyCollection(polys, facecolors='#dddddd', edgecolors='#bbbbbb',
-                             linewidths=0.06, alpha=0.4, zorder=1)
-        ax.add_collection(pc)
-        # GT joints — blue
-        ax.scatter(gt_jp[:, axx], gt_jp[:, axy], s=14, c='#1d4ed8', alpha=0.9,
-                    edgecolors='white', linewidths=0.3, zorder=5, label='GT')
-        # Pred joints — red
-        ax.scatter(pred_jp[:, axx], pred_jp[:, axy], s=14, c='#e63946', alpha=0.9,
-                    edgecolors='white', linewidths=0.3, zorder=6, label='pred')
-        # Connecting lines GT↔pred per joint
-        for j in range(pred_jp.shape[0]):
-            ax.plot([gt_jp[j, axx], pred_jp[j, axx]],
-                     [gt_jp[j, axy], pred_jp[j, axy]],
-                     color='#aaaaaa', linewidth=0.3, zorder=4)
-        ax.set_aspect('equal'); ax.set_xlabel(xlab); ax.set_ylabel(ylab)
-        ax.set_title(view_name, fontsize=9)
-        if ax_i == 1:
-            ax.legend(fontsize=7, loc='lower right')
+    n = len(items)
+    if n == 0:
+        return None
+    fig, axes = plt.subplots(2, n, figsize=(3.0 * n, 5.6), squeeze=False)
+    for c, it in enumerate(items):
+        V, faces_arr = it['V'], it['F']
+        pred_jp, gt_jp, label = it['pred'], it['gt'], it['label']
+        for r, (axx, axy, vname) in enumerate([(0, 1, 'XY'), (2, 1, 'ZY')]):
+            ax = axes[r][c]
+            polys = V[faces_arr][:, :, [axx, axy]]
+            pc = PolyCollection(polys, facecolors='#dddddd', edgecolors='#bbbbbb',
+                                 linewidths=0.06, alpha=0.4, zorder=1)
+            ax.add_collection(pc)
+            if gt_jp is not None:
+                ax.scatter(gt_jp[:, axx], gt_jp[:, axy], s=10, c='#1d4ed8',
+                           alpha=0.9, edgecolors='white', linewidths=0.25,
+                           zorder=5, label='GT')
+            ax.scatter(pred_jp[:, axx], pred_jp[:, axy], s=10, c='#e63946',
+                       alpha=0.9, edgecolors='white', linewidths=0.25,
+                       zorder=6, label='pred')
+            if gt_jp is not None:
+                for j in range(pred_jp.shape[0]):
+                    ax.plot([gt_jp[j, axx], pred_jp[j, axx]],
+                             [gt_jp[j, axy], pred_jp[j, axy]],
+                             color='#aaaaaa', linewidth=0.3, zorder=4)
+            ax.set_aspect('equal'); ax.tick_params(labelsize=5)
+            if r == 0:
+                ax.set_title(label, fontsize=7)
+            if c == 0:
+                ax.set_ylabel(vname, fontsize=8)
+            if r == 0 and c == 0:
+                ax.legend(fontsize=6, loc='lower right')
 
     fig.suptitle(title, fontsize=10)
     fig.tight_layout()
-    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
-    fig.savefig(save_path, dpi=160, bbox_inches='tight')
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+        fig.savefig(save_path, dpi=130, bbox_inches='tight')
+    if return_fig:
+        return fig
     plt.close(fig)
+    return None
+
+
+def _fig_to_tensor(fig):
+    """matplotlib Figure → [3, H, W] uint8 tensor for tb.add_image. Closes fig."""
+    fig.canvas.draw()
+    buf = np.asarray(fig.canvas.buffer_rgba())          # [H, W, 4]
+    img = torch.from_numpy(buf[:, :, :3].copy()).permute(2, 0, 1).contiguous()
+    plt.close(fig)
+    return img                                           # uint8 [3, H, W]
 
 
 def _fps_numpy(V, K, rng):
@@ -219,6 +275,67 @@ def _fps_numpy(V, K, rng):
     return indices
 
 
+# ── Visualization logging ───────────────────────────────────────────────
+
+def _predict_bind(model, d, device):
+    """Clean forward of bind_pose_net on the ORIGINAL (non-augmented) mesh.
+    Returns predicted joint positions [J, 3] as numpy. Caller in no_grad."""
+    V_t = torch.from_numpy(d['V']).float().unsqueeze(0).to(device)
+    N_t = torch.from_numpy(d['normals']).float().unsqueeze(0).to(device)
+    nfs_t = (torch.from_numpy(d['nfs']).float().unsqueeze(0).to(device)
+             if d['nfs'] is not None else None)
+    skin_input, _adain = model._prepare_feat(V_t, N_t, nfs_t)
+    _, pred = model._get_bind_pose(skin_input, adain_input=_adain)
+    return pred[0].cpu().numpy()                                   # [J, 3]
+
+
+def _render_topo_grids(model, ids, vis_joint_sel, device, save_dir,
+                        tag_prefix, tb, tb_step, title_prefix=''):
+    """Forward each id (clean, ORIGINAL mesh), group by dataset/topo, render ONE
+    tiled grid PNG + tb.add_image per topo. Caller must be inside no_grad."""
+    by_topo = {}
+    for d in ids:
+        pred = _predict_bind(model, d, device)
+        gt = d['GT']
+        by_topo.setdefault(d['topo'], []).append({
+            'V': d['V'], 'F': d['F'],
+            'pred': pred[vis_joint_sel],
+            'gt': gt[vis_joint_sel] if gt is not None else None,
+            'label': d['name'],
+        })
+    for topo, items in by_topo.items():
+        png = os.path.join(save_dir, f'{topo}.png')
+        fig = _render_bind_grid(items, save_path=png, return_fig=True,
+                                title=f'{title_prefix}{topo} ({len(items)})')
+        tb.add_image(f'{tag_prefix}/{topo}', _fig_to_tensor(fig), tb_step)
+
+
+def _log_train_batch_vis(model, batch_ids, vis_joint_sel, epoch, step,
+                          global_step, device, out_dir, tb):
+    """Tiled per-dataset grid of the current training batch: original mesh +
+    GT(blue) + pred(red) joints. Clean forward on ORIGINAL mesh (augmented/
+    subsampled frame avoided)."""
+    was_training = model.training
+    model.eval()
+    save_dir = os.path.join(out_dir, 'train_vis', f'{epoch:03d}',
+                            f'step{step:04d}')
+    with torch.no_grad():
+        _render_topo_grids(model, batch_ids, vis_joint_sel, device, save_dir,
+                           'train_vis', tb, global_step,
+                           title_prefix=f'[{epoch:03d}] step{step:04d} ')
+    if was_training:
+        model.train()
+
+
+def _log_unseen_vis(model, unseen_ids, vis_joint_sel, epoch, device, out_dir, tb):
+    """COMA/BIWI pred-only tiled grid (no GT). Caller must already be inside
+    model.eval() + torch.no_grad()."""
+    save_dir = os.path.join(out_dir, 'unseen_vis', f'{epoch:03d}')
+    _render_topo_grids(model, unseen_ids, vis_joint_sel, device, save_dir,
+                       'unseen_vis', tb, epoch,
+                       title_prefix=f'[{epoch:03d}] pred-only ')
+
+
 # ── Main training loop ──────────────────────────────────────────────────
 
 def main():
@@ -229,7 +346,9 @@ def main():
                     help='Which epoch state_dict to start bind_pose_net from.')
     ap.add_argument('--out_dir', required=True)
     ap.add_argument('--per_id_gt_dir', default='nfs_features_seg')
-    ap.add_argument('--n_ict_ids', type=int, default=100)
+    ap.add_argument('--n_ict_ids', type=int, default=111,
+                    help='ICT ids sliced from random_identity_vecs.npy. '
+                         'train_hlbs.py train mode uses [:111].')
     ap.add_argument('--data_basedir', default='/data/sihun')
     ap.add_argument('--device', default='cuda:0')
     ap.add_argument('--max_epoch', type=int, default=300)
@@ -252,6 +371,17 @@ def main():
                          'mix3_halffull = 1/2 full + 1/2 random pick of (random, fps, importance).')
     ap.add_argument('--aug_ratio_min', type=float, default=0.3)
     ap.add_argument('--aug_ratio_max', type=float, default=0.8)
+    # Visualization
+    ap.add_argument('--vis_train', type=int, default=1,
+                    help='Per-batch GT-vs-pred bind pose vis at ~steps/10 '
+                         'cadence (matches train_hlbs.py). 0=off.')
+    ap.add_argument('--vis_unseen', type=int, default=1,
+                    help='COMA/BIWI pred-only bind pose vis in the validation '
+                         'block (every --val_interval). 0=off.')
+    ap.add_argument('--vis_all_joints', action='store_true',
+                    help='Render all joints (default: non-helper joints only).')
+    ap.add_argument('--coma_template', default='utils/templates/voca_templates.pkl')
+    ap.add_argument('--biwi_template', default='utils/templates/biwi_templates.pkl')
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -357,6 +487,19 @@ def main():
     print(f'Supervising {len(non_helper_idx)} non-helper joints '
           f'({len(helper_set)} helpers excluded — no L_bind_reg / L_mirror / L_residual)')
 
+    # Joint selector for visualization (non-helper only unless --vis_all_joints).
+    if args.vis_all_joints:
+        vis_joint_sel = np.arange(len(rig.joint_names), dtype=np.int64)
+    else:
+        vis_joint_sel = non_helper_idx.cpu().numpy()
+
+    # ── 4b. COMA/BIWI identities for pred-only vis (vis-only, never trained) ──
+    unseen_ids = []
+    if args.vis_unseen:
+        unseen_ids = _load_unseen_identities(
+            base_opts.get('nfs_feat_dir'), args.coma_template, args.biwi_template)
+        print(f'Unseen (vis-only): {len(unseen_ids)} COMA/BIWI identities')
+
     # ── 5. Training loop ─────────────────────────────────────────────
     rng = np.random.default_rng(seed=42)
     log_file = open(os.path.join(args.out_dir, 'log.txt'), 'w')
@@ -417,6 +560,16 @@ def main():
             pbar.set_postfix({'L_bind': f'{L_bind.item():.3e}'})
             tb.add_scalar('train/L_bind_step', L_bind.item(), global_step)
 
+            # Per-batch bind pose vis — ~steps/10 cadence (matches train_hlbs.py).
+            # `1 % _vis_interv` generalizes the train_hlbs.py `== 1` check so it
+            # still fires when steps_per_epoch is small (_vis_interv == 1).
+            if args.vis_train:
+                _vis_interv = max(1, round(steps_per_epoch / 10))
+                if step % _vis_interv == (1 % _vis_interv):
+                    _log_train_batch_vis(model, batch_ids, vis_joint_sel,
+                                         epoch, step, global_step, device,
+                                         args.out_dir, tb)
+
         dt = time.time() - t0
         inv = 1.0 / max(cnt, 1)
         tb.add_scalar('train/L_bind_epoch', running['L_bind_reg'] * inv, epoch)
@@ -448,13 +601,16 @@ def main():
                     val_loss_sum += val_loss
                     val_per_id[d['name']] = val_loss
 
-                    # Vis
-                    pred_np = pred[0].cpu().numpy()
-                    save_path = os.path.join(val_dir, f'{d["name"]}.png')
-                    _render_bind_vs_gt(d['V'], d['F'], pred_np, d['GT'],
-                                       save_path,
-                                       title=f'[{epoch:03d}] {d["name"]}  '
-                                             f'L_bind={val_loss:.4e}')
+                # Vis — per-dataset tiled grid (non-helper joints unless
+                # --vis_all_joints). GT(blue) + pred(red) overlay.
+                _render_topo_grids(model, valid_ids, vis_joint_sel, device,
+                                   val_dir, 'valid_vis', tb, epoch,
+                                   title_prefix=f'[{epoch:03d}] valid ')
+
+                # COMA/BIWI pred-only grid (still inside eval + no_grad)
+                if args.vis_unseen and len(unseen_ids) > 0:
+                    _log_unseen_vis(model, unseen_ids, vis_joint_sel,
+                                    epoch, device, args.out_dir, tb)
             val_loss_avg = val_loss_sum / len(valid_ids)
             v_msg = f'[{epoch:03d}] VAL L_bind={val_loss_avg:.5e}  vis → {val_dir}/'
             print(v_msg); log_file.write(v_msg + '\n'); log_file.flush()
