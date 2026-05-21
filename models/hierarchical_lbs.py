@@ -531,6 +531,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         joint_offsets: 'np.ndarray | torch.Tensor | None' = None,
         attn_temperature_init: float = 0.1,
         helper_joint_idx: 'list | None' = None,
+        bind_pose_base_residual: bool = False,
     ):
         super().__init__()
 
@@ -656,6 +657,18 @@ class HierarchicalLBS_FullPred(nn.Module):
         # supervise each identity toward its own topology's Maya GT).
         for topo_key, bp in rig.bind_pos_dict.items():
             self.register_buffer(f'bind_pos_target_{topo_key}', bp.to(device).clone())
+
+        # ── bind pose base-residual reparameterization ───────────────────
+        # When enabled, bind_pose_net predicts a RESIDUAL for ALL joints on top
+        # of a single fixed base (ICT mean bind pose — symmetric, topology-
+        # agnostic). joint_pos = bind_pos_base + raw. Universal base means no
+        # per-topology base needed at inference (works for unseen topologies).
+        self._bind_pose_base_residual = bool(bind_pose_base_residual)
+        if self._bind_pose_base_residual:
+            _base = rig.bind_pos_dict.get('ict', rig.bind_pos)
+            self.register_buffer('bind_pos_base', _base.to(device).clone())
+            print(f'[HLBS BindPoseResidual] enabled | base = ICT mean bind pose '
+                  f'(joint_pos = base + net_residual for all {J} joints)')
 
         # mesh_data label → topology key mapping
         self._mesh_data_to_topo = {
@@ -942,12 +955,14 @@ class HierarchicalLBS_FullPred(nn.Module):
     def _get_bind_pose(self, source_feat, adain_input=None):
         """Net-based bind pose prediction (mode='net' path).
 
-        With helper_joint_idx set, the bind_pose_net output for helper joints
-        is interpreted as a parent-relative RESIDUAL (additive). Helpers have
-        non-helper parents (by Option-A construction), so a single pass works:
-            joint_pos[helper] = joint_pos[parent_of_helper] + raw[helper]
-        The raw helper-only slice is stored as _last_bind_pose_residual for
-        the trainer's L2 regularization.
+        Two reparameterizations:
+        - base_residual (bind_pose_base_residual=True): ALL joints predicted as
+          a residual on a single fixed base (ICT mean bind pose) —
+              joint_pos = bind_pos_base + raw
+          _last_bind_pose_residual = raw [B, J, 3] (all joints; trainer applies
+          differentiated L2: weak for helpers, strong for non-helpers).
+        - legacy (default): non-helper joints absolute, helper joints
+          parent-relative residual (joint_pos[h] = joint_pos[parent] + raw[h]).
         """
         B = source_feat.shape[0]
         J = self.num_joints
@@ -956,7 +971,10 @@ class HierarchicalLBS_FullPred(nn.Module):
         else:
             raw = self.bind_pose_net(source_feat, adain_input=adain_input).squeeze(1).reshape(B, J, 3)
 
-        if self._helper_joint_set:
+        if self._bind_pose_base_residual:
+            joint_pos = self.bind_pos_base.unsqueeze(0) + raw            # [B, J, 3]
+            self._last_bind_pose_residual = raw                          # all joints
+        elif self._helper_joint_set:
             joint_pos = raw.clone()
             for j in self._helper_joint_set:
                 p = int(self.parent_idx[j].item())

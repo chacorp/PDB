@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Option A — 19 helper joints reassigned to face regions (cheek/mouth-heavy).",
+  "version": 2,
+  "description": "Option A v2 — 21 helper joints reassigned to face regions. v2 adds Nose_Base_Position + Nose_Nostril (parent L/R Orbital).",
   "default_sigma": 0.4,
   "default_init_anchor_lambda": 0.1,
 
@@ -41,7 +41,10 @@
     {"joint": "hybrid_jnt_Nose_Bridge",            "region": "mouth",   "parent": "Jaw_Front"},
     {"joint": "hybrid_jnt_Ears",                   "region": "mouth",   "parent": "Jaw_Front"},
     {"joint": "hybrid_jnt_Left_Ear_Rotate_Scale",  "region": "mouth",   "parent": "Jaw_Front"},
-    {"joint": "hybrid_jnt_Right_Ear_Rotate_Scale", "region": "mouth",   "parent": "Jaw_Front"}
+    {"joint": "hybrid_jnt_Right_Ear_Rotate_Scale", "region": "mouth",   "parent": "Jaw_Front"},
+
+    {"joint": "hybrid_jnt_Nose_Base_Position",     "region": "L_brow",  "parent": "Left_Orbital"},
+    {"joint": "hybrid_jnt_Nose_Nostril",           "region": "R_brow",  "parent": "Right_Orbital"}
   ],
 
   "mirror_pairs": [
@@ -57,7 +60,7 @@
 
   "region_counts": {
     "L_eye": 2, "R_eye": 2,
-    "L_brow": 1, "R_brow": 1,
+    "L_brow": 2, "R_brow": 2,
     "L_cheek": 3, "R_cheek": 3,
     "mouth": 7
   }

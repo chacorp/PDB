@@ -45,8 +45,10 @@
     48,
     49,
     50,
+    52,
     53,
     54,
+    55,
     56,
     57,
     58,
@@ -69,9 +71,7 @@
     20,
     39,
     40,
-    51,
-    52,
-    55
+    51
   ],
   "regions": {
     "eye": [
@@ -166,14 +166,14 @@
     ]
   },
   "counts": {
-    "active": 53,
-    "frozen": 13,
-    "helper": 19,
+    "active": 55,
+    "frozen": 11,
+    "helper": 21,
     "helper_per_region": {
       "L_eye": 2,
       "R_eye": 2,
-      "L_brow": 1,
-      "R_brow": 1,
+      "L_brow": 2,
+      "R_brow": 2,
       "L_cheek": 3,
       "R_cheek": 3,
       "mouth": 7
@@ -198,7 +198,9 @@
     43,
     44,
     45,
-    46
+    46,
+    52,
+    55
   ],
   "helper_regions": {
     "L_eye": [
@@ -210,10 +212,12 @@
       6
     ],
     "L_brow": [
-      29
+      29,
+      52
     ],
     "R_brow": [
-      30
+      30,
+      55
     ],
     "L_cheek": [
       32,

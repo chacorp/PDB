@@ -109,10 +109,13 @@ def Options():
                         help='Bind pose MSE to Maya init (always on, 0=disabled). '
                              'Excludes helper joints when --use_helpers=1.')
     parser.add_argument("--lambda_helper_residual", type=float, default=0.0,
-                        help='L2 penalty on helper joint parent-relative residual '
-                             'bind_pose_net output. Keeps helpers near parent unless '
-                             'reconstruction losses justify a larger offset. Active only '
-                             'when --use_helpers=1.')
+                        help='L2 penalty on HELPER joint bind_pose residual (weak). '
+                             'Helpers may drift further from base. Active when '
+                             '--use_helpers=1 (or base_residual mode).')
+    parser.add_argument("--lambda_bind_residual", type=float, default=0.0,
+                        help='[bind_pose_base_residual mode] L2 penalty on NON-helper '
+                             'joint residual (strong — keep near ICT-mean base). '
+                             'Differentiated: non-helper strong, helper weak.')
     parser.add_argument("--lambda_cross_cyclic", type=float, default=0.0,
                         help='Cyclic consistency loss for cross-retarget (Track B). '
                              'After first retarget produces pred_tgt_def (A→B), runs a '
@@ -157,6 +160,11 @@ def Options():
                              'With --per_id_bind_pose_dir set, uses per-id v3 GT '
                              'instead (Stage-2: bind pose = oracle GT).')
     parser.set_defaults(freeze_bind_pose=False)
+    parser.add_argument("--bind_pose_base_residual", type=int, default=0, choices=[0, 1],
+                        help='1: bind_pose_net predicts a residual for ALL joints on '
+                             'top of a fixed ICT-mean base (joint_pos = base + residual). '
+                             'Topology-agnostic universal base. 0: legacy (non-helper '
+                             'absolute, helper parent+residual).')
     parser.add_argument("--bind_pose_net_ckpt", type=str, default=None,
                         help='[Stage-3] Load bind_pose_net.* weights from this '
                              'checkpoint (e.g. a Stage-1 bind_only_*.pth).')
@@ -1546,6 +1554,7 @@ class HLBSTrainer:
             face_mask_r1=getattr(opts, 'face_mask_r1', 2.25),
             helper_joint_idx=(self._helper_joint_idx if self._use_helpers
                               and self._helper_joint_idx else None),
+            bind_pose_base_residual=bool(getattr(opts, 'bind_pose_base_residual', 0)),
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
@@ -2042,14 +2051,32 @@ class HLBSTrainer:
                     else:
                         loss_dict["L_bind_reg"] = F.mse_loss(_joint_pos, target_batch.detach())
 
-                # ── Helper residual L2 regularization ────────────────────
-                # Helper joints predict parent-relative residual in model._get_bind_pose;
-                # L2 penalty keeps residuals small (helper stays near parent unless
-                # other losses justify a larger offset).
-                if (self._use_helpers and getattr(opts, 'lambda_helper_residual', 0) > 0
-                        and getattr(self.model, '_last_bind_pose_residual', None) is not None):
-                    res = self.model._last_bind_pose_residual               # [B, n_helpers, 3]
-                    loss_dict["L_helper_residual"] = (res ** 2).sum(dim=-1).mean()
+                # ── Bind-pose residual L2 regularization (differentiated) ─
+                # base_residual mode: _last_bind_pose_residual is [B, J, 3] for ALL
+                #   joints. Split into non-helper (strong λ_bind_residual — stay near
+                #   ICT-mean base) vs helper (weak λ_helper_residual — freer to move).
+                # legacy mode: _last_bind_pose_residual is helper-only → L_helper_residual.
+                _res = getattr(self.model, '_last_bind_pose_residual', None)
+                if _res is not None and bool(getattr(opts, 'bind_pose_base_residual', 0)):
+                    if self._helper_joint_idx:
+                        J_tot = _res.shape[1]
+                        _h = torch.tensor(self._helper_joint_idx, dtype=torch.long,
+                                          device=_res.device)
+                        _nh = torch.tensor([j for j in range(J_tot)
+                                            if j not in self._helper_joint_idx],
+                                           dtype=torch.long, device=_res.device)
+                        if getattr(opts, 'lambda_bind_residual', 0) > 0:
+                            loss_dict["L_bind_residual"] = (
+                                _res.index_select(1, _nh) ** 2).sum(dim=-1).mean()
+                        if getattr(opts, 'lambda_helper_residual', 0) > 0:
+                            loss_dict["L_helper_residual"] = (
+                                _res.index_select(1, _h) ** 2).sum(dim=-1).mean()
+                    elif getattr(opts, 'lambda_bind_residual', 0) > 0:
+                        loss_dict["L_bind_residual"] = (_res ** 2).sum(dim=-1).mean()
+                elif (_res is not None and self._use_helpers
+                        and getattr(opts, 'lambda_helper_residual', 0) > 0):
+                    # legacy: helper-only residual
+                    loss_dict["L_helper_residual"] = (_res ** 2).sum(dim=-1).mean()
 
                 # ── Bilateral mirror loss for L/R helper pairs ──────────
                 # L_mirror = MSE(pos[L], mirror_x(pos[R])), mirror_x([x,y,z]) = [-x, y, z].
@@ -2247,6 +2274,7 @@ class HLBSTrainer:
                     "L_bind_init": lambda_init,
                     "L_bind_reg": opts.lambda_bind_reg,
                     "L_helper_residual": getattr(opts, 'lambda_helper_residual', 0.0),
+                    "L_bind_residual": getattr(opts, 'lambda_bind_residual', 0.0),
                     "L_mirror": getattr(opts, 'lambda_mirror', 0.0),
                     "L_rwc_init": opts.lambda_rwc,
                     "L_rwc_min": opts.lambda_rwc,
