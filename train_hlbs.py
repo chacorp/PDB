@@ -1831,21 +1831,25 @@ class HLBSTrainer:
                     if _all_hit:
                         _bind_pos_cache = torch.stack(_items, dim=0)  # [B, J, 3]
 
-                # freeze_bind_pose mode: auto-build per-topo mean cache when no preloaded cache.
-                # Each batch element gets bind_pos_target_{topo} matching its id_name prefix.
+                # freeze_bind_pose mode: build the per-batch frozen bind_pos cache.
+                # Priority per id: per-id v3 GT (Phase B landmark cache) > per-topo mean.
+                # → Stage-2 training (bind pose fixed at per-id GT, learn skin/transform).
                 if (_bind_pos_cache is None
                         and getattr(opts, 'freeze_bind_pose', False)
                         and hasattr(batch, 'id_name')):
                     _items = []
+                    _n_per_id = 0; _n_mean = 0
                     for b in range(src_v.shape[0]):
                         idn = batch.id_name[b]
-                        if idn.startswith('ict_') and hasattr(self.model, 'bind_pos_target_ict'):
-                            tgt = self.model.bind_pos_target_ict
+                        if idn in self._per_id_bind_pose_gt:           # per-id v3 GT
+                            _items.append(self._per_id_bind_pose_gt[idn])
+                            _n_per_id += 1
+                        elif idn.startswith('ict_') and hasattr(self.model, 'bind_pos_target_ict'):
+                            _items.append(self.model.bind_pos_target_ict); _n_mean += 1
                         elif idn.startswith('m--') and hasattr(self.model, 'bind_pos_target_mf'):
-                            tgt = self.model.bind_pos_target_mf
+                            _items.append(self.model.bind_pos_target_mf); _n_mean += 1
                         else:
-                            tgt = self.model.bind_pos_target  # fallback
-                        _items.append(tgt)
+                            _items.append(self.model.bind_pos_target); _n_mean += 1
                     _bind_pos_cache = torch.stack(_items, dim=0).detach()  # [B, J, 3]
 
                 # Per-batch geodesic dist² lookup (replaces Euclidean ||v - μ||²)
