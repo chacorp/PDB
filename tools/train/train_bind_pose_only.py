@@ -19,11 +19,13 @@ Outputs:
 
 Usage:
     python tools/train/train_bind_pose_only.py \
-        --base_ckpt_dir ckpts_hlbs/2026-05-14-14-02-03-HLBS-FullPred-ict-jTrans-nrm0.1-Wsm0.01 \
-        --base_epoch 200 \
+        --base_train_opts config/ref_train_opts.yml \
         --out_dir   ckpts_bind_only/$(date +%Y-%m-%d-%H-%M-%S)-bind_only \
         --max_epoch 300 --batch_size 8 --lr 1e-4 \
         --aug_trans --aug_scale --aug_subsample mix4
+
+Only a train_opts.yml is required (model arch source) — no checkpoint .pth.
+face/base/helper joint indices are read from active_joints_manual.json.
 """
 import os
 import sys
@@ -340,10 +342,9 @@ def _log_unseen_vis(model, unseen_ids, vis_joint_sel, epoch, device, out_dir, tb
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--base_ckpt_dir', required=True,
-                    help='Existing trained ckpt dir (uses its train_opts.yml + model arch).')
-    ap.add_argument('--base_epoch', default='200',
-                    help='Which epoch state_dict to start bind_pose_net from.')
+    ap.add_argument('--base_train_opts', required=True,
+                    help='Path to a train_opts.yml — provides model arch params '
+                         '(hid_dim, nfs_concat, gmm_mode, …). No checkpoint needed.')
     ap.add_argument('--out_dir', required=True)
     ap.add_argument('--per_id_gt_dir', default='nfs_features_seg')
     ap.add_argument('--n_ict_ids', type=int, default=111,
@@ -389,26 +390,24 @@ def main():
     with open(os.path.join(args.out_dir, 'train_opts.yml'), 'w') as f:
         yaml.safe_dump(vars(args), f)
 
-    # ── 1. Load model + restore base weights ─────────────────────────
-    opts_path = os.path.join(args.base_ckpt_dir, 'train_opts.yml')
-    with open(opts_path) as f:
+    # ── 1. Load model arch from train_opts.yml (no checkpoint needed) ─
+    with open(args.base_train_opts) as f:
         base_opts = yaml.safe_load(f)
     rig = load_rig(base_opts['rig_path'])
 
-    base_ckpt = (os.path.join(args.base_ckpt_dir, 'model_hlbs_best.pth')
-                 if str(args.base_epoch) == 'best'
-                 else os.path.join(args.base_ckpt_dir, f'model_hlbs_{int(args.base_epoch):03d}.pth'))
-    sd_peek = torch.load(base_ckpt, map_location='cpu', weights_only=False)
-    face_idx = sd_peek['face_joint_idx'].tolist() if 'face_joint_idx' in sd_peek else None
-    helper_idx_ckpt = (sd_peek['helper_joint_idx_buf'].tolist()
-                       if 'helper_joint_idx_buf' in sd_peek else None)
-
-    base_idx = None
+    # face_joint_idx / base_joint_idx / helper_joint_idx come straight from
+    # active_joints_manual.json (git-tracked, a few KB) — no .pth peek.
+    face_idx = None; base_idx = None; helper_idx_ckpt = None
     aj_path = base_opts.get('active_joints_json')
     if aj_path and os.path.exists(aj_path):
         with open(aj_path) as f:
             aj = json.load(f)
+        face_idx = aj.get('face_joint_idx')
         base_idx = aj.get('base_joint_idx')
+        if int(base_opts.get('use_helpers', 1)):
+            helper_idx_ckpt = aj.get('helper_joint_idx') or None
+    print(f'arch from {args.base_train_opts}  |  face={len(face_idx) if face_idx else 0} '
+          f'helpers={len(helper_idx_ckpt) if helper_idx_ckpt else 0}')
 
     sig = None
     if base_opts.get('sigma_targets_npy') and os.path.exists(base_opts['sigma_targets_npy']):
