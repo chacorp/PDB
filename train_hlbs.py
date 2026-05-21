@@ -153,8 +153,19 @@ def Options():
 
     # freeze bind pose (use Maya init directly, no bind_pose_net prediction)
     parser.add_argument("--freeze_bind_pose", dest='freeze_bind_pose', action='store_true',
-                        help='Fix bind pose to Maya init (skip bind_pose_net)')
+                        help='Fix bind pose to Maya init (skip bind_pose_net). '
+                             'With --per_id_bind_pose_dir set, uses per-id v3 GT '
+                             'instead (Stage-2: bind pose = oracle GT).')
     parser.set_defaults(freeze_bind_pose=False)
+    parser.add_argument("--bind_pose_net_ckpt", type=str, default=None,
+                        help='[Stage-3] Load bind_pose_net.* weights from this '
+                             'checkpoint (e.g. a Stage-1 bind_only_*.pth).')
+    parser.add_argument("--freeze_bind_pose_net", type=int, default=0, choices=[0, 1],
+                        help='[Stage-3] Freeze bind_pose_net params (requires_grad=False). '
+                             'Net still runs forward — uses its PREDICTED bind pose, '
+                             'not GT — so skin/transform branches adapt to the real '
+                             'inference distribution. Differs from --freeze_bind_pose '
+                             '(which bypasses the net and uses GT/mean directly).')
 
     # bind-pose mode: 'net' (default MLP) | 'anchor_pool' (closed-form NFS attention)
     parser.add_argument("--bind_pose_mode", type=str, default='net',
@@ -1538,6 +1549,25 @@ class HLBSTrainer:
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
+        # ── Stage-3: load + freeze bind_pose_net from a Stage-1 checkpoint ──
+        # --bind_pose_net_ckpt : load only bind_pose_net.* (+ helper buffer) weights
+        # --freeze_bind_pose_net : set requires_grad=False on bind_pose_net so the
+        #   net still runs forward (predicted bind pose, NOT GT) but is not updated;
+        #   skin_weight / expression / pose branches keep learning.
+        _bpn_ckpt = getattr(opts, 'bind_pose_net_ckpt', None)
+        if _bpn_ckpt and os.path.isfile(_bpn_ckpt):
+            _sd = torch.load(_bpn_ckpt, map_location=self.device, weights_only=False)
+            _bpn_sd = {k: v for k, v in _sd.items() if k.startswith('bind_pose_net.')}
+            _msg = self.model.load_state_dict(_bpn_sd, strict=False)
+            print(f"[Stage-3] loaded {len(_bpn_sd)} bind_pose_net tensors "
+                  f"from {_bpn_ckpt}")
+        if getattr(opts, 'freeze_bind_pose_net', 0):
+            _n = 0
+            for p in self.model.bind_pose_net.parameters():
+                p.requires_grad_(False); _n += p.numel()
+            self.model.bind_pose_net.eval()
+            print(f"[Stage-3] bind_pose_net frozen ({_n:,} params, requires_grad=False)")
+
         # Load NFS pretrained features
         self._nfs_feat_cache = {}
         self._nfs_on_cpu = getattr(opts, 'nfs_on_cpu', False)
@@ -1581,7 +1611,8 @@ class HLBSTrainer:
                 print(f"[FullPred] Resumed from: {ckpt_path}")
 
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=opts.lr, betas=(0.9, 0.999))
+            [p for p in self.model.parameters() if p.requires_grad],
+            lr=opts.lr, betas=(0.9, 0.999))
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=opts.sc_step, gamma=opts.sc_gamma)
 
