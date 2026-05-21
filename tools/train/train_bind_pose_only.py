@@ -143,41 +143,95 @@ def _load_unseen_identities(nfs_feat_dir, coma_pkl, biwi_pkl):
 
 # ── Augmentation ────────────────────────────────────────────────────────
 
-def _augment(V, normals, GT, nfs_feat, opts, rng):
-    """Apply random scale + translate + vertex subsample.
-    All three apply to V/normals/(nfs_feat) consistently; GT is transformed
-    by the same affine (scale + trans).
+# ICT region crop sizes (mirror utils/remesh_utils.py ICT_face_model.region).
+_ICT_REGION_VNUM = {0: 11248, 1: 9409, 2: 6706}   # full / face_only / narrow
+
+
+def _strict_contour_bump(V, landmark_vidx, kind, r0, r1):
+    """Per-vertex importance bump [N] in [0,1], STRICT (0 outside contour) —
+    mirrors train_hlbs.py mix4's importance-strict. brow/eye/nose/mouth DTU3D
+    landmarks define the contour. Returns None if landmark_vidx unusable.
     """
+    V_t = torch.from_numpy(V).float()
+    N = V.shape[0]
+    all_lm = sorted(set(_DTU3D_BROW_R + _DTU3D_BROW_L + _DTU3D_EYE_R + _DTU3D_EYE_L
+                        + _DTU3D_NOSE + _DTU3D_MOUTH))
+    lm_to_vidx = {}
+    for lm in all_lm:
+        i0 = lm - 1
+        if 0 <= i0 < len(landmark_vidx):
+            v = int(landmark_vidx[i0])
+            if 0 <= v < N:
+                lm_to_vidx[lm] = v
+    if not lm_to_vidx:
+        return None
+    if kind == 'point':
+        C = V_t[torch.tensor(list(lm_to_vidx.values()), dtype=torch.long)]
+        return plateau_hat_points(V_t, C, r0=r0, r1=r1).max(dim=-1).values.numpy()
+    # segment
+    segs = [(a, b) for (a, b) in _DTU3D_SEGMENTS if a in lm_to_vidx and b in lm_to_vidx]
+    if not segs:
+        return None
+    ss = torch.stack([V_t[lm_to_vidx[a]] for a, _ in segs])
+    se = torch.stack([V_t[lm_to_vidx[b]] for _, b in segs])
+    seg = se - ss
+    seg_len = (seg ** 2).sum(-1).clamp_min(1e-12)
+    diff = V_t.unsqueeze(1) - ss.unsqueeze(0)
+    t = (diff * seg.unsqueeze(0)).sum(-1) / seg_len.unsqueeze(0)
+    t = t.clamp(0.0, 1.0)
+    foot = ss.unsqueeze(0) + t.unsqueeze(-1) * seg.unsqueeze(0)
+    dist = (V_t.unsqueeze(1) - foot).norm(dim=-1).min(dim=-1).values
+    return plateau_hat_r(dist, r0=r0, r1=r1).numpy()
+
+
+def _augment(d, opts, rng, landmark_vidx_dict):
+    """Apply ICT region crop + random scale/translate + vertex subsample.
+    Sampling mirrors train_hlbs.py: per-call ICT region (full/face/narrow) +
+    mix4 subsample with importance = strict landmark contour.
+
+    d : id dict {V, normals, GT, nfs, topo, name}
+    Returns (V_aug, n_aug, GT_aug, nfs_aug).
+    """
+    V, normals, GT, nfs_feat = d['V'], d['normals'], d['GT'], d['nfs']
+    topo = d['topo']
+
+    # ── ICT region 3-way crop (fullhead / face_only / narrow) ──
+    # Region crop = prefix slice (ICT mesh is ordered region 2 ⊂ 1 ⊂ 0).
+    if topo == 'ict' and opts.region_min < 2:
+        r = int(rng.integers(opts.region_min, 3))
+        v_num = _ICT_REGION_VNUM[r]
+        V = V[:v_num]; normals = normals[:v_num]
+        if nfs_feat is not None:
+            nfs_feat = nfs_feat[:v_num]
+
+    # ── scale + translate ──
     trans = np.zeros(3, dtype=np.float32)
     scale = 1.0
     if opts.aug_trans:
-        t_range = 0.1
-        trans = (rng.random(3).astype(np.float32) - 0.5) * t_range
+        trans = (rng.random(3).astype(np.float32) - 0.5) * 0.1
     if opts.aug_scale:
         scale = float(rng.uniform(0.8, 1.2))
     V_aug  = V * scale + trans                           # [N, 3]
     GT_aug = GT * scale + trans                          # [J, 3]
-    n_aug  = normals                                     # normals are scale/trans invariant
+    n_aug  = normals
 
+    # ── vertex subsample (mix4 / mix3_halffull) ──
     perm = None
     if opts.aug_subsample != 'none':
         N = V_aug.shape[0]
         ratio = float(rng.uniform(opts.aug_ratio_min, opts.aug_ratio_max))
         K = int(round(N * ratio))
         if K < N and K > 0:
-            # mix-style: pick mode per call
             mode = opts.aug_subsample
             if mode == 'mix4':
-                # 1/4 each of: full, random, fps, importance
                 roll = int(rng.integers(0, 4))
-                if roll == 0: K = N  # full
+                if roll == 0: K = N                       # full
                 elif roll == 1: mode = 'random'
                 elif roll == 2: mode = 'fps'
                 else:           mode = 'importance'
             elif mode == 'mix3_halffull':
-                # 1/2 full mesh + 1/2 (random / fps / importance) 균등 1/6 each
                 if float(rng.random()) < 0.5:
-                    K = N  # full mesh
+                    K = N
                 else:
                     mode = ['random', 'fps', 'importance'][int(rng.integers(0, 3))]
             if K < N:
@@ -186,16 +240,27 @@ def _augment(V, normals, GT, nfs_feat, opts, rng):
                 elif mode == 'fps':
                     perm = _fps_numpy(V_aug, K, rng)
                 elif mode == 'importance':
-                    # plateau_hat_points needs torch
-                    V_t = torch.from_numpy(V_aug)
-                    bump = plateau_hat_points(V_t).squeeze(-1)
-                    w = 1.0 + 4.0 * bump
-                    perm = torch.multinomial(w, K, replacement=False).numpy()
+                    # Strict landmark-contour (mirror train_hlbs.py mix4).
+                    lm = landmark_vidx_dict.get(topo)
+                    bump = (_strict_contour_bump(V_aug, lm, opts.contour_kind,
+                                                 opts.contour_r0, opts.contour_r1)
+                            if lm is not None else None)
+                    if bump is None:
+                        perm = rng.permutation(N)[:K]
+                    else:
+                        nz = int((bump > 1e-8).sum())
+                        K_eff = min(K, nz)
+                        w = torch.from_numpy((bump + 1e-12).astype(np.float32))
+                        perm = torch.multinomial(w, K_eff, replacement=False).numpy()
+                        if K_eff < K:                     # pad with random non-contour
+                            avail = np.ones(N, dtype=bool); avail[perm] = False
+                            extra = rng.permutation(np.where(avail)[0])[:K - K_eff]
+                            perm = np.concatenate([perm, extra])
                 else:
                     perm = rng.permutation(N)[:K]
     if perm is not None:
-        V_aug  = V_aug[perm]
-        n_aug  = n_aug[perm]
+        V_aug = V_aug[perm]
+        n_aug = n_aug[perm]
         if nfs_feat is not None:
             nfs_feat = nfs_feat[perm]
     return V_aug, n_aug, GT_aug, nfs_feat
@@ -372,6 +437,15 @@ def main():
                          'mix3_halffull = 1/2 full + 1/2 random pick of (random, fps, importance).')
     ap.add_argument('--aug_ratio_min', type=float, default=0.3)
     ap.add_argument('--aug_ratio_max', type=float, default=0.8)
+    ap.add_argument('--region_min', type=int, default=0, choices=[0, 1, 2],
+                    help='ICT region crop lower bound: per-call region drawn from '
+                         '[region_min, 3). 0=full/face/narrow, 2=narrow only.')
+    ap.add_argument('--contour_kind', default='point', choices=['point', 'segment'],
+                    help='[importance] strict contour bump geometry (mirror train_hlbs.py).')
+    ap.add_argument('--contour_r0', type=float, default=0.05)
+    ap.add_argument('--contour_r1', type=float, default=0.2)
+    ap.add_argument('--landmark_vidx_dir', default='maya_rig/hybrid',
+                    help='Dir with landmark_vidx_{ict,mf}.npy for importance sampling.')
     # Visualization
     ap.add_argument('--vis_train', type=int, default=1,
                     help='Per-batch GT-vs-pred bind pose vis at ~steps/10 '
@@ -394,6 +468,15 @@ def main():
     with open(args.base_train_opts) as f:
         base_opts = yaml.safe_load(f)
     rig = load_rig(base_opts['rig_path'])
+
+    # landmark_vidx for importance-strict subsample (mirror train_hlbs.py)
+    landmark_vidx_dict = {}
+    for _topo in ('ict', 'mf'):
+        _lv = os.path.join(args.landmark_vidx_dir, f'landmark_vidx_{_topo}.npy')
+        if os.path.exists(_lv):
+            landmark_vidx_dict[_topo] = np.load(_lv).astype(np.int64)
+    print(f'landmark_vidx loaded: {list(landmark_vidx_dict.keys())}  '
+          f'(importance subsample → strict contour)')
 
     # face_joint_idx / base_joint_idx / helper_joint_idx come straight from
     # active_joints_manual.json (git-tracked, a few KB) — no .pth peek.
@@ -524,7 +607,7 @@ def main():
             Vs, Ns, GTs, Fs_nfs = [], [], [], []
             for d in batch_ids:
                 V_aug, n_aug, GT_aug, nfs_aug = _augment(
-                    d['V'], d['normals'], d['GT'], d['nfs'], args, rng)
+                    d, args, rng, landmark_vidx_dict)
                 Vs.append(torch.from_numpy(V_aug).float())
                 Ns.append(torch.from_numpy(n_aug).float())
                 GTs.append(torch.from_numpy(GT_aug).float())
