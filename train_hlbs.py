@@ -18,6 +18,7 @@ import json
 import argparse
 import glob
 import random
+import time
 import numpy as np
 import yaml
 
@@ -26,6 +27,10 @@ warnings.filterwarnings("ignore", message="torch.sparse.SparseTensor.*is depreca
 
 import torch
 import torch.nn.functional as F
+# TF32 matmul on Ampere+ (A5000 등) — matmul 가속. Volta(V100)엔 TF32 HW가
+# 없어 이 플래그는 그냥 무시됨(완전 무해, no-op).
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 from torch.utils.tensorboard import SummaryWriter
 from functools import partial
 from tqdm import tqdm
@@ -360,7 +365,12 @@ def Options():
     parser.add_argument("--sc_step", type=int, default=1000000)
     parser.add_argument("--sc_gamma", type=float, default=0.5)
     parser.add_argument("--lambda_vert", type=float, default=1.0)
-    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--profile", action='store_true',
+                        help='Print per-section timing (data/fwd/bwd/opt) every 50 batches.')
+    parser.add_argument("--amp", action='store_true',
+                        help='bf16 autocast (mixed precision) for the forward pass. '
+                             'Revert by simply dropping this flag.')
 
     # mask
     parser.add_argument("--no_t_mask", dest='no_t_mask', action='store_true')
@@ -439,6 +449,8 @@ class HLBSTrainer:
     def __init__(self, opts):
         self.opts = opts
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # landmark→vertex-index map cache for _build_bump_strict (keyed per topo)
+        self._lm_to_vidx_cache = {}
 
         torch.manual_seed(opts.seed)
         torch.cuda.manual_seed(opts.seed)
@@ -693,15 +705,22 @@ class HLBSTrainer:
         from utils.exp_utils import plateau_hat_r, plateau_hat_points
         if lm_vidx is None:
             return None
-        lm_to_vidx = {}
-        for lm in (self._DTU3D_BROW_R + self._DTU3D_BROW_L
-                   + self._DTU3D_EYE_R + self._DTU3D_EYE_L
-                   + self._DTU3D_NOSE  + self._DTU3D_MOUTH):
-            idx0 = lm - 1
-            if 0 <= idx0 < lm_vidx.shape[0]:
-                v_idx = int(lm_vidx[idx0].item())
-                if 0 <= v_idx < N:
-                    lm_to_vidx[lm] = v_idx
+        # lm_to_vidx depends only on (lm_vidx tensor, N) — both fixed per topology.
+        # Cache it: avoids ~73 per-element .item() GPU syncs on every call.
+        cache_key = (id(lm_vidx), int(N))
+        lm_to_vidx = self._lm_to_vidx_cache.get(cache_key)
+        if lm_to_vidx is None:
+            lm_to_vidx = {}
+            lm_vidx_list = lm_vidx.cpu().tolist()        # single sync
+            for lm in (self._DTU3D_BROW_R + self._DTU3D_BROW_L
+                       + self._DTU3D_EYE_R + self._DTU3D_EYE_L
+                       + self._DTU3D_NOSE  + self._DTU3D_MOUTH):
+                idx0 = lm - 1
+                if 0 <= idx0 < len(lm_vidx_list):
+                    v_idx = int(lm_vidx_list[idx0])
+                    if 0 <= v_idx < N:
+                        lm_to_vidx[lm] = v_idx
+            self._lm_to_vidx_cache[cache_key] = lm_to_vidx
         if not lm_to_vidx:
             return None
         if kind == 'point':
@@ -940,7 +959,8 @@ class HLBSTrainer:
         train_loader = torch.utils.data.DataLoader(
             train_ds, batch_sampler=train_sampler,
             collate_fn=partial(CBD_collate_wrapper, device='cpu'),
-            num_workers=_nw, persistent_workers=(_nw > 0))
+            num_workers=_nw, persistent_workers=(_nw > 0),
+            pin_memory=torch.cuda.is_available())
         valid_loader = torch.utils.data.DataLoader(
             valid_ds, batch_sampler=valid_sampler,
             collate_fn=partial(CBD_collate_wrapper, device='cpu'), num_workers=0)
@@ -1041,7 +1061,8 @@ class HLBSTrainer:
             cur_loader = torch.utils.data.DataLoader(
                 train_ds, batch_sampler=cur_sampler,
                 collate_fn=partial(CBD_collate_wrapper, device='cpu'),
-                num_workers=_nw, persistent_workers=(_nw > 0))
+                num_workers=_nw, persistent_workers=(_nw > 0),
+            pin_memory=torch.cuda.is_available())
             print(f"[Curriculum] Phase 1: ICT single-basis for {opts.curriculum_epochs} epochs "
                   f"({len(cur_loader)} batches/epoch, {n_ict_ids} identities × 53 bases)")
 
@@ -1068,7 +1089,7 @@ class HLBSTrainer:
             pbar = tqdm(enumerate(active_loader), total=_len_active, ncols=120,
                         desc=f"[{epoch:03d}] Train HLBS")
             for idx, batch in pbar:
-                batch = batch.to(self.device)
+                batch = batch.to(self.device, non_blocking=True)
                 self.optimizer.zero_grad()
 
                 src_v  = batch.template
@@ -1183,7 +1204,7 @@ class HLBSTrainer:
 
                     HB = BS // 2
                     _s = lambda i: min(i, BS-1)
-                    _d = lambda t: t.cpu().detach()
+                    _d = lambda t: t.detach().float().cpu()  # .float(): bf16(AMP)→fp32 for numpy/vis
                     faces_cpu = batch.faces.cpu()
                     v_list = [
                         _d(gt_v[0]),        _d(gt_v[_s(1)]),
@@ -1242,7 +1263,7 @@ class HLBSTrainer:
             pbar = tqdm(enumerate(valid_loader), total=len_valid, ncols=120,
                         desc=f"[{epoch:03d}] Valid HLBS")
             for idx, batch in pbar:
-                batch = batch.to(self.device)
+                batch = batch.to(self.device, non_blocking=True)
                 vcnt += 1
                 with torch.no_grad():
                     src_v  = batch.template
@@ -1637,7 +1658,8 @@ class HLBSTrainer:
         train_loader = torch.utils.data.DataLoader(
             train_ds, batch_sampler=train_sampler,
             collate_fn=partial(CBD_collate_wrapper, device='cpu'),
-            num_workers=_nw, persistent_workers=(_nw > 0))
+            num_workers=_nw, persistent_workers=(_nw > 0),
+            pin_memory=torch.cuda.is_available())
         valid_loader = torch.utils.data.DataLoader(
             valid_ds, batch_sampler=valid_sampler,
             collate_fn=partial(CBD_collate_wrapper, device='cpu'), num_workers=0)
@@ -1743,7 +1765,8 @@ class HLBSTrainer:
             cur_loader = torch.utils.data.DataLoader(
                 train_ds, batch_sampler=cur_sampler,
                 collate_fn=partial(CBD_collate_wrapper, device='cpu'),
-                num_workers=_nw, persistent_workers=(_nw > 0))
+                num_workers=_nw, persistent_workers=(_nw > 0),
+            pin_memory=torch.cuda.is_available())
             print(f"[Curriculum] Phase 1: ICT single-basis for {opts.curriculum_epochs} epochs "
                   f"({len(cur_loader)} batches/epoch, {n_ict_ids} identities × 53 bases)")
 
@@ -1782,9 +1805,35 @@ class HLBSTrainer:
             _len_active = len(active_loader)
             pbar = tqdm(enumerate(active_loader), total=_len_active, ncols=120,
                         desc=f"[{epoch:03d}] Train FullPred (phase{'1' if lambda_init > 0 else '2'})")
+            _use_amp = getattr(opts, 'amp', False) and torch.cuda.is_available()
+            _prof = getattr(opts, 'profile', False)
+            _tprof = None
+            if _prof:
+                _prof_acc = {'data': 0.0, 'fwd': 0.0, 'bwd': 0.0, 'opt': 0.0}
+                _prof_n = 0
+                _prof_sync = (torch.cuda.synchronize if torch.cuda.is_available()
+                              else (lambda: None))
+                _prof_prev = time.perf_counter()
+                # one-shot op-level trace: wait 10 / warmup 2 / active 4 steps
+                if not getattr(self, '_torch_prof_done', False):
+                    _tprof = torch.profiler.profile(
+                        activities=[torch.profiler.ProfilerActivity.CPU,
+                                    torch.profiler.ProfilerActivity.CUDA],
+                        schedule=torch.profiler.schedule(wait=10, warmup=2, active=4),
+                        record_shapes=False, with_stack=False)
+                    _tprof.start()
             for idx, batch in pbar:
-                batch = batch.to(self.device)
+                if _prof:
+                    _t_data = time.perf_counter()
+                    _prof_acc['data'] += _t_data - _prof_prev
+                batch = batch.to(self.device, non_blocking=True)
                 self.optimizer.zero_grad()
+
+                # bf16 autocast over the whole forward+loss; backward stays outside.
+                # (loop body has no continue/break/return → manual enter/exit safe.)
+                _amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16,
+                                          enabled=_use_amp)
+                _amp_ctx.__enter__()
 
                 src_v  = batch.template
                 src_n  = batch.template_normal
@@ -1958,10 +2007,14 @@ class HLBSTrainer:
                 if opts.lambda_neu > 0:
                     delta_zero = torch.zeros_like(src_v)
                     neu_deform_in = torch.cat([delta_zero, src_n, src_v, src_n], dim=-1)
+                    # reuse_identity: W / joint_pos / B_inv_id are identity-only
+                    # and were just computed by the main forward above — skip the
+                    # redundant bind_pose_net + skin_weight_net pass.
                     pred_neutral = self.model(src_v, neu_deform_in, source_normal=src_n,
                                               nfs_feat=_nfs_feat if hasattr(self, '_nfs_feat_cache') else None,
                                               bind_pos_cache=_bind_pos_cache,
-                                              dist_sq_geo=_dist_sq_geo)
+                                              dist_sq_geo=_dist_sq_geo,
+                                              reuse_identity=True)
                     if opts.no_t_mask:
                         loss_dict["recon-neu"] = F.mse_loss(src_v, pred_neutral)
                     else:
@@ -2286,8 +2339,39 @@ class HLBSTrainer:
                     "L_cross_cyclic": getattr(opts, 'lambda_cross_cyclic', 0.0),
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
+                _amp_ctx.__exit__(None, None, None)   # backward must run outside autocast
+                if _prof:
+                    _prof_sync(); _t_fwd = time.perf_counter()
+                    _prof_acc['fwd'] += _t_fwd - _t_data
                 loss.backward()
+                if _prof:
+                    _prof_sync(); _t_bwd = time.perf_counter()
+                    _prof_acc['bwd'] += _t_bwd - _t_fwd
                 self.optimizer.step()
+                if _prof:
+                    _prof_sync(); _t_opt = time.perf_counter()
+                    _prof_acc['opt'] += _t_opt - _t_bwd
+                    _prof_prev = _t_opt
+                    _prof_n += 1
+                    if _prof_n % 50 == 0:
+                        _n = 50
+                        print(f"[profile] data {_prof_acc['data']/_n*1e3:6.1f}ms | "
+                              f"fwd {_prof_acc['fwd']/_n*1e3:6.1f}ms | "
+                              f"bwd {_prof_acc['bwd']/_n*1e3:6.1f}ms | "
+                              f"opt {_prof_acc['opt']/_n*1e3:6.1f}ms | "
+                              f"total {sum(_prof_acc.values())/_n*1e3:6.1f}ms/batch")
+                        for _k in _prof_acc:
+                            _prof_acc[_k] = 0.0
+                    if _tprof is not None:
+                        _tprof.step()
+                        if _prof_n == 16:
+                            _tprof.stop()
+                            print("\n[torch.profiler] top ops by CUDA time "
+                                  "(steps 12-15):")
+                            print(_tprof.key_averages().table(
+                                sort_by='cuda_time_total', row_limit=25))
+                            _tprof = None
+                            self._torch_prof_done = True
 
                 for k in running:
                     if k != "total" and k in loss_dict:
@@ -2312,7 +2396,7 @@ class HLBSTrainer:
                     # vertex indices and would index out-of-range on subsampled verts.
                     if not is_permed:
                         HB = BS // 2
-                        _d = lambda t: t.cpu().detach()
+                        _d = lambda t: t.detach().float().cpu()  # .float(): bf16(AMP)→fp32 for numpy/vis
                         _s = lambda i: min(i, BS-1)
                         faces_cpu = batch.faces.cpu()
                         v_list = [
@@ -2331,7 +2415,7 @@ class HLBSTrainer:
                     # Cross-retarget vis — match main mesh vis pattern: 4 GT + 4 pred.
                     if (getattr(opts, 'lambda_cross_retarget', 0) > 0
                             and self._cross_pair_loader is not None):
-                        _d = lambda t: t.cpu().detach()
+                        _d = lambda t: t.detach().float().cpu()  # .float(): bf16(AMP)→fp32 for numpy/vis
                         B_c_vis = cb.src_template.shape[0]
                         _sc = lambda i: min(i, B_c_vis - 1)
                         HBc = B_c_vis // 2
@@ -2404,7 +2488,7 @@ class HLBSTrainer:
             pbar = tqdm(enumerate(valid_loader), total=len_valid, ncols=120,
                         desc=f"[{epoch:03d}] Valid FullPred")
             for idx, batch in pbar:
-                batch = batch.to(self.device)
+                batch = batch.to(self.device, non_blocking=True)
                 vcnt += 1
                 with torch.no_grad():
                     src_v  = batch.template
@@ -2623,14 +2707,63 @@ class HLBSTrainer:
                 print(msg); logger.write(msg + "\n")
 
 
+def _ensure_pytorch3d_gpu():
+    """Verify pytorch3d's FPS CUDA kernel is available; reinstall from source if not.
+
+    mix4 subsampling rolls FPS. Without the CUDA kernel, pytorch3d's
+    sample_farthest_points falls back to a Python loop with per-step .item()
+    syncs — seconds per batch. On a CUDA box we require the GPU build.
+    The probe runs in a subprocess so the parent imports a fresh pytorch3d
+    after any reinstall.
+    """
+    import subprocess
+    if not torch.cuda.is_available():
+        return
+    probe = (
+        'import torch;'
+        'from pytorch3d.ops import sample_farthest_points;'
+        'sample_farthest_points(torch.randn(1,256,3,device="cuda"),K=32);'
+        'print("P3D_GPU_OK")'
+    )
+    chk = subprocess.run([sys.executable, '-c', probe],
+                         capture_output=True, text=True)
+    if chk.returncode == 0 and 'P3D_GPU_OK' in chk.stdout:
+        print('[pytorch3d] GPU FPS kernel verified.')
+        return
+    print('[pytorch3d] GPU FPS unavailable — reinstalling from source...')
+    print(f'  reason: {(chk.stderr or chk.stdout).strip()[-300:]}')
+    subprocess.run([
+        sys.executable, '-m', 'pip', 'install',
+        '--no-build-isolation', '--no-cache-dir',
+        'git+https://github.com/facebookresearch/pytorch3d.git',
+    ], check=False)
+    chk2 = subprocess.run([sys.executable, '-c', probe],
+                          capture_output=True, text=True)
+    if chk2.returncode == 0 and 'P3D_GPU_OK' in chk2.stdout:
+        print('[pytorch3d] reinstall OK — GPU FPS kernel now available.')
+    else:
+        print('[pytorch3d] WARNING: still no GPU FPS after reinstall; '
+              'mix4 FPS will use the slow Python fallback.')
+        print(f'  reason: {(chk2.stderr or chk2.stdout).strip()[-300:]}')
+
+
 if __name__ == "__main__":
+    _ensure_pytorch3d_gpu()
     opts = Options()
 
     if os.path.exists(opts.config):
         opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
         opts_dict = vars(opts)
-        opts_yaml.update(opts_dict)
-        opts = argparse.Namespace(**opts_yaml)
+        # yaml is the base; override ONLY with args explicitly passed on the CLI.
+        # (vars(opts) also holds argparse defaults — using it wholesale would let
+        #  every default clobber the yaml value, which neutered --config before.)
+        cli_keys = {tok[2:].split('=')[0]
+                    for tok in sys.argv[1:] if tok.startswith('--')}
+        merged = dict(opts_yaml)
+        for k, v in opts_dict.items():
+            if k in cli_keys or k not in merged:
+                merged[k] = v
+        opts = argparse.Namespace(**merged)
 
     if opts.target == 'smooth_gt':
         assert opts.smooth_n_iter > 0, "target=smooth_gt requires --smooth_n_iter > 0"

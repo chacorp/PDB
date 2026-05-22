@@ -289,16 +289,24 @@ class EvalDataset(data.Dataset):
         )
         vertices=vertices[0]
         template=template[0]
-        template_normal = igl.per_vertex_normals(template, faces)
-        vertices_normal = igl.per_vertex_normals(vertices, faces)
 
-        template = torch.tensor(template).float()
+        # Neutral mesh + its normal + faces depend only on identity → cache per id.
+        cached = self._ict_template_cache.get(id_index)
+        if cached is None:
+            template_normal = igl.per_vertex_normals(template, faces)
+            cached = (
+                torch.tensor(template).float(),
+                torch.tensor(template_normal).float(),
+                torch.tensor(faces).long(),
+            )
+            self._ict_template_cache[id_index] = cached
+        template_t, template_normal_t, faces_t = cached
+
+        vertices_normal = igl.per_vertex_normals(vertices, faces)
         vertices = torch.tensor(vertices).float()
-        faces = torch.tensor(faces).long()
-        template_normal = torch.tensor(template_normal).float()
         vertices_normal = torch.tensor(vertices_normal).float()
 
-        return vertices, template, vertices_normal, template_normal, faces, id_name
+        return vertices, template_t, vertices_normal, template_normal_t, faces_t, id_name
 
     def get_ict_cap(self, index):
         id_coeff = self.iden_vecs
@@ -570,7 +578,10 @@ class CBDDataset(data.Dataset):
         if self.use_ict:
             from utils.remesh_utils import ICT_face_model
             self.ict_face_model=ICT_face_model()
-                        
+            # Per-id cache: neutral mesh + its normal depend only on identity,
+            # so caching them avoids one igl.per_vertex_normals call per frame.
+            self._ict_template_cache = {}
+
             self.iden_vecs, self.expression_vecs = self.get_ict_params()
             self.ict_len = len(self.iden_vecs)
             self.ict_exp_len = len(self.expression_vecs)
@@ -1612,18 +1623,19 @@ class CBDDataBatch:
         self.grad_Y = torch.stack(dfn_info[5], 0)
         #self.faces = torch.stack(dfn_info[6], 0) # -> duplicated!
     
-    def to(self, device='cpu'):
+    def to(self, device='cpu', non_blocking=False):
         for id_ in self.__dict__.keys():
             attr = self.__getattribute__(id_)
             if isinstance(attr, torch.Tensor):
-                self.__setattr__(id_, attr.to(device))
+                self.__setattr__(id_, attr.to(device, non_blocking=non_blocking))
         return self
-        
-    # # custom memory pinning method on custom type
-    # def pin_memory(self):
-    #     self.inp = self.inp.pin_memory()
-    #     self.tgt = self.tgt.pin_memory()
-    #     return self
+
+    def pin_memory(self):
+        for id_ in self.__dict__.keys():
+            attr = self.__getattribute__(id_)
+            if isinstance(attr, torch.Tensor):
+                self.__setattr__(id_, attr.pin_memory())
+        return self
 
 def CBD_collate_wrapper(batch, device="cpu"):
     return CBDDataBatch(batch).to(device)

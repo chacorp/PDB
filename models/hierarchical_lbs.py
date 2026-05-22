@@ -1013,48 +1013,94 @@ class HierarchicalLBS_FullPred(nn.Module):
             )
         return self._build_B_inv(joint_pos), joint_pos
 
+    def _build_fk_levels(self):
+        """Group joints by tree depth. Joints at the same depth are independent
+        → one batched matmul per depth level instead of a 66-step Python loop
+        with per-joint .item() syncs. Built once, then cached on self._fk_levels.
+        """
+        parent = self.parent_idx.tolist()
+        J = len(parent)
+        depth = [-1] * J
+
+        def _depth(j):
+            if depth[j] >= 0:
+                return depth[j]
+            p = parent[j]
+            depth[j] = 0 if p < 0 else _depth(p) + 1
+            return depth[j]
+
+        for j in range(J):
+            _depth(j)
+        dev = self.parent_idx.device
+        levels = []
+        for d in range(1, max(depth) + 1):
+            js = [j for j in range(J) if depth[j] == d]
+            ps = [parent[j] for j in js]
+            levels.append((
+                torch.tensor(js, dtype=torch.long, device=dev),
+                torch.tensor(ps, dtype=torch.long, device=dev),
+            ))
+        self._fk_levels = levels
+
     def _chain_hierarchy(self, T_delta):
         B, J, _, _ = T_delta.shape
+        if getattr(self, '_fk_levels', None) is None:
+            self._build_fk_levels()
         T_bind_local = self.T_bind_local.unsqueeze(0).expand(B, -1, -1, -1)
-        T_world_list = [None] * J
-        for j in self.process_order.tolist():
-            p = self.parent_idx[j].item()
-            combined = torch.bmm(T_bind_local[:, j], T_delta[:, j])
-            if p == -1:
-                T_world_list[j] = combined
-            else:
-                T_world_list[j] = torch.bmm(T_world_list[p], combined)
-        return torch.stack(T_world_list, dim=1)
+        # combined[b,j] = T_bind_local[j] @ T_delta[j] — all joints in parallel.
+        combined = torch.matmul(T_bind_local, T_delta)               # [B, J, 4, 4]
+        # Roots (depth 0) need no parent → T_world == combined for them.
+        T_world = combined
+        # Walk depth levels; each level's joints are independent (one matmul).
+        for j_idx, p_idx in self._fk_levels:
+            parent_T = T_world.index_select(1, p_idx)                # [B, n, 4, 4]
+            child_T  = combined.index_select(1, j_idx)               # [B, n, 4, 4]
+            T_world  = T_world.index_copy(1, j_idx,
+                                          torch.matmul(parent_T, child_T))
+        return T_world
 
     # ── Forward ──────────────────────────────────────────────────────────
 
-    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False, bind_pos_cache=None, dist_sq_geo=None):
+    def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False, bind_pos_cache=None, dist_sq_geo=None, reuse_identity=False):
         B, N, _ = source_vert.shape
         J = self.num_joints
         device = source_vert.device
 
-        skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
+        # Identity-only block: W / joint_pos / B_inv_id depend solely on
+        # (source_vert, source_normal, nfs_feat, bind_pos_cache, dist_sq_geo) —
+        # NOT on deform_in. reuse_identity=True reuses the values cached by the
+        # immediately preceding forward (e.g. neutral recon reusing the main pass),
+        # skipping a redundant _prepare_feat + bind_pose_net + skin_weight_net.
+        if reuse_identity and getattr(self, '_last_W', None) is not None:
+            W         = self._last_W
+            joint_pos = self._last_joint_pos
+            B_inv_id  = self._last_B_inv
+        else:
+            skin_input, _adain = self._prepare_feat(source_vert, source_normal, nfs_feat)
 
-        # Bind pose first — μ needed for GMM-hybrid skinning
-        if self.freeze_bind_pose:
-            if bind_pos_cache is not None:
-                # Per-topo / per-id frozen bind_pos passed in via cache (preferred)
-                joint_pos = bind_pos_cache
-                B_inv_id = self._build_B_inv(joint_pos)
-            else:
-                B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
-                joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1) # [B, J, 3]
-        elif self.bind_pose_mode == 'anchor_pool':
-            B_inv_id, joint_pos = self._get_bind_pose_anchor(
-                source_vert, nfs_feat, bind_pos_cache=bind_pos_cache)
-        else:  # 'net'
-            B_inv_id, joint_pos = self._get_bind_pose(skin_input, adain_input=_adain)
+            # Bind pose first — μ needed for GMM-hybrid skinning
+            if self.freeze_bind_pose:
+                if bind_pos_cache is not None:
+                    # Per-topo / per-id frozen bind_pos passed in via cache (preferred)
+                    joint_pos = bind_pos_cache
+                    B_inv_id = self._build_B_inv(joint_pos)
+                else:
+                    B_inv_id = self.B_inv_fixed.unsqueeze(0).expand(B, -1, -1, -1)  # [B, J, 4, 4]
+                    joint_pos = self.bind_pos_target.unsqueeze(0).expand(B, -1, -1) # [B, J, 3]
+            elif self.bind_pose_mode == 'anchor_pool':
+                B_inv_id, joint_pos = self._get_bind_pose_anchor(
+                    source_vert, nfs_feat, bind_pos_cache=bind_pos_cache)
+            else:  # 'net'
+                B_inv_id, joint_pos = self._get_bind_pose(skin_input, adain_input=_adain)
 
-        W, _ = self._get_skinning_weights(
-            skin_input, adain_input=_adain,
-            source_vert=source_vert, joint_pos=joint_pos,
-            dist_sq_override=dist_sq_geo,
-        )
+            W, _ = self._get_skinning_weights(
+                skin_input, adain_input=_adain,
+                source_vert=source_vert, joint_pos=joint_pos,
+                dist_sq_override=dist_sq_geo,
+            )
+            self._last_W         = W
+            self._last_joint_pos = joint_pos
+            self._last_B_inv     = B_inv_id
 
         if z_exp_override is not None:
             z_exp_flat = z_exp_override
