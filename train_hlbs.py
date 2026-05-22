@@ -158,6 +158,13 @@ def Options():
     # distance-based weight locality loss
     parser.add_argument("--lambda_dist", type=float, default=0.0,
                         help='Distance-based weight locality: W should be high for close joints')
+    # Mesh2Animation-inspired skin-weight regularizers / metric
+    parser.add_argument("--lambda_wlap", type=float, default=0.0,
+                        help='#1 1-ring Laplacian weight smoothness loss (topology-independent).')
+    parser.add_argument("--lambda_wref", type=float, default=0.0,
+                        help='#3 reference-weight prior: MSE to closest-bone one-hot (L_id).')
+    parser.add_argument("--w_metric", type=int, default=1, choices=[0, 1],
+                        help='#2 log GT-free weight-quality metric to TB (diagnostic, no loss).')
 
     # freeze bind pose (use Maya init directly, no bind_pose_net prediction)
     parser.add_argument("--freeze_bind_pose", dest='freeze_bind_pose', action='store_true',
@@ -386,6 +393,9 @@ def Options():
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3", dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
+    parser.add_argument("--use_data4", dest='use_data4', action='store_true',
+                        help='COMA + BIWI + MF + ICT (full data incl. ICT).')
+    parser.set_defaults(use_data4=False)
     # curriculum
     parser.add_argument("--curriculum", dest='curriculum', action='store_true',
                         help='Curriculum learning: Phase 1 = ICT single-basis only, '
@@ -1799,7 +1809,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -1842,7 +1852,9 @@ class HLBSTrainer:
                 target_v = gt_v
 
                 # Register mesh edges for this topology if not cached
-                if opts.smooth_delta_W > 0:
+                # (needed by smooth_delta_W op and by L_wlap / weight-quality metric)
+                if (opts.smooth_delta_W > 0 or getattr(opts, 'lambda_wlap', 0) > 0
+                        or getattr(opts, 'w_metric', 0)):
                     N_cur = src_v.shape[1]
                     if self.model._mesh_edges_by_N is None or N_cur not in self.model._mesh_edges_by_N:
                         _faces = batch.faces[0] if batch.faces.dim() == 3 else batch.faces
@@ -1975,7 +1987,10 @@ class HLBSTrainer:
 
                 _need_extras = (opts.lambda_rwc > 0 or opts.lambda_hier > 0
                                 or opts.lambda_bind_reg > 0 or opts.lambda_dist > 0
-                                or opts.lambda_net_center > 0)
+                                or opts.lambda_net_center > 0
+                                or getattr(opts, 'lambda_wlap', 0) > 0
+                                or getattr(opts, 'lambda_wref', 0) > 0
+                                or getattr(opts, 'w_metric', 0))
                 if _need_extras:
                     pred_lbs, _extras = self.model(
                         src_v, deform_in, source_normal=src_n,
@@ -2195,6 +2210,28 @@ class HLBSTrainer:
                     for k, v in dist_losses.items():
                         loss_dict[k] = v
 
+                # ── #1 Laplacian weight smoothness (Mesh2Animation) ──────
+                # 1-ring ‖ΔW‖²; mesh edges invalid under subsampling → skip.
+                if getattr(opts, 'lambda_wlap', 0) > 0 and not is_permed and _W is not None:
+                    for k, v in self.model.weight_smoothness_loss(
+                            _W, src_v.shape[1]).items():
+                        loss_dict[k] = v
+
+                # ── #3 reference-weight prior (Mesh2Animation L_id) ──────
+                # MSE to closest-bone one-hot; needs predicted joint_pos.
+                if (getattr(opts, 'lambda_wref', 0) > 0
+                        and _W is not None and _joint_pos is not None):
+                    for k, v in self.model.weight_ref_loss(
+                            _W, src_v, _joint_pos).items():
+                        loss_dict[k] = v
+
+                # ── #2 GT-free weight-quality metric (diagnostic, no loss) ─
+                if (getattr(opts, 'w_metric', 0) and not is_permed
+                        and _W is not None):
+                    _wq = self.model.weight_quality_metric(_W, src_v, batch.faces)
+                    if _wq is not None:
+                        running["metric-W_smooth"] += float(_wq)
+
                 # ── Hierarchy locality loss (uses pre-computed W) ────────
                 if opts.lambda_hier > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
@@ -2333,6 +2370,8 @@ class HLBSTrainer:
                     "L_rwc_min": opts.lambda_rwc,
                     "L_hier": opts.lambda_hier,
                     "L_dist": opts.lambda_dist,
+                    "L_wlap": getattr(opts, 'lambda_wlap', 0.0),
+                    "L_wref": getattr(opts, 'lambda_wref', 0.0),
                     "L_sigma": opts.lambda_sigma_reg,
                     "L_net_center": opts.lambda_net_center,
                     "L_cross_retarget": opts.lambda_cross_retarget,

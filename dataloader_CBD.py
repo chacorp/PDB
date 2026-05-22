@@ -515,6 +515,15 @@ class CBDDataset(data.Dataset):
             use_mf_ROM=True
             use_ict=True
             use_ict_narrow=False
+        elif getattr(self.opts, 'use_data4', False):
+            # full data incl. ICT: COMA + BIWI + MF_SEN + MF_ROM + ICT
+            use_voca=False
+            use_coma=True
+            use_biwi=True
+            use_mf_SEN=True
+            use_mf_ROM=True
+            use_ict=True
+            use_ict_narrow=False
         elif self.opts.use_data9:
             use_voca=False
             use_coma=False

@@ -1577,6 +1577,89 @@ class HierarchicalLBS_FullPred(nn.Module):
         L_dist = (W * dist_sq).sum(dim=-1).mean()         # mean over B, N
         return {'L_dist': L_dist}
 
+    # ── Mesh2Animation-inspired skin-weight regularizers ──────────────────
+
+    def weight_smoothness_loss(self, W, N):
+        """#1 — 1-ring Laplacian weight smoothness (Mesh2Animation LGS idea).
+
+        L_wlap = mean over mesh edges of ‖W_i − W_j‖².  This is the uniform
+        (combinatorial) discretization of the Dirichlet energy ∫‖∇W‖²dS —
+        the topology-independent reduction of the paper's L_ss (Eq. 6); the
+        cotangent-weighted variant would just swap the per-edge weights.
+        Uses mesh connectivity only (no landmark / no precompute) → works on
+        any topology incl. unseen COMA/BIWI. Caller must skip when subsampled
+        (mesh edges index the original full vertex set).
+        """
+        edges = None if self._mesh_edges_by_N is None else self._mesh_edges_by_N.get(N)
+        if edges is None:
+            return {}
+        wi = W.index_select(1, edges[:, 0])               # [B, E, J]
+        wj = W.index_select(1, edges[:, 1])
+        return {'L_wlap': ((wi - wj) ** 2).sum(dim=-1).mean()}
+
+    def weight_ref_loss(self, W, source_vert, joint_pos):
+        """#3 — reference-weight prior (Mesh2Animation L_id, Eq. 7).
+
+        For each vertex, the reference weight is a hard one-hot of its closest
+        BONE (the joint→parent segment), exactly as the paper's GRS module.
+        L_wref = MSE(W, W_ref) pulls predicted weights toward a geometrically
+        valid joint assignment. joint_pos are the predicted bind-pose joints,
+        so the reference co-evolves with training.
+        """
+        B, N, J = W.shape
+        p = joint_pos                                     # [B, J, 3]
+        par_idx = torch.where(self.parent_idx < 0,
+                              torch.arange(J, device=p.device), self.parent_idx)
+        par = p.index_select(1, par_idx)                  # [B, J, 3] (root → self)
+        seg = par - p                                     # [B, J, 3]
+        seg_len2 = (seg ** 2).sum(-1).clamp_min(1e-12)    # [B, J]
+        v = source_vert.unsqueeze(2) - p.unsqueeze(1)     # [B, N, J, 3]
+        t = (v * seg.unsqueeze(1)).sum(-1) / seg_len2.unsqueeze(1)   # [B, N, J]
+        t = t.clamp(0.0, 1.0)
+        foot = p.unsqueeze(1) + t.unsqueeze(-1) * seg.unsqueeze(1)   # [B, N, J, 3]
+        d2 = ((source_vert.unsqueeze(2) - foot) ** 2).sum(-1)        # [B, N, J]
+        closest = d2.argmin(dim=-1)                       # [B, N]
+        W_ref = F.one_hot(closest, num_classes=J).to(W.dtype)        # [B, N, J]
+        return {'L_wref': F.mse_loss(W, W_ref)}
+
+    @torch.no_grad()
+    def weight_quality_metric(self, W, source_vert, faces):
+        """#2 — GT-free skin-weight quality (Mesh2Animation static structure
+        smoothness, Fig. 7). Area-weighted mean of 1-ring weight variation:
+
+            E = Σ_i A_i · mean_{j∈N(i)} ‖W_i − W_j‖²  /  Σ_i A_i
+
+        A_i = barycentric vertex area. Area weighting turns the sum into a
+        surface integral → mesh-resolution / topology independent. Lower =
+        smoother weights. Diagnostic only (no grad). Returns scalar or None.
+        """
+        N = W.shape[1]
+        edges = None if self._mesh_edges_by_N is None else self._mesh_edges_by_N.get(N)
+        if edges is None:
+            return None
+        W = W.float()
+        V = source_vert.float()
+        B = W.shape[0]
+        f = faces[0] if faces.dim() == 3 else faces       # [F, 3] (shared topo)
+        e0, e1 = edges[:, 0], edges[:, 1]
+        diff2 = ((W.index_select(1, e0) - W.index_select(1, e1)) ** 2).sum(-1)  # [B, E]
+        # per-vertex local variation: average ‖ΔW‖² over incident edges
+        idx_e = torch.cat([e0, e1])                       # [2E]
+        val_e = torch.cat([diff2, diff2], dim=1)          # [B, 2E]
+        idx_b = idx_e.unsqueeze(0).expand(B, -1)
+        var = torch.zeros(B, N, device=W.device).scatter_add_(1, idx_b, val_e)
+        cnt = torch.zeros(B, N, device=W.device).scatter_add_(
+            1, idx_b, torch.ones(B, idx_e.shape[0], device=W.device))
+        var = var / cnt.clamp_min(1.0)                    # [B, N]
+        # per-vertex barycentric area
+        v0, v1, v2 = V[:, f[:, 0]], V[:, f[:, 1]], V[:, f[:, 2]]
+        tri_area = 0.5 * torch.linalg.cross(v1 - v0, v2 - v0, dim=-1).norm(dim=-1)  # [B, F]
+        A = torch.zeros(B, N, device=W.device)
+        for c in range(3):
+            A.scatter_add_(1, f[:, c].unsqueeze(0).expand(B, -1), tri_area / 3.0)
+        E = (A * var).sum(dim=1) / A.sum(dim=1).clamp_min(1e-8)   # [B]
+        return E.mean()
+
 
 # ── Quick sanity check ────────────────────────────────────────────────────
 if __name__ == '__main__':
