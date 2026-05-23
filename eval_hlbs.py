@@ -150,7 +150,8 @@ def Options():
         # Model args: fill from yml only if not explicitly set via CLI
         model_keys = ['rig_path', 'topo_key', 'num_identities', 'hid_dim',
                       'num_layers', 'freeze_adapt', 'use_joint_trans', 'full_prediction',
-                      'nfs_feat_dir', 'init_log_sigma']
+                      'nfs_feat_dir', 'init_log_sigma',
+                      'bind_pose_base_residual']
         for key in model_keys:
             if key in train_opts and getattr(opts, key, None) is None:
                 setattr(opts, key, train_opts[key])
@@ -371,6 +372,7 @@ class HLBSEvaluator:
                 face_mask_r0=getattr(opts, 'face_mask_r0', 1.0),
                 face_mask_r1=getattr(opts, 'face_mask_r1', 2.25),
                 helper_joint_idx=_helper_idx_ckpt,
+                bind_pose_base_residual=bool(getattr(opts, 'bind_pose_base_residual', 0)),
             ).to(self.device)
         else:
             self.model = HierarchicalLBS(
