@@ -2210,11 +2210,11 @@ class HLBSTrainer:
                     for k, v in dist_losses.items():
                         loss_dict[k] = v
 
-                # ── #1 Laplacian weight smoothness (Mesh2Animation) ──────
-                # 1-ring ‖ΔW‖²; mesh edges invalid under subsampling → skip.
+                # ── #1 area-weighted weight smoothness (Mesh2Animation) ──
+                # density-unbiased 1-ring ‖ΔW‖²; faces invalid under subsample → skip.
                 if getattr(opts, 'lambda_wlap', 0) > 0 and not is_permed and _W is not None:
                     for k, v in self.model.weight_smoothness_loss(
-                            _W, src_v.shape[1]).items():
+                            _W, src_v, batch.faces).items():
                         loss_dict[k] = v
 
                 # ── #3 reference-weight prior (Mesh2Animation L_id) ──────
