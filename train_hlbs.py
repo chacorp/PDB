@@ -685,7 +685,10 @@ class HLBSTrainer:
         """
         try:
             from pytorch3d.ops import sample_farthest_points
-            idx, _ = sample_farthest_points(V.unsqueeze(0), K=K)        # [1, K]
+            # pytorch3d returns (selected_points, selected_indices) — take the
+            # SECOND value as indices (taking the first was a latent bug:
+            # selected_points has shape [1, K, 3], not [1, K]).
+            _, idx = sample_farthest_points(V.unsqueeze(0), K=K)        # [1, K]
             return idx.squeeze(0).long()
         except Exception:
             pass
