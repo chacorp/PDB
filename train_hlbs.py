@@ -378,6 +378,10 @@ def Options():
     parser.add_argument("--amp", action='store_true',
                         help='bf16 autocast (mixed precision) for the forward pass. '
                              'Revert by simply dropping this flag.')
+    parser.add_argument("--skip_p3d_install", action='store_true',
+                        help='Skip pytorch3d auto-install when GPU FPS kernel is '
+                             'missing (probe only, warn, then fall back to slow '
+                             'Python FPS). Same as env SKIP_P3D_INSTALL=1.')
 
     # mask
     parser.add_argument("--no_t_mask", dest='no_t_mask', action='store_true')
@@ -2749,15 +2753,21 @@ class HLBSTrainer:
                 print(msg); logger.write(msg + "\n")
 
 
-def _ensure_pytorch3d_gpu():
+def _ensure_pytorch3d_gpu(skip_install=False):
     """Verify pytorch3d's FPS CUDA kernel is available; reinstall from source if not.
 
     mix4 subsampling rolls FPS. Without the CUDA kernel, pytorch3d's
     sample_farthest_points falls back to a Python loop with per-step .item()
     syncs — seconds per batch. On a CUDA box we require the GPU build.
-    The probe runs in a subprocess so the parent imports a fresh pytorch3d
-    after any reinstall.
+
+    Probe + (re)build run in subprocesses so the parent picks up a fresh
+    pytorch3d after install. Build env is set per GPU arch (V100=7.0,
+    A5000/RTX30=8.6, A100=8.0, RTX40=8.9, etc.) so the compile doesn't
+    waste time on unrelated archs and avoids default-arch errors.
+
+    Opt out by setting env var SKIP_P3D_INSTALL=1 (probes only, no install).
     """
+    import os as _os
     import subprocess
     if not torch.cuda.is_available():
         return
@@ -2772,13 +2782,45 @@ def _ensure_pytorch3d_gpu():
     if chk.returncode == 0 and 'P3D_GPU_OK' in chk.stdout:
         print('[pytorch3d] GPU FPS kernel verified.')
         return
-    print('[pytorch3d] GPU FPS unavailable — reinstalling from source...')
+    if skip_install or _os.environ.get('SKIP_P3D_INSTALL', '0') == '1':
+        print('[pytorch3d] GPU FPS unavailable; install skipped '
+              '(--skip_p3d_install or SKIP_P3D_INSTALL=1) — '
+              'falling back to slow Python FPS.')
+        print(f'  reason: {(chk.stderr or chk.stdout).strip()[-300:]}')
+        return
+    # Build env: derive CUDA arch from the actual GPU; align CUDA_HOME with
+    # the toolkit matching torch's bundled CUDA version (cu124 → cuda-12.4).
+    major, minor = torch.cuda.get_device_capability(0)
+    arch = f"{major}.{minor}"
+    torch_cuda = (torch.version.cuda or '').replace('.', '-')   # '12.4' → '12-4'
+    candidate_cuda_homes = [
+        _os.environ.get('CUDA_HOME', ''),
+        f"/usr/local/cuda-{torch.version.cuda}" if torch.version.cuda else '',
+        '/usr/local/cuda',
+    ]
+    cuda_home = next((p for p in candidate_cuda_homes if p and _os.path.isdir(p)), '')
+    env = _os.environ.copy()
+    if cuda_home:
+        env['CUDA_HOME'] = cuda_home
+        env['PATH'] = f"{cuda_home}/bin:" + env.get('PATH', '')
+        env['LD_LIBRARY_PATH'] = f"{cuda_home}/lib64:" + env.get('LD_LIBRARY_PATH', '')
+    env['TORCH_CUDA_ARCH_LIST'] = arch
+    env['FORCE_CUDA'] = '1'
+    print(f'[pytorch3d] GPU FPS unavailable — building from source '
+          f'(arch={arch}, CUDA_HOME={cuda_home or "<unset>"})')
     print(f'  reason: {(chk.stderr or chk.stdout).strip()[-300:]}')
+    subprocess.run([
+        sys.executable, '-m', 'pip', 'uninstall', '-y', 'pytorch3d',
+    ], check=False, env=env)
+    subprocess.run([
+        sys.executable, '-m', 'pip', 'install', '--no-cache-dir',
+        'fvcore', 'iopath',
+    ], check=False, env=env)
     subprocess.run([
         sys.executable, '-m', 'pip', 'install',
         '--no-build-isolation', '--no-cache-dir',
-        'git+https://github.com/facebookresearch/pytorch3d.git',
-    ], check=False)
+        'git+https://github.com/facebookresearch/pytorch3d.git@v0.7.9',
+    ], check=False, env=env)
     chk2 = subprocess.run([sys.executable, '-c', probe],
                           capture_output=True, text=True)
     if chk2.returncode == 0 and 'P3D_GPU_OK' in chk2.stdout:
@@ -2790,8 +2832,8 @@ def _ensure_pytorch3d_gpu():
 
 
 if __name__ == "__main__":
-    _ensure_pytorch3d_gpu()
     opts = Options()
+    _ensure_pytorch3d_gpu(skip_install=getattr(opts, 'skip_p3d_install', False))
 
     if os.path.exists(opts.config):
         opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
