@@ -82,6 +82,10 @@ def Options():
                         help='Checkpoint directory (must contain model_hlbs_*.pth)')
     parser.add_argument("--start_epoch", type=int, default=-1,
                         help='Epoch to load (-1 = best)')
+    parser.add_argument("--best_epoch_tag", type=int, default=None,
+                        help='When loading best (--start_epoch -1), tag the output dir '
+                             'as e_best{N:03d} so re-eval at a new best epoch does not '
+                             'overwrite the previous "best" outputs.')
 
     # data
     parser.add_argument("--data_selection", type=str, default='mf_ROM',
@@ -448,7 +452,11 @@ class HLBSEvaluator:
 
         # ── Output dir ──────────────────────────────────────────────────
         # eval_hlbs/{ckpt_basename}-eval/e050-self/mf_ROM/
-        epoch_tag = "best" if opts.start_epoch < 0 else f"{opts.start_epoch:03d}"
+        if opts.start_epoch < 0:
+            epoch_tag = (f"best{opts.best_epoch_tag:03d}"
+                        if opts.best_epoch_tag is not None else "best")
+        else:
+            epoch_tag = f"{opts.start_epoch:03d}"
         ckpt_basename = os.path.basename(os.path.normpath(opts.ckpt))
         if opts.cross_retarget:
             tgt_tag = f"{opts.tgt_dataset}_id{opts.tgt_identity}" if opts.tgt_dataset else "custom"
