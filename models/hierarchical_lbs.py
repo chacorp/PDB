@@ -819,7 +819,14 @@ class HierarchicalLBS_FullPred(nn.Module):
         e = _np.concatenate([f_np[:, [0,1]], f_np[:, [1,2]], f_np[:, [0,2]]], axis=0)
         e = _np.sort(e, axis=1)
         e = _np.unique(e, axis=0)
-        self._mesh_edges = torch.tensor(e, dtype=torch.long, device=self.parent_idx.device)
+        n_verts = int(f_np.max()) + 1
+        edges_t = torch.tensor(e, dtype=torch.long, device=self.parent_idx.device)
+        self._mesh_edges = edges_t
+        # Also populate the per-N dict used by weight_smoothness_loss /
+        # weight_quality_metric — without this, those silently skip and log 0.
+        if self._mesh_edges_by_N is None:
+            self._mesh_edges_by_N = {}
+        self._mesh_edges_by_N[n_verts] = edges_t
 
     def _smooth_logit_W(self, logit_W):
         if self._mesh_edges is None or self.smooth_W_iters <= 0:
