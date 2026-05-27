@@ -227,9 +227,11 @@ def Options():
                              'tgt_id_B_neutral), tgt_id_B_def) — supervising explicit identity vs '
                              'expression disentanglement using shared z_FACS pairs.')
     parser.add_argument("--cross_pair_iden_vecs", type=str,
-                        default='data/ICT_live_100/iden_vecs.npy',
+                        default='ict_face_pt/random_identity_vecs.npy',
                         help='Path to .npy or .pt file with iden_vecs [N, 100] for cross-pair sampling. '
-                             'Default = 100 train IDs (matches per-id bind_pose GT cache for ICT).')
+                             'Default = TRAINING IDs (random_identity_vecs[:111]). NEVER point this at '
+                             'data/ICT_live_100/iden_vecs.npy — those are the TEST 100 IDs; using them '
+                             'here would leak test identities into training.')
     parser.add_argument("--cross_pair_length", type=int, default=0,
                         help='Items-per-epoch for cross-pair loader (0=N_id*53). Lower = fewer pairs/epoch.')
 
@@ -1514,8 +1516,11 @@ class HLBSTrainer:
                     _ict_fm, _iden_vecs, expression_vecs=None,
                     mode='train', length=_length,
                 )
+                _cross_nw = opts.num_workers
                 self._cross_pair_loader = torch.utils.data.DataLoader(
-                    _cross_ds, batch_size=opts.batch_size, num_workers=0,
+                    _cross_ds, batch_size=opts.batch_size, num_workers=_cross_nw,
+                    persistent_workers=(_cross_nw > 0),
+                    pin_memory=torch.cuda.is_available(),
                     shuffle=True, collate_fn=partial(cross_pair_collate, device='cpu'),
                 )
                 self._cross_pair_iter = iter(self._cross_pair_loader)
