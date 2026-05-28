@@ -284,23 +284,52 @@ class EvalDataset(data.Dataset):
         exp_coeff = self.expression_vecs[index]
         faces = self.ict_face_model.faces
 
-        vertices, template, _ = self.ict_face_model.apply_coeffs(
-            id_coeff, exp_coeff, return_all=True,
-        )
-        vertices=vertices[0]
-        template=template[0]
+        # ── Caricaturization aug (train only): per-item prob, replace neutral
+        # template with caricaturized variant. ICT exp_disp is identity-
+        # independent, so the same expression delta is added to the aug template
+        # → caricaturized identity in the same expression. Falls back to non-aug
+        # silently if the per-id aug file is missing.
+        use_aug = False
+        if self._caricat_prob > 0 and np.random.random() < self._caricat_prob:
+            _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
+            if os.path.isfile(_aug_path):
+                use_aug = True
+                _ca = self._caricat_template_cache_ict.get(id_index)
+                if _ca is None:
+                    _t_np = np.load(_aug_path).astype(np.float32)
+                    _tn_np = igl.per_vertex_normals(_t_np, faces)
+                    _ca = (
+                        _t_np,
+                        torch.tensor(_t_np).float(),
+                        torch.tensor(_tn_np).float(),
+                    )
+                    self._caricat_template_cache_ict[id_index] = _ca
+                template_np, template_t, template_normal_t = _ca
+                exp_disp = self.ict_face_model.get_exp_disp(exp_coeff)
+                if exp_disp.ndim == 3:
+                    exp_disp = exp_disp[0]
+                vertices = (template_np + exp_disp.astype(np.float32))
 
-        # Neutral mesh + its normal + faces depend only on identity → cache per id.
-        cached = self._ict_template_cache.get(id_index)
-        if cached is None:
-            template_normal = igl.per_vertex_normals(template, faces)
-            cached = (
-                torch.tensor(template).float(),
-                torch.tensor(template_normal).float(),
-                torch.tensor(faces).long(),
+        if not use_aug:
+            vertices, template, _ = self.ict_face_model.apply_coeffs(
+                id_coeff, exp_coeff, return_all=True,
             )
-            self._ict_template_cache[id_index] = cached
-        template_t, template_normal_t, faces_t = cached
+            vertices=vertices[0]
+            template=template[0]
+            cached = self._ict_template_cache.get(id_index)
+            if cached is None:
+                template_normal = igl.per_vertex_normals(template, faces)
+                cached = (
+                    torch.tensor(template).float(),
+                    torch.tensor(template_normal).float(),
+                    torch.tensor(faces).long(),
+                )
+                self._ict_template_cache[id_index] = cached
+            template_t, template_normal_t, faces_t = cached
+        else:
+            if not hasattr(self, '_ict_faces_t_cached'):
+                self._ict_faces_t_cached = torch.tensor(faces).long()
+            faces_t = self._ict_faces_t_cached
 
         vertices_normal = igl.per_vertex_normals(vertices, faces)
         vertices = torch.tensor(vertices).float()
@@ -377,25 +406,48 @@ class EvalDataset(data.Dataset):
     def get_mf_SEN(self, index):
         file_path=self.mf_SEN_datalist[index]
         id_name = file_path.split('/')[7]
-        
-        template_np = self.mf_SEN_mesh[id_name]
-        template = torch.tensor(template_np).float()
-        
+
+        orig_template_np = self.mf_SEN_mesh[id_name]
         vertices_np = np.load(file_path)
-        R, t, _ = procrustes_LDM(vertices_np, template_np)
-        vertices_np = vertices_np @ R.T + t
-        vertices = torch.tensor(vertices_np).float()
-        
-        # faces_np = self.mf_SEN_std['new_f']
-        # faces = torch.tensor(faces_np).long()
+        R, t, _ = procrustes_LDM(vertices_np, orig_template_np)
+        vertices_np = vertices_np @ R.T + t   # aligned to orig template frame
+
         faces = self.mf_SEN_std['new_f'].long()
-        
-        
-        template_normal = igl.per_vertex_normals(template_np, faces.numpy())
-        vertices_normal = igl.per_vertex_normals(vertices_np, faces.numpy())
-        template_normal = torch.tensor(template_normal).float()
+        faces_np = faces.numpy()
+
+        # ── Caricaturization aug (train only): replace neutral template with
+        # caricaturized variant; preserve this frame's deformation by adding
+        # (aligned_vertices - orig_template) to the aug template.
+        use_aug = False
+        if self._caricat_prob > 0 and np.random.random() < self._caricat_prob:
+            _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
+            if os.path.isfile(_aug_path):
+                use_aug = True
+                _ca = self._caricat_template_cache_mf.get(id_name)
+                if _ca is None:
+                    _t_np = np.load(_aug_path).astype(np.float32)
+                    _tn_np = igl.per_vertex_normals(_t_np, faces_np)
+                    _ca = (
+                        _t_np,
+                        torch.tensor(_t_np).float(),
+                        torch.tensor(_tn_np).float(),
+                    )
+                    self._caricat_template_cache_mf[id_name] = _ca
+                template_np_a, template, template_normal = _ca
+                delta = (vertices_np - orig_template_np).astype(np.float32)
+                vertices_np = template_np_a + delta
+                vertices = torch.tensor(vertices_np).float()
+
+        if not use_aug:
+            template_np = orig_template_np
+            template = torch.tensor(template_np).float()
+            template_normal = igl.per_vertex_normals(template_np, faces_np)
+            template_normal = torch.tensor(template_normal).float()
+            vertices = torch.tensor(vertices_np).float()
+
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
         vertices_normal = torch.tensor(vertices_normal).float()
-        
+
         return vertices, template, vertices_normal, template_normal, faces, id_name
 
     def get_coma(self, index):
@@ -424,26 +476,46 @@ class EvalDataset(data.Dataset):
     def get_mf_ROM(self, index):
         file_path=self.mf_ROM_datalist[index]
         id_name = file_path.split('/')[7]
-        
-        template_np = self.mf_ROM_mesh[id_name]
-        template = torch.tensor(template_np).float()
-        
-        # vertices_np = np.load(file_path)
-        # vertices = torch.tensor(vertices_np).float()
+
+        orig_template_np = self.mf_ROM_mesh[id_name]
         vertices_np = np.load(file_path)
-        R, t, _ = procrustes_LDM(vertices_np, template_np)
+        R, t, _ = procrustes_LDM(vertices_np, orig_template_np)
         vertices_np = vertices_np @ R.T + t
-        vertices = torch.tensor(vertices_np).float()
-        
-        # faces_np = self.mf_ROM_std['new_f']
-        # faces = torch.tensor(faces_np).long()
+
         faces = self.mf_ROM_std['new_f'].long()
-        
-        template_normal = igl.per_vertex_normals(template_np, faces.numpy())
-        vertices_normal = igl.per_vertex_normals(vertices_np, faces.numpy())
-        template_normal = torch.tensor(template_normal).float()
+        faces_np = faces.numpy()
+
+        # Caricaturization aug — see get_mf_SEN for details.
+        use_aug = False
+        if self._caricat_prob > 0 and np.random.random() < self._caricat_prob:
+            _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
+            if os.path.isfile(_aug_path):
+                use_aug = True
+                _ca = self._caricat_template_cache_mf.get(id_name)
+                if _ca is None:
+                    _t_np = np.load(_aug_path).astype(np.float32)
+                    _tn_np = igl.per_vertex_normals(_t_np, faces_np)
+                    _ca = (
+                        _t_np,
+                        torch.tensor(_t_np).float(),
+                        torch.tensor(_tn_np).float(),
+                    )
+                    self._caricat_template_cache_mf[id_name] = _ca
+                template_np_a, template, template_normal = _ca
+                delta = (vertices_np - orig_template_np).astype(np.float32)
+                vertices_np = template_np_a + delta
+                vertices = torch.tensor(vertices_np).float()
+
+        if not use_aug:
+            template_np = orig_template_np
+            template = torch.tensor(template_np).float()
+            template_normal = igl.per_vertex_normals(template_np, faces_np)
+            template_normal = torch.tensor(template_normal).float()
+            vertices = torch.tensor(vertices_np).float()
+
+        vertices_normal = igl.per_vertex_normals(vertices_np, faces_np)
         vertices_normal = torch.tensor(vertices_normal).float()
-        
+
         return vertices, template, vertices_normal, template_normal, faces, id_name
 
     def __getitem__(self, index):
@@ -475,6 +547,27 @@ class CBDDataset(data.Dataset):
         # get basenames
         self.opts = opts
         self.is_train = is_train
+        # Caricaturization data aug: per-item prob of replacing neutral template
+        # with caricaturized variant (Sela CVIU 2015). Train-time only.
+        self._caricat_aug_dir = (getattr(opts, 'caricat_aug_dir', '') or '') if is_train else ''
+        self._caricat_prob = float(getattr(opts, 'caricat_prob', 0.0) or 0.0) if is_train else 0.0
+        self._caricat_template_cache_ict = {}   # id_index → (template_np, template_t, template_normal_t)
+        self._caricat_template_cache_mf = {}    # id_name  → same
+        if self._caricat_prob > 0 and self._caricat_aug_dir:
+            if not os.path.isdir(self._caricat_aug_dir):
+                print(f"[caricat] WARN: --caricat_aug_dir '{self._caricat_aug_dir}' "
+                      f"not found → disabling caricaturization aug")
+                self._caricat_prob = 0.0
+            else:
+                _n_aug = len([f for f in os.listdir(self._caricat_aug_dir)
+                              if f.endswith('_aug.npy')])
+                print(f"[caricat] enabled: dir={self._caricat_aug_dir}  "
+                      f"prob={self._caricat_prob}  ({_n_aug} aug meshes available)")
+                # NOTE: per-id bind pose GT for aug samples is NOT yet wired in.
+                # When --lambda_bind_reg > 0, the trainer looks up the original
+                # per-id bind pose; aug samples should use {id}_aug_bind_pos_
+                # landmark.npy instead. With current runs (lambda_bind_reg=0),
+                # this is a no-op — revisit if re-enabling that loss.
         self.is_valid = is_valid
         self.device = device
         self.data_basedir = data_basedir

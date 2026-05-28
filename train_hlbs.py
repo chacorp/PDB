@@ -384,6 +384,19 @@ def Options():
                         help='Skip pytorch3d auto-install when GPU FPS kernel is '
                              'missing (probe only, warn, then fall back to slow '
                              'Python FPS). Same as env SKIP_P3D_INSTALL=1.')
+    # ── Caricaturization data augmentation ──
+    parser.add_argument("--caricat_aug_dir", type=str, default='',
+                        help='Directory with caricaturized augmented neutral meshes '
+                             '({id_name}_aug.npy [N,3], per ICT/MF identity). Empty '
+                             'disables. Variants: nfs_features_seg_aug, '
+                             'nfs_features_seg_aug_masked, '
+                             'nfs_features_seg_aug_masked_lowEye (Sela CVIU 2015 based).')
+    parser.add_argument("--caricat_prob", type=float, default=0.0,
+                        help='Per-item probability of replacing the neutral template '
+                             'with its caricaturized variant. Deformation delta '
+                             '(ICT exp_disp / MF procrustes-aligned offset) is then '
+                             'added to the aug template, preserving expression. '
+                             'Requires --caricat_aug_dir. 0.0 disables.')
 
     # mask
     parser.add_argument("--no_t_mask", dest='no_t_mask', action='store_true')
