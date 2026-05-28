@@ -519,6 +519,13 @@ def _viridis_rgb(vals: np.ndarray) -> np.ndarray:
     return (cm.viridis(vals)[:, :3] * 255).astype(np.uint8)
 
 
+def _err_rgb(vals: np.ndarray, name: str = "YlOrRd") -> np.ndarray:
+    """[N] in [0,1] → [N,3] uint8 using matplotlib colormap (default YlOrRd —
+    matches utils/matplotlib_rnd.plot_image_array_diff)."""
+    vals = np.clip(vals, 0.0, 1.0)
+    return (cm.get_cmap(name)(vals)[:, :3] * 255).astype(np.uint8)
+
+
 def _tab20_rgb(idx: np.ndarray, J: int) -> np.ndarray:
     """[N] int in [0,J) → [N,3] uint8 (categorical)."""
     cmap = cm.get_cmap("tab20", max(J, 20))
@@ -741,8 +748,19 @@ def _compute_metrics(pred_v: np.ndarray, gt_v: np.ndarray, faces: np.ndarray) ->
 # ───────────────────────── viser app ────────────────────────────────────────
 
 
+def _boost_saturation(rgb_uint8, factor):
+    """HSV S boost on a [N, 3] uint8 array. factor=1.0 → noop."""
+    if factor is None or abs(factor - 1.0) < 1e-3:
+        return rgb_uint8
+    from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
+    hsv = rgb_to_hsv(np.clip(rgb_uint8.astype(np.float32) / 255.0, 0.0, 1.0))
+    hsv[..., 1] = np.clip(hsv[..., 1] * float(factor), 0.0, 1.0)
+    return np.clip(hsv_to_rgb(hsv) * 255.0, 0, 255).astype(np.uint8)
+
+
 def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
-                               opacity=1.0, shading="smooth", double_sided=False):
+                               opacity=1.0, shading="smooth", double_sided=False,
+                               sat=1.0):
     """Per-vertex colored mesh with TRUE alpha blending via PBR alphaMode=BLEND.
 
     shading:
@@ -754,6 +772,7 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
     import trimesh
     from trimesh.visual.material import PBRMaterial
 
+    rgb_uint8 = _boost_saturation(rgb_uint8[:, :3], sat) if rgb_uint8.shape[1] >= 3 else rgb_uint8
     a_val = int(np.clip(opacity, 0.05, 1.0) * 255)
     if rgb_uint8.shape[1] == 3:
         a = np.full((rgb_uint8.shape[0], 1), a_val, dtype=np.uint8)
@@ -881,8 +900,21 @@ def main():
                  "dawn", "forest", "lobby", "night", "park", "sunset"],
         initial_value="studio",
     )
-    g_full_lit = server.gui.add_checkbox(
-        "full lit (no shading / no shadows)", False,
+    g_lighting = server.gui.add_dropdown(
+        "lighting mode",
+        options=["hdri", "front only", "6-axis studio", "flat (no shadows)"],
+        initial_value="hdri",
+    )
+    # Color pickers — used wherever the renderer needs a single tint
+    # (bind_pose mesh, anim neutral, mesh-only fallbacks, cross side meshes).
+    # Per-vertex modes (weight heatmap / anim error map) ignore these.
+    g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
+    g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
+    g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
+    # Global saturation boost for ALL displayed vertex colors (weight maps,
+    # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
+    g_global_sat = server.gui.add_slider(
+        "global saturation", min=0.5, max=3.0, step=0.1, initial_value=1.5,
     )
 
     with server.gui.add_folder("Bind pose"):
@@ -905,9 +937,18 @@ def main():
         g_soft_topk = server.gui.add_slider(
             "soft top-K joints", min=1, max=8, step=1, initial_value=3,
         )
-        # Post-blend HSV saturation boost. 1.0 = raw RGB blend (desaturates
-        # toward gray when joints with opposite hues mix). 2.0+ pushes
-        # toward tab20-level saturation (argmax-like vividness).
+        # Palette: nipy_spectral / turbo / gist_rainbow evenly sampled give the
+        # best contrast across J=66 joints. tab20 cycles (only 20 unique).
+        g_palette = server.gui.add_dropdown(
+            "palette", options=[
+                "nipy_spectral", "turbo", "gist_rainbow", "gist_ncar",
+                "rainbow", "hsv", "tab20",
+            ],
+            initial_value="nipy_spectral",
+        )
+        # Post-blend HSV saturation. NOTE: with the new HSV circular-hue blend
+        # below, opposite-hue cancellation no longer makes white patches; this
+        # slider mostly tunes vividness for argmax/single modes.
         g_soft_sat = server.gui.add_slider(
             "soft saturation", min=1.0, max=3.0, step=0.1, initial_value=2.0,
         )
@@ -925,12 +966,19 @@ def main():
 
     with server.gui.add_folder("Anim"):
         g_frame = server.gui.add_slider("frame", min=0, max=n_frames_init - 1, step=1, initial_value=0)
+        g_prev_frame = server.gui.add_button("◀ prev frame")
+        g_next_frame = server.gui.add_button("next frame ▶")
         g_playing = server.gui.add_checkbox("play", False)
         g_fps = server.gui.add_slider("fps", min=1, max=60, step=1, initial_value=15)
         g_show_axes = server.gui.add_checkbox("joint axes triads", True)
         g_show_bones = server.gui.add_checkbox("bones", True)
         g_show_gt_anim = server.gui.add_checkbox("GT mesh side-by-side", True)
         g_err_color = server.gui.add_checkbox("color pred by L2 error", True)
+        g_err_cmap = server.gui.add_dropdown(
+            "err cmap",
+            options=["YlOrRd", "OrRd", "Reds", "hot", "afmhot", "inferno", "magma", "viridis"],
+            initial_value="YlOrRd",
+        )
         # Joint position source. Each option lives in a different coord frame:
         # - T_world (animated): rig reference frame (Maya rig positions), where
         #   pred_v actually ends up after skinning. Aligned with pred mesh but
@@ -976,10 +1024,44 @@ def main():
         g_show_src = server.gui.add_checkbox("show source meshes (neu+def)", True)
         g_show_tgt_neu = server.gui.add_checkbox("show target neutral", True)
 
+    with server.gui.add_folder("Render to video"):
+        g_render_dir = server.gui.add_text(
+            "out dir", str(_REPO / "_diag" / "render"),
+        )
+        g_render_name = server.gui.add_text("video filename", "out.mp4")
+        g_render_fps = server.gui.add_slider(
+            "video fps", min=1, max=60, step=1, initial_value=30,
+        )
+        g_render_w = server.gui.add_slider(
+            "render width", min=256, max=1920, step=64, initial_value=720,
+        )
+        g_render_h = server.gui.add_slider(
+            "render height", min=256, max=1080, step=64, initial_value=720,
+        )
+        g_preview_btn = server.gui.add_button(
+            "Preview (capture current frame @ chosen W/H)"
+        )
+        g_render_btn = server.gui.add_button(
+            "Render video (sweeps all frames @ current view)"
+        )
+        g_render_progress = server.gui.add_text("render progress", "idle", disabled=True)
+        # Pre-create the preview image inside this folder so it's always visible
+        # in the Render section. Initialized to a tiny placeholder; .image
+        # setter swaps in the real capture on preview-click.
+        _placeholder = np.full((8, 8, 3), 220, dtype=np.uint8)
+        _preview_handle = server.gui.add_image(
+            image=_placeholder, label="preview — click button above to capture",
+        )
+        _preview_state = {"handle": _preview_handle}
+
     g_status = server.gui.add_text("status", "ready", disabled=True)
 
     # ───── scene-node registry (so we can clear between mode switches) ──
     nodes: list = []
+
+    def _tile(c, n):
+        """(r,g,b) tuple or [3] array → [n, 3] uint8."""
+        return np.tile(np.asarray(c, dtype=np.uint8).reshape(1, 3), (n, 1))
 
     def _clear():
         nonlocal nodes
@@ -1001,7 +1083,7 @@ def main():
         # add_mesh_simple lets three.js auto-compute normals from faces; for
         # ICT's quad-triangulated mesh that produces visible diagonal contour
         # artifacts. igl per_vertex_normals (area-weighted) avoids this.
-        rgb = np.full((verts.shape[0], 3), 200, dtype=np.uint8)
+        rgb = _tile(g_mesh_color.value, verts.shape[0])
         m = _add_per_vertex_color_mesh(
             server, "/mesh", verts, cache.faces, rgb,
             opacity=float(g_mesh_opacity.value), shading=g_shading.value,
@@ -1070,8 +1152,8 @@ def main():
         W = c["W"]                                 # [V, J] or None
         if W is None:
             # mesh-only fallback
-            rgb = np.full((verts.shape[0], 3), 180, dtype=np.uint8)
-            h = _add_per_vertex_color_mesh(server, "/mesh", verts, cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            rgb = _tile(g_mesh_color.value, verts.shape[0])
+            h = _add_per_vertex_color_mesh(server, "/mesh", verts, cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
             nodes.append(h)
             g_status.value = (f"id={id_idx} ds={cache.active.name} | model skipped "
                               f"(no nfs cache) — mesh only")
@@ -1087,40 +1169,41 @@ def main():
                 f"id={id_idx} j={j}({rig.joint_names[j]}) | "
                 f"W max={W[:, j].max():.3f} mean={W[:, j].mean():.3f}"
             )
-        elif mode == "argmax":
-            idx = np.argmax(W, axis=-1)            # [V]
-            rgb = _tab20_rgb(idx, J)
-            uniq = len(np.unique(idx))
-            g_status.value = f"id={id_idx} | argmax mode | {uniq}/{J} joints active"
-        elif mode == "soft":
-            # Soft skin map: blend ONLY top-K joints per vertex (avoid noise from
-            # 60+ tiny weights). K=1 == argmax; K=3 gives clean boundaries
-            # without contour-line artifacts from the long tail.
-            K = max(int(g_soft_topk.value), 1)
-            cmap = cm.get_cmap("tab20", max(J, 20))
-            palette = (cmap(np.arange(J) % cmap.N)[:, :3] * 255).astype(np.float32)
+        elif mode in ("argmax", "soft"):
+            # Build evenly-sampled palette across J joints. Wide-spectrum cmaps
+            # (nipy_spectral / turbo / gist_rainbow) give maximal contrast for
+            # large J — proven approach from utils/matplotlib_rnd.py.
+            pname = g_palette.value
+            cmap = cm.get_cmap(pname)
+            palette_f = np.asarray(
+                [cmap(i / max(J - 1, 1))[:3] for i in range(J)], dtype=np.float32
+            )  # [J, 3] in [0, 1]
             Wf = W.astype(np.float32)
-            if K >= J:
-                rgb_f = Wf @ palette
-            else:
-                topk_idx = np.argpartition(-Wf, K - 1, axis=-1)[:, :K]
-                topk_w = np.take_along_axis(Wf, topk_idx, axis=-1)
-                topk_w = topk_w / (topk_w.sum(-1, keepdims=True) + 1e-8)
-                topk_cols = palette[topk_idx]                              # [V, K, 3]
-                rgb_f = (topk_w[..., None] * topk_cols).sum(-2)            # [V, 3]
-            # Post-blend HSV saturation boost — RGB averaging desaturates
-            # opposite hues; this restores tab20-level vividness.
-            sat_boost = float(g_soft_sat.value)
-            if sat_boost > 1.001:
-                from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
-                hsv = rgb_to_hsv(np.clip(rgb_f / 255.0, 0.0, 1.0))
-                hsv[..., 1] = np.clip(hsv[..., 1] * sat_boost, 0.0, 1.0)
-                rgb_f = hsv_to_rgb(hsv) * 255.0
-            rgb = np.clip(rgb_f, 0, 255).astype(np.uint8)
-            uniq = len(np.unique(np.argmax(W, axis=-1)))
+            if mode == "argmax":
+                idx = np.argmax(Wf, axis=-1)
+                rgb_f = palette_f[idx]
+            else:  # soft
+                # Top-K mask zeros out long-tail noise before blending.
+                K = max(int(g_soft_topk.value), 1)
+                if K < J:
+                    topk_idx = np.argpartition(-Wf, K - 1, axis=-1)[:, :K]
+                    mask = np.zeros_like(Wf)
+                    np.put_along_axis(mask, topk_idx, 1.0, axis=-1)
+                    Wm = Wf * mask
+                    Wm = Wm / (Wm.sum(-1, keepdims=True) + 1e-8)
+                else:
+                    Wm = Wf
+                rgb_f = Wm @ palette_f                                        # [V, 3]
+                # Per-channel stretch — pushes blended colors out of mid-gray
+                # band so cheek/forehead/etc. stay distinct.
+                ch_min = rgb_f.min(0, keepdims=True)
+                ch_max = rgb_f.max(0, keepdims=True)
+                rgb_f = (rgb_f - ch_min) / (ch_max - ch_min + 1e-8)
+            rgb = np.clip(rgb_f * 255, 0, 255).astype(np.uint8)
+            uniq = len(np.unique(np.argmax(Wf, axis=-1)))
+            tag = mode if mode == "argmax" else f"soft top-{int(g_soft_topk.value)}"
             g_status.value = (
-                f"id={id_idx} | soft top-{K} sat={sat_boost:.1f} | "
-                f"{uniq}/{J} dominant joints"
+                f"id={id_idx} | {tag} | palette={pname} | {uniq}/{J} dominant joints"
             )
         else:  # entropy
             eps = 1e-8
@@ -1132,7 +1215,7 @@ def main():
                 f"max={ent.max():.3f} (log J = {max_ent:.3f})"
             )
 
-        h = _add_per_vertex_color_mesh(server, "/mesh", verts, cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+        h = _add_per_vertex_color_mesh(server, "/mesh", verts, cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
         nodes.append(h)
         # joints as small ref dots
         h2 = server.scene.add_point_cloud(
@@ -1165,8 +1248,8 @@ def main():
         id_idx = int(g_id.value)
         if not td.supports_anim:
             c = cache.get(id_idx)
-            rgb = np.full((c["neu_v"].shape[0], 3), 200, dtype=np.uint8)
-            h = _add_per_vertex_color_mesh(server, "/anim/neu", c["neu_v"], cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            rgb = _tile(g_mesh_color.value, c["neu_v"].shape[0])
+            h = _add_per_vertex_color_mesh(server, "/anim/neu", c["neu_v"], cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
             nodes.append(h)
             g_status.value = (f"ds={td.name}: anim mode unsupported "
                               f"(no exp driver) — neutral mesh only")
@@ -1196,32 +1279,41 @@ def main():
             return
         if pred_v is None:
             # mesh-only animation: show GT only
-            rgb_gt = np.tile(np.array([[200, 200, 220]], dtype=np.uint8), (gt_v.shape[0], 1))
-            h = _add_per_vertex_color_mesh(server, "/anim/gt", gt_v, cache.faces, rgb_gt, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            rgb_gt = _tile(g_mesh_color.value, gt_v.shape[0])
+            h = _add_per_vertex_color_mesh(server, "/anim/gt", gt_v, cache.faces, rgb_gt, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
             nodes.append(h)
             g_status.value = (f"id={id_idx} f={frame:03d}/{nf-1} ds={td.name} | "
                               f"model skipped (no nfs cache) — GT mesh only")
             return
 
         if g_err_color.value:
-            err = np.linalg.norm(pred_v - gt_v, axis=-1)
-            err_n = err / max(err.max(), 1e-8)
-            rgb_pred = _viridis_rgb(err_n)
+            err = np.linalg.norm(pred_v - gt_v, axis=-1)             # [V]
+            err_n = np.clip(err / max(err.max(), 1e-8), 0, 1)
+            # hot: black (err≈0) → red → yellow → white (err=max). At low err the
+            # heat is black, alpha is also low → mesh_color shows through. At
+            # high err alpha=1 → full white/yellow highlight.
+            heat = _err_rgb(err_n, g_err_cmap.value).astype(np.float32)
+            base = np.tile(
+                np.asarray(g_mesh_color.value, dtype=np.float32),
+                (pred_v.shape[0], 1),
+            )
+            a = err_n[:, None]   # 0 → keep mesh color; 1 → full hot color
+            rgb_pred = np.clip((1 - a) * base + a * heat, 0, 255).astype(np.uint8)
             err_mm = err.mean() * 1000.0
         else:
-            rgb_pred = np.tile(np.array([[230, 230, 230]], dtype=np.uint8), (pred_v.shape[0], 1))
+            rgb_pred = _tile(g_mesh_color.value, pred_v.shape[0])
             err_mm = float("nan")
 
         # Layout: pred at origin, GT shifted +X by mesh width.
         x_off = float(pred_v[:, 0].max() - pred_v[:, 0].min()) * 1.15
 
-        h = _add_per_vertex_color_mesh(server, "/anim/pred", pred_v, cache.faces, rgb_pred, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+        h = _add_per_vertex_color_mesh(server, "/anim/pred", pred_v, cache.faces, rgb_pred, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
         nodes.append(h)
         if g_show_gt_anim.value:
             shifted = gt_v.copy()
             shifted[:, 0] += x_off
-            rgb_gt = np.tile(np.array([[180, 180, 220]], dtype=np.uint8), (gt_v.shape[0], 1))
-            h2 = _add_per_vertex_color_mesh(server, "/anim/gt", shifted, cache.faces, rgb_gt, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            rgb_gt = _tile(g_mesh_color.value, gt_v.shape[0])
+            h2 = _add_per_vertex_color_mesh(server, "/anim/gt", shifted, cache.faces, rgb_gt, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
             nodes.append(h2)
 
         # Skeleton on pred side: joint points + bones
@@ -1314,10 +1406,10 @@ def main():
                               f"model skipped (missing nfs cache on one side)")
             # still show source mesh if we have it
             if out["src_def_v"] is not None:
-                rgb = np.full((out["src_def_v"].shape[0], 3), 200, dtype=np.uint8)
+                rgb = _tile(g_src_color.value, out["src_def_v"].shape[0])
                 h = _add_per_vertex_color_mesh(
                     server, "/cross/src_def", out["src_def_v"], src_td.faces, rgb,
-                    opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+                    opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
                 nodes.append(h)
             return
 
@@ -1344,25 +1436,30 @@ def main():
             v = verts.copy(); v[:, 0] += x
             h = _add_per_vertex_color_mesh(server, f"/cross/{name}", v, faces, rgb,
                                            opacity=float(g_mesh_opacity.value),
-                                           shading=g_shading.value, double_sided=g_double_sided.value)
+                                           shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
             nodes.append(h)
 
-        gray = lambda v, c=200: np.full((v.shape[0], 3), c, dtype=np.uint8)
-        _put("src_neu", out["src_neu_v"], src_td.faces, gray(out["src_neu_v"], 200))
-        _put("src_def", out["src_def_v"], src_td.faces,
-             np.tile(np.array([[180, 220, 180]], dtype=np.uint8),
-                     (out["src_def_v"].shape[0], 1)))
-        _put("tgt_neu", out["tgt_neu_v"], tgt_td.faces, gray(out["tgt_neu_v"], 200))
+        # src_neu = lighter src tint; src_def = src tint as-is (saturation already
+        # boosted globally). tgt_neu uses tgt color. tgt_pred uses tgt color if
+        # there are no metrics, else viridis error heatmap.
+        src_c = np.asarray(g_src_color.value, dtype=np.int16)
+        src_neu_c = np.clip(src_c + 25, 0, 255).astype(np.uint8)  # slightly lighter
+        tgt_c = np.asarray(g_tgt_color.value, dtype=np.uint8)
+        _put("src_neu", out["src_neu_v"], src_td.faces, _tile(src_neu_c, out["src_neu_v"].shape[0]))
+        _put("src_def", out["src_def_v"], src_td.faces, _tile(g_src_color.value, out["src_def_v"].shape[0]))
+        _put("tgt_neu", out["tgt_neu_v"], tgt_td.faces, _tile(tgt_c, out["tgt_neu_v"].shape[0]))
 
-        # Target pred: color by per-vertex L2 error if metrics available (self-retarget).
         m = out["metrics"]
         if m is not None:
             err = np.linalg.norm(out["tgt_pred_v"] - out["src_def_v"], axis=-1)
-            err_n = err / max(err.max(), 1e-8)
-            rgb_pred = _viridis_rgb(err_n)
+            err_n = np.clip(err / max(err.max(), 1e-8), 0, 1)
+            heat = _err_rgb(err_n, g_err_cmap.value).astype(np.float32)
+            base = np.tile(np.asarray(tgt_c, dtype=np.float32),
+                           (out["tgt_pred_v"].shape[0], 1))
+            a = err_n[:, None]
+            rgb_pred = np.clip((1 - a) * base + a * heat, 0, 255).astype(np.uint8)
         else:
-            rgb_pred = np.tile(np.array([[235, 170, 70]], dtype=np.uint8),
-                               (out["tgt_pred_v"].shape[0], 1))
+            rgb_pred = _tile(tgt_c, out["tgt_pred_v"].shape[0])
         _put("tgt_pred", out["tgt_pred_v"], tgt_td.faces, rgb_pred)
 
         if m is not None:
@@ -1485,32 +1582,95 @@ def main():
             g_frame.value = 0
         render()
 
-    # Persistent ambient light used in 'full lit' mode (added once, toggled).
-    _amb_state = {"handle": None}
+    # Persistent custom lights used by non-hdri modes. Created lazily; toggled
+    # via .visible so we don't accumulate handles on every mode switch.
+    _light_state = {"ambient": None, "front": None, "axis6": []}
+
+    def _hide_axis6():
+        for h in _light_state["axis6"]:
+            try: h.visible = False
+            except Exception: pass
 
     def _apply_lighting(_e=None):
         try:
-            if bool(g_full_lit.value):
-                # Full lit: kill env reflections + uniform ambient → mesh appears
-                # at vertex color regardless of view direction.
-                server.scene.configure_environment_map(
-                    hdri=None, environment_intensity=0.0,
-                )
-                if _amb_state["handle"] is None:
-                    _amb_state["handle"] = server.scene.add_light_ambient(
-                        "/lights/full_lit_ambient",
-                        color=(255, 255, 255), intensity=3.0,
-                    )
-                else:
-                    _amb_state["handle"].visible = True
-            else:
-                if _amb_state["handle"] is not None:
-                    _amb_state["handle"].visible = False
+            mode = g_lighting.value
+            # Always sync env from dropdowns first; modes may override.
+            if mode == "hdri":
                 hdri = g_env_map.value
                 server.scene.configure_environment_map(
                     hdri=None if hdri == "none" else hdri,
                     environment_intensity=float(g_env_intensity.value),
                 )
+                server.scene.configure_default_lights(enabled=True, cast_shadow=True)
+                if _light_state["ambient"] is not None:
+                    _light_state["ambient"].visible = False
+                if _light_state["front"] is not None:
+                    _light_state["front"].visible = False
+                _hide_axis6()
+            elif mode == "front only":
+                # One directional light pointing along +Z (toward face front),
+                # default lights & HDRI off, mild ambient so back side not pitch.
+                server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
+                server.scene.configure_default_lights(enabled=False, cast_shadow=False)
+                _hide_axis6()
+                if _light_state["front"] is None:
+                    _light_state["front"] = server.scene.add_light_directional(
+                        "/lights/front", color=(255, 255, 255), intensity=2.0,
+                        cast_shadow=False,
+                    )
+                    _light_state["front"].position = (0.0, 0.5, 3.0)
+                _light_state["front"].visible = True
+                if _light_state["ambient"] is None:
+                    _light_state["ambient"] = server.scene.add_light_ambient(
+                        "/lights/ambient", color=(255, 255, 255), intensity=0.6,
+                    )
+                _light_state["ambient"].visible = True
+                _light_state["ambient"].intensity = 0.6
+            elif mode == "6-axis studio":
+                # Soft surround: 6 directional lights (±X, ±Y, ±Z), each lower
+                # intensity so combined ≈ ambient but with shape cues from each
+                # axis. No cast_shadow → no hard shadows.
+                server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
+                server.scene.configure_default_lights(enabled=False, cast_shadow=False)
+                if _light_state["front"] is not None:
+                    _light_state["front"].visible = False
+                # tiny offset for "+Y" / "-Y" so look_at-origin direction is unambiguous.
+                dirs = [(0, 0.5, 3, "front"), (0, 0.5, -3, "back"),
+                        (3, 0.5, 0, "right"), (-3, 0.5, 0, "left"),
+                        (0, 3, 0.01, "top"), (0, -3, 0.01, "bottom")]
+                if not _light_state["axis6"]:
+                    for x, y, z, nm in dirs:
+                        h = server.scene.add_light_directional(
+                            f"/lights/axis6/{nm}", color=(255, 255, 255),
+                            intensity=0.65, cast_shadow=False,
+                        )
+                        h.position = (float(x), float(y), float(z))
+                        _light_state["axis6"].append(h)
+                else:
+                    for h in _light_state["axis6"]:
+                        h.visible = True
+                # very mild ambient fills concave creases that all 6 lights miss.
+                if _light_state["ambient"] is None:
+                    _light_state["ambient"] = server.scene.add_light_ambient(
+                        "/lights/ambient", color=(255, 255, 255), intensity=0.3,
+                    )
+                _light_state["ambient"].visible = True
+                _light_state["ambient"].intensity = 0.3
+            else:  # flat (no shadows)
+                # Truly unlit-looking: kill HDRI, kill default lights (these
+                # cast shadows!), keep only strong ambient → mesh = vertex
+                # color regardless of normal.
+                server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
+                server.scene.configure_default_lights(enabled=False, cast_shadow=False)
+                _hide_axis6()
+                if _light_state["ambient"] is None:
+                    _light_state["ambient"] = server.scene.add_light_ambient(
+                        "/lights/ambient", color=(255, 255, 255), intensity=3.0,
+                    )
+                _light_state["ambient"].visible = True
+                _light_state["ambient"].intensity = 3.0
+                if _light_state["front"] is not None:
+                    _light_state["front"].visible = False
         except Exception:
             import traceback as _tb
             print("[lighting] EXC:", _tb.format_exc())
@@ -1574,14 +1734,128 @@ def main():
             print("[reload] EXC:", _tb.format_exc())
             g_status.value = "reload FAILED — see console"
 
+    def _step_frame(delta):
+        nxt = int(g_frame.value) + delta
+        nxt = max(0, min(g_frame.max, nxt))
+        g_frame.value = nxt
+
+    g_prev_frame.on_click(lambda _e: _step_frame(-1))
+    g_next_frame.on_click(lambda _e: _step_frame(+1))
+
+    def _on_render_video(_e=None):
+        """Sweep all frames at current camera/lighting/mode, dump PNGs, ffmpeg."""
+        import threading as _th
+        def _worker():
+            import time as _t, subprocess as _sp
+            from imageio.v3 import imwrite as _imwrite
+            clients = list(server.get_clients().values())
+            if not clients:
+                g_render_progress.value = "no client connected — open the page first"
+                return
+            client = clients[0]
+            out_dir = Path(g_render_dir.value).expanduser()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            nf = int(g_frame.max) + 1
+            H = int(g_render_h.value); W = int(g_render_w.value)
+            orig = int(g_frame.value)
+            saved = 0
+            t0 = _t.time()
+            for f in range(nf):
+                if g_mode.value in ("anim", "cross"):
+                    g_frame.value = f
+                    render()
+                _t.sleep(0.04)   # allow scene message to transmit + render
+                try:
+                    img = client.get_render(
+                        height=H, width=W, transport_format="png",
+                    )
+                    _imwrite(out_dir / f"frame_{f:04d}.png", img)
+                    saved += 1
+                except Exception as ex:
+                    g_render_progress.value = f"frame {f} failed: {ex}"
+                    break
+                if f % 5 == 0:
+                    g_render_progress.value = (
+                        f"rendering {f+1}/{nf} ({(f+1)/nf*100:.0f}%) "
+                        f"elapsed {_t.time()-t0:.1f}s"
+                    )
+            vid_path = out_dir / g_render_name.value
+            # Try imageio writer first (auto-uses imageio-ffmpeg plugin, which
+            # pip-installs its own ffmpeg binary on demand). Fall back to system
+            # ffmpeg subprocess. If both fail, PNGs remain on disk.
+            fps_int = int(g_render_fps.value)
+            try:
+                import imageio
+                with imageio.get_writer(
+                    str(vid_path), fps=fps_int, codec="libx264",
+                    macro_block_size=1, quality=8,
+                ) as w:
+                    for f in range(saved):
+                        w.append_data(imageio.imread(out_dir / f"frame_{f:04d}.png"))
+                g_render_progress.value = (
+                    f"DONE  {saved} frames → {vid_path}  ({_t.time()-t0:.1f}s)"
+                )
+            except Exception as ex_io:
+                try:
+                    cmd = ["ffmpeg", "-y", "-framerate", str(fps_int),
+                           "-i", str(out_dir / "frame_%04d.png"),
+                           "-c:v", "libx264", "-pix_fmt", "yuv420p", str(vid_path)]
+                    _sp.run(cmd, check=True, capture_output=True)
+                    g_render_progress.value = (
+                        f"DONE (system ffmpeg) {saved} frames → {vid_path}"
+                    )
+                except Exception as ex_ff:
+                    g_render_progress.value = (
+                        f"video encode failed (PNGs saved at {out_dir}): "
+                        f"imageio: {ex_io} / ffmpeg: {ex_ff}"
+                    )
+            finally:
+                # Restore original frame
+                if g_mode.value in ("anim", "cross"):
+                    g_frame.value = orig
+                    render()
+        _th.Thread(target=_worker, daemon=True).start()
+
+    g_render_btn.on_click(_on_render_video)
+
+    def _on_preview(_e=None):
+        """Capture one frame at the chosen W/H, save to disk AND show in GUI
+        (image widget appears at the bottom of the Render folder)."""
+        try:
+            clients = list(server.get_clients().values())
+            if not clients:
+                g_render_progress.value = "preview: no client connected"
+                return
+            client = clients[0]
+            H = int(g_render_h.value); W = int(g_render_w.value)
+            img = client.get_render(height=H, width=W, transport_format="png")
+            out_dir = Path(g_render_dir.value).expanduser()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            preview_path = out_dir / "preview.png"
+            from imageio.v3 import imwrite as _imwrite
+            _imwrite(preview_path, img)
+            _preview_state["handle"].image = img
+            _preview_state["handle"].label = f"preview {W}x{H} (saved → {preview_path})"
+            g_render_progress.value = f"preview saved → {preview_path}  ({W}x{H})"
+        except Exception:
+            import traceback as _tb
+            g_render_progress.value = "preview failed — see console"
+            print("[preview] EXC:", _tb.format_exc())
+
+    g_preview_btn.on_click(_on_preview)
+
     g_reload.on_click(_on_reload)
     g_view.on_update(_apply_view)
     g_ortho.on_update(_apply_view)
     g_shading.on_update(lambda _e: render())
     g_double_sided.on_update(lambda _e: render())
+    g_mesh_color.on_update(lambda _e: render())
+    g_src_color.on_update(lambda _e: render())
+    g_tgt_color.on_update(lambda _e: render())
+    g_global_sat.on_update(lambda _e: render())
     g_env_intensity.on_update(_apply_lighting)
     g_env_map.on_update(_apply_lighting)
-    g_full_lit.on_update(_apply_lighting)
+    g_lighting.on_update(_apply_lighting)
     g_dataset.on_update(_on_dataset_change)
     g_anim_seq.on_update(_on_seq_change)
     g_src_ds.on_update(_on_src_ds_change)
@@ -1594,8 +1868,8 @@ def main():
     g_clip.on_update(_on_clip_change)
     for h in [
         g_show_gt, g_show_pred, g_show_err, g_show_helpers, g_mesh_opacity,
-        g_w_mode, g_joint, g_soft_topk, g_soft_sat,
-        g_frame, g_show_axes, g_show_bones, g_show_gt_anim, g_err_color,
+        g_w_mode, g_joint, g_soft_topk, g_soft_sat, g_palette,
+        g_frame, g_show_axes, g_show_bones, g_show_gt_anim, g_err_color, g_err_cmap,
         g_jpos_src,
         g_tgt_id, g_pca_mode, g_show_src, g_show_tgt_neu,
     ]:
