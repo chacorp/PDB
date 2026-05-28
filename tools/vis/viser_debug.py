@@ -1,0 +1,1633 @@
+"""
+viser_debug.py — Live viser debug viewer for HLBS networks.
+
+Three modes, one app:
+  - bind_pose : per-id GT vs Pred joint position + error arrows
+  - weight    : per-vertex skin weight heatmap (single / argmax / entropy)
+  - anim      : skinned mesh animation driven by an ICT blendshape sequence,
+                with joint axes triads (joint transform net output)
+
+Usage:
+    python tools/vis/viser_debug.py \
+        --ckpt ckpts_hlbs/2026-05-14-14-02-03-HLBS-FullPred-ict-jTrans-nrm0.1-Wsm0.01 \
+        --port 8080
+
+Loads opts from ckpt/opts.json + train_opts.yml to mirror the trainer config
+(active_joints_json, sigma_targets, helper_joint_idx, nfs_concat, etc.).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+from pathlib import Path
+
+import igl
+import matplotlib.cm as cm
+import numpy as np
+import torch
+import yaml
+
+_HERE = Path(__file__).resolve().parent
+_REPO = _HERE.parent.parent  # NeuralFacialAnimation/
+sys.path.insert(0, str(_REPO))
+
+
+def _ensure_viser():
+    """Make `import viser` succeed on first run anywhere.
+
+    Order: (1) already installed pip pkg, (2) bundled checkout at
+    third_party/viser/src, (3) pip install latest from PyPI.
+    """
+    try:
+        import viser  # noqa: F401
+        return
+    except ImportError:
+        pass
+    bundled_src = _REPO / "third_party" / "viser" / "src"
+    if bundled_src.exists():
+        sys.path.insert(0, str(bundled_src))
+        try:
+            import viser  # noqa: F401
+            print(f"[viser] using bundled checkout at {bundled_src}")
+            return
+        except ImportError:
+            # bundled checkout missing transitive deps (msgspec, websockets...).
+            # Fall through to pip install.
+            sys.path.pop(0)
+    import subprocess
+    print("[viser] not installed and bundled checkout unusable — pip install viser")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "viser"])
+    import viser  # noqa: F401
+
+
+_ensure_viser()
+import viser
+
+from models.hierarchical_lbs import HierarchicalLBS_FullPred
+from utils.remesh_utils import ICT_face_model
+from utils.rig_loader import load_rig
+
+
+# ───────────────────────── ckpt / opts ──────────────────────────────────────
+
+
+def _load_opts(ckpt_dir: Path) -> argparse.Namespace:
+    """Mirror the eval pattern: peek opts.json + train_opts.yml."""
+    opts = {}
+    yml = ckpt_dir / "train_opts.yml"
+    if yml.exists():
+        with open(yml) as f:
+            opts.update(yaml.safe_load(f) or {})
+    js = ckpt_dir / "opts.json"
+    if js.exists():
+        with open(js) as f:
+            opts.update(json.load(f) or {})
+    return argparse.Namespace(**opts)
+
+
+def _peek_ckpt_buffers(ckpt_path: Path):
+    sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    face_joint_idx = sd["face_joint_idx"].tolist() if "face_joint_idx" in sd else None
+    helper_joint_idx = (
+        sd["helper_joint_idx_buf"].tolist() if "helper_joint_idx_buf" in sd else None
+    )
+    return sd, face_joint_idx, helper_joint_idx
+
+
+def _build_model(ckpt_dir: Path, device: torch.device):
+    opts = _load_opts(ckpt_dir)
+    pth = ckpt_dir / "model_hlbs_best.pth"
+    if not pth.exists():
+        # pick highest-epoch pth
+        cands = sorted(ckpt_dir.glob("model_hlbs_*.pth"))
+        if not cands:
+            raise FileNotFoundError(f"no model_hlbs_*.pth in {ckpt_dir}")
+        pth = cands[-1]
+    sd, face_joint_idx, helper_joint_idx = _peek_ckpt_buffers(pth)
+
+    rig_path = getattr(opts, "rig_path", "maya_rig/hybrid")
+    if not os.path.isabs(rig_path):
+        rig_path = str(_REPO / rig_path)
+    rig = load_rig(rig_path)
+
+    base_joint_idx = None
+    aj_json = getattr(opts, "active_joints_json", None)
+    if aj_json:
+        if not os.path.isabs(aj_json):
+            aj_json = str(_REPO / aj_json)
+        with open(aj_json) as f:
+            aj = json.load(f)
+        base_joint_idx = aj["base_joint_idx"]
+        if face_joint_idx is None:
+            face_joint_idx = aj["face_joint_idx"]
+
+    sigma_targets = None
+    sigma_npy = getattr(opts, "sigma_targets_npy", None)
+    if sigma_npy:
+        if not os.path.isabs(sigma_npy):
+            sigma_npy = str(_REPO / sigma_npy)
+        if os.path.exists(sigma_npy):
+            sigma_targets = np.load(sigma_npy).astype(np.float32)
+
+    model = HierarchicalLBS_FullPred(
+        rig=rig,
+        topology=getattr(opts, "topo_key", "ict"),
+        in_dim_exp=12,
+        hid_dim=getattr(opts, "hid_dim", 128),
+        num_layers=getattr(opts, "num_layers", 4),
+        device=str(device),
+        use_joint_trans=getattr(opts, "use_joint_trans", True),
+        smooth_W=getattr(opts, "smooth_delta_W", 0),
+        smooth_W_alpha=getattr(opts, "smooth_delta_W_alpha", 0.5),
+        dfn_skin=getattr(opts, "dfn_skin", False),
+        dfn_bind=getattr(opts, "dfn_bind", False),
+        dfn_exp=getattr(opts, "dfn_exp", False),
+        nfs_feat_dim=256 if getattr(opts, "nfs_feat_dir", None) else 0,
+        nfs_concat=getattr(opts, "nfs_concat", False),
+        adain_pos_norm=getattr(opts, "adain_pos_norm", False),
+        freeze_bind_pose=getattr(opts, "freeze_bind_pose", False),
+        use_gmm_hybrid=getattr(opts, "use_gmm_hybrid", False),
+        init_log_sigma=getattr(opts, "init_log_sigma", -1.2),
+        gmm_mode=getattr(opts, "gmm_mode", "additive"),
+        residual_scale=getattr(opts, "residual_scale", 2.0),
+        sigma_targets=sigma_targets,
+        bind_pose_mode=getattr(opts, "bind_pose_mode", "net"),
+        face_joint_idx=face_joint_idx,
+        base_joint_idx=base_joint_idx,
+        face_mask_r0=getattr(opts, "face_mask_r0", 1.0),
+        face_mask_r1=getattr(opts, "face_mask_r1", 2.25),
+        helper_joint_idx=helper_joint_idx,
+        bind_pose_base_residual=bool(getattr(opts, "bind_pose_base_residual", 0)),
+    ).to(device)
+
+    msg = model.load_state_dict(sd, strict=False)
+    if msg.missing_keys or msg.unexpected_keys:
+        print(f"[load] missing={len(msg.missing_keys)} unexpected={len(msg.unexpected_keys)}")
+    model.eval()
+    print(f"[load] {pth}")
+
+    nfs_feat_dir = getattr(opts, "nfs_feat_dir", None)
+    if nfs_feat_dir and not os.path.isabs(nfs_feat_dir):
+        nfs_feat_dir = str(_REPO / nfs_feat_dir)
+
+    geo_dist_per_topo = {}
+    if getattr(opts, "use_geodesic_gauss", False):
+        gd_dir = getattr(opts, "geo_dist_dir", None) or rig_path
+        for topo in ("ict", "mf", "biwi", "coma"):
+            p = os.path.join(gd_dir, f"geo_dist_{topo}.npy")
+            if os.path.exists(p):
+                geo_dist_per_topo[topo] = torch.from_numpy(
+                    np.load(p)
+                ).to(device).float()
+
+    return model, rig, opts, nfs_feat_dir, helper_joint_idx, geo_dist_per_topo
+
+
+# ───────────────────────── data helpers ─────────────────────────────────────
+
+
+_ANIM_SEQS = {
+    "922": _REPO / "_cap" / "20240318_MySlate_922_exp_coeffs.npy",
+    "924": _REPO / "_cap" / "20240325_MySlate_924_exp_coeffs.npy",
+}
+
+
+def _load_exp_coeffs(seq: str) -> np.ndarray:
+    p = _ANIM_SEQS[seq]
+    if not p.exists():
+        raise FileNotFoundError(f"ict-cap exp_coeffs not found: {p}")
+    return np.load(p).astype(np.float32)
+
+
+# ───────────────────────── topology data ────────────────────────────────────
+
+import pickle
+from dataclasses import dataclass, field
+
+
+@dataclass
+class TopoData:
+    """All info needed to render one (dataset, topology) tuple.
+
+    Identities are addressed by string `id_name` (the same key the model's
+    cache files use, e.g. 'ict_007', 'm--20180226...', 'F1', 'FaceTalk_...').
+    """
+    name: str                              # 'ict_train', 'mf', 'biwi', 'coma'
+    topo: str                              # 'ict' | 'mf' | 'biwi' | 'coma'
+    id_names: list[str]
+    faces: np.ndarray                      # [F, 3] uint32
+    nfs_dir: str | None                    # cache base path or None
+    geo_dist: torch.Tensor | None          # [J, V] or None
+    supports_anim: bool = False            # True for ICT (blendshape-driven)
+    # 'ict_blendshape' uses ict-cap exp coeffs; 'pca_mode' uses per-id PCA basis.
+    exp_driver: str = "none"
+    # Per-id neutral vertex provider — receives id_name, returns [V,3] float32.
+    _verts_provider: callable = None
+    # Optional: per-id 100-d identity vec (ICT only; used for blendshape exp).
+    _ict_id_vecs: np.ndarray | None = None
+    _ict_model: "ICT_face_model" = None
+    # Optional: PCA exp driver per id (used by MF). {id_name: (mean[V,3], comps[K,V,3], std[K])}
+    _pca_per_id: dict | None = None
+
+    def neutral_verts(self, id_name: str) -> np.ndarray:
+        return self._verts_provider(id_name)
+
+    def ict_id_coeff(self, id_name: str) -> np.ndarray | None:
+        """Return [100] id_coeff for this id, or None if not ICT."""
+        if self._ict_id_vecs is None:
+            return None
+        if id_name.startswith("ict_"):
+            i = int(id_name.split("_")[-1])
+            return self._ict_id_vecs[i]
+        return None
+
+    # Real per-id frame catalog: {id_name: {clip_name: [path1.npy, ...]}}
+    _real_clips: dict | None = None
+
+    def apply_exp(self, id_name: str, exp_coeff) -> np.ndarray | None:
+        """Apply expression driver to this id, return [V, 3] float32.
+
+        For ICT blendshape:   exp_coeff is [53] blendshape coeffs.
+        For MF PCA:           exp_coeff is [2] = (mode_idx, amp in [-1,1]).
+        For MF real:          exp_coeff is (clip_name:str, frame_idx:int).
+        """
+        if self.exp_driver == "ict_blendshape":
+            if self._ict_model is None: return None
+            id_c = self.ict_id_coeff(id_name)
+            if id_c is None: return None
+            exp_T = exp_coeff[None, :] if exp_coeff.ndim == 1 else exp_coeff
+            return self._ict_model.apply_coeffs(id_c, exp_T)[0].astype(np.float32)
+        elif self.exp_driver == "pca_mode":
+            if self._pca_per_id is None or id_name not in self._pca_per_id:
+                return None
+            mean, comps, std = self._pca_per_id[id_name]
+            mode = int(exp_coeff[0]); amp = float(exp_coeff[1])
+            mode = max(0, min(mode, comps.shape[0] - 1))
+            disp = comps[mode] * (amp * 3.0 * std[mode])
+            return (mean + disp).astype(np.float32)
+        elif self.exp_driver == "mf_real":
+            if self._real_clips is None or id_name not in self._real_clips:
+                return None
+            clip_name, fidx = exp_coeff
+            if clip_name not in self._real_clips[id_name]:
+                return None
+            frames = self._real_clips[id_name][clip_name]
+            if not frames: return None
+            fidx = int(fidx) % len(frames)
+            v = np.load(frames[fidx]).astype(np.float32)
+            # Procrustes-align to neutral template (matches dataloader pipeline).
+            from utils.remesh_utils import procrustes_LDM
+            template = self._verts_provider(id_name).astype(np.float32)
+            R, t, _ = procrustes_LDM(v, template)
+            return (v @ R.T + t).astype(np.float32)
+        return None
+
+    def clips_for(self, id_name: str) -> list[str]:
+        """For mf_real driver: list available clip names for this id."""
+        if self._real_clips is None or id_name not in self._real_clips:
+            return []
+        return sorted(self._real_clips[id_name].keys())
+
+    def n_frames(self, id_name: str, clip: str) -> int:
+        if self._real_clips and id_name in self._real_clips and clip in self._real_clips[id_name]:
+            return len(self._real_clips[id_name][clip])
+        return 0
+
+
+def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
+                 geo_per_topo: dict) -> dict[str, TopoData]:
+    """Discover and build TopoData for every dataset present on disk."""
+    topos: dict[str, TopoData] = {}
+
+    # ── ICT (train + val variants share the same mesh / faces) ─────────
+    ict_faces = ict.faces.astype(np.uint32)
+    ict_train_vecs_path = _REPO / "ict_face_pt" / "random_identity_vecs.npy"
+    if ict_train_vecs_path.exists():
+        vecs = np.load(ict_train_vecs_path).astype(np.float32)[:111]
+        ids = [f"ict_{i:03d}" for i in range(len(vecs))]
+        topos["ict_train"] = TopoData(
+            name="ict_train", topo="ict", id_names=ids, faces=ict_faces,
+            nfs_dir=nfs_dir, geo_dist=geo_per_topo.get("ict"),
+            supports_anim=True, exp_driver="ict_blendshape",
+            _verts_provider=lambda nm, v=vecs, ic=ict:
+                ic.apply_coeffs(v[int(nm.split("_")[-1])], exp_coeffs=None)[0]
+                .astype(np.float32),
+            _ict_id_vecs=vecs, _ict_model=ict,
+        )
+    ict_val_vecs_path = _REPO / "data" / "ICT_live_100" / "iden_vecs.npy"
+    if ict_val_vecs_path.exists():
+        vecs = np.load(ict_val_vecs_path).astype(np.float32)
+        ids = [f"ict_val_{i:03d}" for i in range(len(vecs))]
+        topos["ict_val"] = TopoData(
+            name="ict_val", topo="ict", id_names=ids, faces=ict_faces,
+            nfs_dir=None,  # no cache for val ids
+            geo_dist=geo_per_topo.get("ict"),
+            supports_anim=True, exp_driver="ict_blendshape",
+            _verts_provider=lambda nm, v=vecs, ic=ict:
+                ic.apply_coeffs(v[int(nm.split("_")[-1])], exp_coeffs=None)[0]
+                .astype(np.float32),
+            _ict_id_vecs=vecs, _ict_model=ict,
+        )
+
+    # ── MF / BIWI / COMA from bundled pkl templates ────────────────────
+    tpl_root = _REPO / "utils" / "templates"
+    for ds_name, pkl_name, topo_key in [
+        ("mf",   "mf_templates.pkl",   "mf"),
+        ("biwi", "biwi_templates.pkl", "biwi"),
+        ("coma", "voca_templates.pkl", "coma"),
+    ]:
+        p = tpl_root / pkl_name
+        if not p.exists():
+            continue
+        with open(p, "rb") as f:
+            tpl = pickle.load(f)
+        if "face" not in tpl:
+            continue
+        faces = np.asarray(tpl["face"], dtype=np.uint32)
+        id_names = [k for k in tpl.keys() if k != "face"]
+        verts_map = {k: np.asarray(tpl[k], dtype=np.float32) for k in id_names}
+
+        # Prefer real per-id frame catalog; fall back to PCA basis (MF only).
+        real_clips = _discover_real_clips(ds_name, id_names)
+        pca_per_id = _try_load_pca(ds_name, id_names) if real_clips is None else None
+        if real_clips is not None:
+            exp_driver = "mf_real"  # same loader code path for all 3 topos
+            supports_anim = True
+        elif pca_per_id is not None:
+            exp_driver = "pca_mode"; supports_anim = True
+        else:
+            exp_driver = "none"; supports_anim = False
+
+        td = TopoData(
+            name=ds_name, topo=topo_key, id_names=id_names, faces=faces,
+            nfs_dir=nfs_dir, geo_dist=geo_per_topo.get(topo_key),
+            supports_anim=supports_anim, exp_driver=exp_driver,
+            _verts_provider=lambda nm, vm=verts_map: vm[nm],
+            _pca_per_id=pca_per_id,
+        )
+        td._real_clips = real_clips
+        topos[ds_name] = td
+
+    return topos
+
+
+def _discover_real_clips(ds_name: str, id_names: list[str]) -> dict | None:
+    """Scan disk for per-id real animation clips.
+    Returns {id_name: {clip_name: [sorted frame paths]}} or None if nothing found.
+
+    Layout by topology (all under /data/inyup/...):
+      mf:   multiface_align/{ROM,SEN}/{train,test}/vertices_npy/{id}/{clip}/*.npy
+      biwi: data/sihun/BIWI_align_deci/{train,test}/vertices_npy/{id}_{clip}/*.npy
+      coma: data/sihun/VOCA-COMA/COMA/{train,test}/{id}/vertices_npy/{clip}/*.npy
+    """
+    catalog: dict[str, dict[str, list]] = {nm: {} for nm in id_names}
+
+    if ds_name == "mf":
+        roots = [
+            "/data/inyup/multiface_align/ROM/test/vertices_npy",
+            "/data/inyup/multiface_align/ROM/train/vertices_npy",
+            "/data/inyup/multiface_align/SEN/test/vertices_npy",
+            "/data/inyup/multiface_align/SEN/train/vertices_npy",
+        ]
+        for root in roots:
+            rp = Path(root)
+            if not rp.is_dir(): continue
+            split_tag = rp.parts[-3] + "/" + rp.parts[-2]   # e.g. ROM/test
+            for id_dir in rp.iterdir():
+                nm = id_dir.name
+                if nm not in catalog or not id_dir.is_dir(): continue
+                for clip_dir in id_dir.iterdir():
+                    if not clip_dir.is_dir(): continue
+                    frames = sorted(clip_dir.glob("*.npy"))
+                    frames = [f for f in frames if f.stat().st_size > 1024]
+                    if frames:
+                        catalog[nm][f"{split_tag}/{clip_dir.name}"] = frames
+
+    elif ds_name == "biwi":
+        roots = [
+            "/data/inyup/data/sihun/BIWI_align_deci/test/vertices_npy",
+            "/data/inyup/data/sihun/BIWI_align_deci/train/vertices_npy",
+        ]
+        for root in roots:
+            rp = Path(root)
+            if not rp.is_dir(): continue
+            split_tag = rp.parts[-2]
+            for sub in rp.iterdir():
+                if not sub.is_dir(): continue
+                # id is everything before the first underscore (F2_e37 → F2)
+                nm, _, clip = sub.name.partition("_")
+                if nm not in catalog: continue
+                frames = sorted(sub.glob("*.npy"))
+                frames = [f for f in frames if f.stat().st_size > 1024]
+                if frames:
+                    catalog[nm][f"{split_tag}/{clip}"] = frames
+
+    elif ds_name == "coma":
+        roots = [
+            "/data/inyup/data/sihun/VOCA-COMA/COMA/test",
+            "/data/inyup/data/sihun/VOCA-COMA/COMA/train",
+        ]
+        for root in roots:
+            rp = Path(root)
+            if not rp.is_dir(): continue
+            split_tag = rp.parts[-1]
+            for id_dir in rp.iterdir():
+                if not id_dir.is_dir() or id_dir.name not in catalog:
+                    continue
+                vnp = id_dir / "vertices_npy"
+                if not vnp.is_dir(): continue
+                for clip_dir in vnp.iterdir():
+                    if not clip_dir.is_dir(): continue
+                    frames = sorted(clip_dir.glob("*.npy"))
+                    frames = [f for f in frames if f.stat().st_size > 1024]
+                    if frames:
+                        catalog[nm := id_dir.name][f"{split_tag}/{clip_dir.name}"] = frames
+
+    has_any = any(clips for clips in catalog.values())
+    return catalog if has_any else None
+
+
+def _try_load_pca(ds_name: str, id_names: list[str]) -> dict | None:
+    """Search disk for per-id PCA basis (mean + components + std).
+
+    For MF: /data/sihun/pca/multiface_align/{SEN,ROM}/{train,test}/{id}_pca.npz
+    Returns dict id_name → (mean[V,3], comps[K,V,3], std[K]) — or None if no
+    id has a hit. PCA basis is shared across SEN/ROM splits in practice;
+    we take whichever we find first per id.
+    """
+    if ds_name != "mf":
+        return None
+    bases = [
+        Path("/data/sihun/pca/multiface_align"),
+        Path("/data/sihun/multiface_align"),
+    ]
+    splits = ["SEN/train", "SEN/test", "ROM/train", "ROM/test"]
+    out = {}
+    for nm in id_names:
+        found = None
+        for base in bases:
+            for sp in splits:
+                p = base / sp / f"{nm}_pca.npz"
+                if p.exists():
+                    found = p; break
+            if found: break
+        if found is None:
+            continue
+        d = np.load(found)
+        V_flat = d["mean_"]
+        V = V_flat.shape[0] // 3
+        mean = V_flat.reshape(V, 3).astype(np.float32)
+        comps = d["components_"].reshape(-1, V, 3).astype(np.float32)
+        std = np.sqrt(d["explained_variance_"].astype(np.float32))
+        out[nm] = (mean, comps, std)
+    return out if out else None
+
+
+def _per_vertex_normal(v: np.ndarray, f: np.ndarray) -> np.ndarray:
+    return igl.per_vertex_normals(
+        v.astype(np.float64), f.astype(np.int64)
+    ).astype(np.float32)
+
+
+def _load_nfs_feat(nfs_dir: str, id_idx: int) -> np.ndarray | None:
+    if nfs_dir is None:
+        return None
+    p = Path(nfs_dir) / f"ict_{id_idx:03d}_nfs_feat.npy"
+    if not p.exists():
+        return None
+    return np.load(p).astype(np.float32)
+
+
+def _load_gt_bind_pos(nfs_dir: str, id_idx: int) -> np.ndarray | None:
+    if nfs_dir is None:
+        return None
+    p = Path(nfs_dir) / f"ict_{id_idx:03d}_bind_pos_landmark.npy"
+    if not p.exists():
+        return None
+    return np.load(p).astype(np.float32)
+
+
+# ───────────────────────── color helpers ────────────────────────────────────
+
+
+def _viridis_rgb(vals: np.ndarray) -> np.ndarray:
+    """[N] in [0,1] → [N,3] uint8."""
+    vals = np.clip(vals, 0.0, 1.0)
+    return (cm.viridis(vals)[:, :3] * 255).astype(np.uint8)
+
+
+def _tab20_rgb(idx: np.ndarray, J: int) -> np.ndarray:
+    """[N] int in [0,J) → [N,3] uint8 (categorical)."""
+    cmap = cm.get_cmap("tab20", max(J, 20))
+    return (cmap(idx % cmap.N)[:, :3] * 255).astype(np.uint8)
+
+
+# ───────────────────────── inference cache ──────────────────────────────────
+
+
+class IdentityCache:
+    """Memoize per-id model outputs (template / W / joint_pos), topology-aware.
+
+    Cache keyed by (topo_name, id_name) — switching datasets / topologies is safe.
+    """
+
+    def __init__(self, model, rig, device, model_needs_nfs: bool):
+        self.model = model
+        self.rig = rig
+        self.device = device
+        self.model_needs_nfs = model_needs_nfs
+        self._cache: dict[tuple, dict] = {}
+        self.active: TopoData | None = None
+
+    def set_active(self, topo_data: TopoData):
+        self.active = topo_data
+
+    @property
+    def faces(self):
+        return self.active.faces if self.active else None
+
+    @torch.no_grad()
+    def get(self, id_idx: int, topo: TopoData | None = None) -> dict:
+        """Get cached model output for an id (by index into topo.id_names)."""
+        td = topo if topo is not None else self.active
+        id_name = td.id_names[id_idx]
+        key = (td.name, id_name)
+        if key in self._cache:
+            return self._cache[key]
+        neu_v = td.neutral_verts(id_name).astype(np.float32)
+        if neu_v.ndim == 3:
+            neu_v = neu_v[0]
+        neu_n = _per_vertex_normal(neu_v, td.faces.astype(np.int64))
+
+        # nfs cache + gt bind: file naming is `{id_name}_nfs_feat.npy`.
+        nfs = None; gt_bind = None
+        if td.nfs_dir is not None:
+            p_nfs = Path(td.nfs_dir) / f"{id_name}_nfs_feat.npy"
+            if p_nfs.exists():
+                nfs = np.load(p_nfs).astype(np.float32)
+            p_bp = Path(td.nfs_dir) / f"{id_name}_bind_pos_landmark.npy"
+            if p_bp.exists():
+                gt_bind = np.load(p_bp).astype(np.float32)
+
+        # If model needs nfs cond but we have none, skip forward (mesh-only output).
+        can_run = (not self.model_needs_nfs) or (nfs is not None)
+
+        out = {
+            "neu_v": neu_v, "neu_n": neu_n,
+            "W": None, "joint_pos_pred": None, "gt_bind": gt_bind,
+            "nfs": None, "dist_sq_geo": None, "model_ran": False,
+        }
+
+        if not can_run:
+            self._cache[key] = out
+            return out
+
+        v_t = torch.from_numpy(neu_v).unsqueeze(0).to(self.device)
+        n_t = torch.from_numpy(neu_n).unsqueeze(0).to(self.device)
+        nfs_t = (
+            torch.from_numpy(nfs).unsqueeze(0).to(self.device) if nfs is not None else None
+        )
+
+        dist_sq_geo = None
+        if td.geo_dist is not None:
+            gd = td.geo_dist.t()  # [V, J]
+            if gd.shape[0] != v_t.shape[1]:
+                gd = gd[: v_t.shape[1]]
+            dist_sq_geo = (gd.unsqueeze(0)) ** 2
+
+        delta = torch.zeros_like(v_t)
+        src_in = torch.cat([v_t, n_t], dim=-1)
+        deform_in = torch.cat([delta, n_t, src_in], dim=-1)
+
+        _, extras = self.model(
+            v_t, deform_in,
+            source_normal=n_t, nfs_feat=nfs_t, dist_sq_geo=dist_sq_geo,
+            return_extras=True,
+        )
+        out.update({
+            "W": extras["W"][0].cpu().numpy(),
+            "joint_pos_pred": extras["joint_pos"][0].cpu().numpy(),
+            "nfs": nfs_t, "dist_sq_geo": dist_sq_geo, "model_ran": True,
+        })
+        self._cache[key] = out
+        return out
+
+    @torch.no_grad()
+    def forward_frame(self, id_idx: int, exp_coeff: np.ndarray,
+                      topo: TopoData | None = None) -> dict:
+        """Run model on (neutral, deformed = blendshape-applied) for one frame.
+
+        Only works for ICT topo (where blendshape exp is well-defined)."""
+        td = topo if topo is not None else self.active
+        base = self.get(id_idx, td)
+        id_name = td.id_names[id_idx]
+
+        gt_v = td.apply_exp(id_name, exp_coeff)
+        if gt_v is None:
+            return {"gt_v": None, "pred_v": None, "joint_pos": None,
+                    "T_world": None, "local_R": None, "W": None,
+                    "model_ran": False}
+
+        out = {"gt_v": gt_v, "pred_v": None, "joint_pos": None,
+               "T_world": None, "local_R": None, "W": None,
+               "model_ran": base["model_ran"]}
+        if not base["model_ran"]:
+            return out
+
+        gt_n = _per_vertex_normal(gt_v, td.faces.astype(np.int64))
+        neu_v = base["neu_v"]; neu_n = base["neu_n"]
+        v_t = torch.from_numpy(neu_v).unsqueeze(0).to(self.device)
+        n_t = torch.from_numpy(neu_n).unsqueeze(0).to(self.device)
+        gv_t = torch.from_numpy(gt_v).unsqueeze(0).to(self.device)
+        gn_t = torch.from_numpy(gt_n).unsqueeze(0).to(self.device)
+
+        delta = gv_t - v_t
+        src_in = torch.cat([v_t, n_t], dim=-1)
+        deform_in = torch.cat([delta, gn_t, src_in], dim=-1)
+
+        pred_v, extras = self.model(
+            v_t, deform_in,
+            source_normal=n_t, nfs_feat=base["nfs"],
+            dist_sq_geo=base["dist_sq_geo"],
+            return_extras=True,
+        )
+        out.update({
+            "pred_v": pred_v[0].cpu().numpy(),
+            "joint_pos": extras["joint_pos"][0].cpu().numpy(),
+            "T_world": extras["T_world"][0].cpu().numpy(),
+            "local_R": extras["local_R"][0].cpu().numpy(),
+            "W": extras["W"][0].cpu().numpy(),
+        })
+        return out
+
+    @torch.no_grad()
+    def retarget(self, src_topo: TopoData, src_id_idx: int, exp_coeff: np.ndarray,
+                 tgt_topo: TopoData, tgt_id_idx: int) -> dict:
+        """Apply src expression to tgt identity. Returns retargeted mesh + metrics.
+
+        Source must support blendshape exp (ICT only currently). Target can be
+        any topology with neutral mesh + (cached or runnable) nfs feature.
+        """
+        src_base = self.get(src_id_idx, src_topo)
+        tgt_base = self.get(tgt_id_idx, tgt_topo)
+
+        out = {"src_neu_v": src_base["neu_v"], "src_def_v": None,
+               "tgt_neu_v": tgt_base["neu_v"], "tgt_pred_v": None,
+               "metrics": None, "model_ran": False}
+
+        src_id_name = src_topo.id_names[src_id_idx]
+        src_def_v = src_topo.apply_exp(src_id_name, exp_coeff)
+        if src_def_v is None:
+            return out
+        out["src_def_v"] = src_def_v
+
+        if not (src_base["model_ran"] and tgt_base["model_ran"]):
+            return out
+
+        src_neu_v = src_base["neu_v"]
+        src_neu_n = src_base["neu_n"]
+        src_def_n = _per_vertex_normal(src_def_v, src_topo.faces.astype(np.int64))
+        tgt_neu_v = tgt_base["neu_v"]
+        tgt_neu_n = tgt_base["neu_n"]
+
+        def _b(a):
+            return torch.from_numpy(a).unsqueeze(0).to(self.device)
+
+        rigid_v = self.model.retarget(
+            src_neu_vert=_b(src_neu_v), src_neu_norm=_b(src_neu_n),
+            src_def_vert=_b(src_def_v), src_def_norm=_b(src_def_n),
+            tgt_neu_vert=_b(tgt_neu_v), tgt_neu_norm=_b(tgt_neu_n),
+            tgt_nfs_feat=tgt_base["nfs"],
+            tgt_dist_sq_geo=tgt_base["dist_sq_geo"],
+        )
+        out["tgt_pred_v"] = rigid_v[0].cpu().numpy()
+        out["model_ran"] = True
+
+        # Metrics: if src == tgt (same id, same topo), self-retarget — compare to
+        # blendshape GT applied to target. Otherwise, no GT available.
+        if (src_topo.name == tgt_topo.name) and (src_id_idx == tgt_id_idx):
+            gt_v = src_def_v  # GT for src==tgt is just the source deformed mesh
+            out["metrics"] = _compute_metrics(out["tgt_pred_v"], gt_v, tgt_topo.faces)
+        return out
+
+
+def _compute_metrics(pred_v: np.ndarray, gt_v: np.ndarray, faces: np.ndarray) -> dict:
+    """Per-frame eval metrics: MSE, mean L2, max L2, normal cosine, Laplacian err."""
+    diff = pred_v - gt_v
+    sq = (diff ** 2).sum(-1)
+    mse = float(sq.mean())
+    l2 = np.sqrt(sq + 1e-12)
+    mean_l2 = float(l2.mean()); max_l2 = float(l2.max()); med_l2 = float(np.median(l2))
+    # Normal consistency
+    f_int = faces.astype(np.int64)
+    n_pred = igl.per_vertex_normals(pred_v.astype(np.float64), f_int)
+    n_gt = igl.per_vertex_normals(gt_v.astype(np.float64), f_int)
+    n_pred /= (np.linalg.norm(n_pred, axis=-1, keepdims=True) + 1e-8)
+    n_gt /= (np.linalg.norm(n_gt, axis=-1, keepdims=True) + 1e-8)
+    norm_cos = float((n_pred * n_gt).sum(-1).mean())
+    # Laplacian smoothness (uniform): mean of ||L pred - L gt||
+    L = igl.cotmatrix(gt_v.astype(np.float64), f_int)
+    Lp = L @ pred_v.astype(np.float64)
+    Lg = L @ gt_v.astype(np.float64)
+    lap_err = float(np.linalg.norm(Lp - Lg, axis=-1).mean())
+    return {"mse": mse, "mean_l2_mm": mean_l2 * 1000,
+            "med_l2_mm": med_l2 * 1000, "max_l2_mm": max_l2 * 1000,
+            "norm_cos": norm_cos, "lap_err": lap_err}
+
+
+# ───────────────────────── viser app ────────────────────────────────────────
+
+
+def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
+                               opacity=1.0, shading="smooth", double_sided=False):
+    """Per-vertex colored mesh with TRUE alpha blending via PBR alphaMode=BLEND.
+
+    shading:
+      'smooth' — embed area-weighted vertex normals (igl) in GLB → three.js
+                 uses smooth normals (Gouraud-like).
+      'flat'   — omit normals → three.js computes per-face normals → flat
+                 shading exposes mesh edges.
+    """
+    import trimesh
+    from trimesh.visual.material import PBRMaterial
+
+    a_val = int(np.clip(opacity, 0.05, 1.0) * 255)
+    if rgb_uint8.shape[1] == 3:
+        a = np.full((rgb_uint8.shape[0], 1), a_val, dtype=np.uint8)
+        rgba = np.concatenate([rgb_uint8, a], axis=-1)
+    else:
+        rgba = rgb_uint8.copy()
+        rgba[:, 3] = a_val
+    mesh = trimesh.Trimesh(
+        vertices=verts.astype(np.float32),
+        faces=faces.astype(np.uint32),
+        vertex_colors=rgba,
+        process=False,
+        maintain_order=True,
+    )
+    if shading == "smooth":
+        # Compute area-weighted vertex normals so GLB encodes them and three.js
+        # interpolates per pixel — no visible facet edges.
+        vn = igl.per_vertex_normals(
+            verts.astype(np.float64), faces.astype(np.int64)
+        ).astype(np.float32)
+        mesh.vertex_normals = vn
+    # else: leave normals unset → trimesh GLB exports no normals → flat shading.
+
+    # Force matte plastic PBR so vertex_colors aren't blown out by viser's HDRI
+    # (default 'warehouse' env-map is bright and the glTF metallic default is
+    # 1.0). roughness=1 + metallic=0 = pure Lambert-like; baseColor white so
+    # vertex_colors aren't tinted; alphaMode=BLEND only when needed.
+    mesh.visual.material = PBRMaterial(
+        alphaMode="BLEND" if opacity < 1.0 else "OPAQUE",
+        baseColorFactor=[1.0, 1.0, 1.0, 1.0],
+        metallicFactor=0.0,
+        roughnessFactor=1.0,
+        doubleSided=bool(double_sided),
+    )
+    return server.scene.add_mesh_trimesh(name, mesh)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--ckpt",
+        type=str,
+        default="ckpts_hlbs/2026-05-14-14-02-03-HLBS-FullPred-ict-jTrans-nrm0.1-Wsm0.01",
+    )
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--device", type=str, default="cuda")
+    args = parser.parse_args()
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    ckpt_dir = Path(args.ckpt)
+    if not ckpt_dir.is_absolute():
+        ckpt_dir = _REPO / ckpt_dir
+
+    model, rig, opts, nfs_dir, helper_idx, geo_per_topo = _build_model(ckpt_dir, device)
+    model_needs_nfs = getattr(opts, "nfs_feat_dir", None) is not None
+
+    ict = ICT_face_model(base_dir=str(_REPO))
+    J = len(rig.joint_names)
+    parent_idx = rig.parent_idx.cpu().numpy()
+    helper_set = set(helper_idx or [])
+
+    topos = _build_topos(ict, nfs_dir, geo_per_topo)
+    if not topos:
+        raise RuntimeError("no topologies found")
+    avail_ds = list(topos.keys())
+    avail_seqs = [k for k, p in _ANIM_SEQS.items() if p.exists()]
+    if not avail_seqs:
+        raise RuntimeError("no animation sequences found in _cap/")
+    print(f"[setup] J={J} helpers={len(helper_set)} "
+          f"datasets={[(k, len(t.id_names)) for k,t in topos.items()]} "
+          f"anim_seqs={avail_seqs} model_needs_nfs={model_needs_nfs}")
+
+    cache = IdentityCache(model, rig, device, model_needs_nfs=model_needs_nfs)
+    init_ds = "ict_train" if "ict_train" in topos else avail_ds[0]
+    cache.set_active(topos[init_ds])
+    init_seq = avail_seqs[0]
+    state = {"exp_coeffs": _load_exp_coeffs(init_seq)}
+    n_frames_init = state["exp_coeffs"].shape[0]
+
+    server = viser.ViserServer(port=args.port)
+    server.scene.set_up_direction("+y")  # ICT face is y-up
+
+    # ───── GUI ──────────────────────────────────────────────────────────
+    g_mode = server.gui.add_dropdown(
+        "Mode", options=["bind_pose", "weight", "anim", "cross"], initial_value="bind_pose"
+    )
+    g_reload = server.gui.add_button("Reload ckpt (hot)")
+    g_ckpt_info = server.gui.add_text(
+        "ckpt", str(ckpt_dir.name), disabled=True,
+    )
+    g_dataset = server.gui.add_dropdown(
+        "Dataset", options=avail_ds, initial_value=init_ds,
+    )
+    g_anim_seq = server.gui.add_dropdown(
+        "Anim seq", options=avail_seqs, initial_value=init_seq,
+    )
+    g_id = server.gui.add_slider(
+        "Identity", min=0, max=len(topos[init_ds].id_names) - 1, step=1, initial_value=0,
+    )
+    # global — applies to mesh in every mode (simulated via color-toward-white blend)
+    g_mesh_opacity = server.gui.add_slider(
+        "mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
+    )
+    g_shading = server.gui.add_dropdown(
+        "shading", options=["smooth", "flat"], initial_value="smooth",
+    )
+    g_double_sided = server.gui.add_checkbox(
+        "double-sided (kills dark fringe at open cuts; may distort normals)",
+        False,
+    )
+    g_view = server.gui.add_dropdown(
+        "view preset",
+        options=["free", "front", "back", "left", "right", "top", "bottom"],
+        initial_value="free",
+    )
+    g_ortho = server.gui.add_checkbox(
+        "orthographic (small-FOV fake)", False,
+    )
+    g_env_intensity = server.gui.add_slider(
+        "env light intensity", min=0.0, max=2.0, step=0.05, initial_value=0.4,
+    )
+    g_env_map = server.gui.add_dropdown(
+        "env HDRI",
+        options=["none", "warehouse", "studio", "apartment", "city",
+                 "dawn", "forest", "lobby", "night", "park", "sunset"],
+        initial_value="studio",
+    )
+    g_full_lit = server.gui.add_checkbox(
+        "full lit (no shading / no shadows)", False,
+    )
+
+    with server.gui.add_folder("Bind pose"):
+        g_show_gt = server.gui.add_checkbox("show GT joints", True)
+        g_show_pred = server.gui.add_checkbox("show Pred joints", True)
+        g_show_err = server.gui.add_checkbox("show error arrows", True)
+        g_show_helpers = server.gui.add_checkbox("highlight helpers", True)
+
+    with server.gui.add_folder("Weight"):
+        g_w_mode = server.gui.add_dropdown(
+            "weight mode",
+            options=["single", "argmax", "soft", "entropy"],
+            initial_value="soft",
+        )
+        g_joint = server.gui.add_dropdown(
+            "joint (single mode)",
+            options=[f"{j:02d} {n}" for j, n in enumerate(rig.joint_names)],
+            initial_value=f"00 {rig.joint_names[0]}",
+        )
+        g_soft_topk = server.gui.add_slider(
+            "soft top-K joints", min=1, max=8, step=1, initial_value=3,
+        )
+        # Post-blend HSV saturation boost. 1.0 = raw RGB blend (desaturates
+        # toward gray when joints with opposite hues mix). 2.0+ pushes
+        # toward tab20-level saturation (argmax-like vividness).
+        g_soft_sat = server.gui.add_slider(
+            "soft saturation", min=1.0, max=3.0, step=0.1, initial_value=2.0,
+        )
+
+    # Real-data clip selector — lives at top-level so it's visible in BOTH
+    # anim (cache.active.clips_for(g_id)) and cross-retarget (src_td.clips_for
+    # (g_src_id)) modes. Options + frame-count auto-refresh per current context.
+    _init_src_td = topos[init_ds]
+    _init_clips = _init_src_td.clips_for(_init_src_td.id_names[0])
+    g_clip = server.gui.add_dropdown(
+        "clip (real-data driver)",
+        options=_init_clips if _init_clips else ["<none>"],
+        initial_value=_init_clips[0] if _init_clips else "<none>",
+    )
+
+    with server.gui.add_folder("Anim"):
+        g_frame = server.gui.add_slider("frame", min=0, max=n_frames_init - 1, step=1, initial_value=0)
+        g_playing = server.gui.add_checkbox("play", False)
+        g_fps = server.gui.add_slider("fps", min=1, max=60, step=1, initial_value=15)
+        g_show_axes = server.gui.add_checkbox("joint axes triads", True)
+        g_show_bones = server.gui.add_checkbox("bones", True)
+        g_show_gt_anim = server.gui.add_checkbox("GT mesh side-by-side", True)
+        g_err_color = server.gui.add_checkbox("color pred by L2 error", True)
+        # Joint position source. Each option lives in a different coord frame:
+        # - T_world (animated): rig reference frame (Maya rig positions), where
+        #   pred_v actually ends up after skinning. Aligned with pred mesh but
+        #   may sit off-surface depending on rig design (e.g. eye joints inside
+        #   the eyeball, jaw deep below chin).
+        # - bind_pred (per-id): bind_pose_net output for THIS id. Lives on the
+        #   per-id neutral mesh surface (where bind GT landmarks were). NOT the
+        #   pose the pred mesh is in — overlay is for reference only.
+        # - rig_ref: Maya rig bind pose (joint locations from rig_info_ict.json).
+        #   Same frame as T_world at neutral; differs as T_delta diverges.
+        g_jpos_src = server.gui.add_dropdown(
+            "joint position source",
+            options=["T_world (animated)", "bind_pred (per-id)", "rig_ref (Maya)"],
+            initial_value="T_world (animated)",
+        )
+
+    # Cross-retarget: source must support blendshape exp (ICT topos).
+    cross_src_options = [k for k, t in topos.items() if t.supports_anim]
+    if not cross_src_options:
+        cross_src_options = avail_ds  # fallback (degraded UX)
+    with server.gui.add_folder("Cross-retarget"):
+        g_src_ds = server.gui.add_dropdown(
+            "src dataset", options=cross_src_options,
+            initial_value=cross_src_options[0],
+        )
+        g_src_id = server.gui.add_slider(
+            "src identity", min=0,
+            max=len(topos[cross_src_options[0]].id_names) - 1,
+            step=1, initial_value=0,
+        )
+        g_tgt_ds = server.gui.add_dropdown(
+            "tgt dataset", options=avail_ds, initial_value=init_ds,
+        )
+        g_tgt_id = server.gui.add_slider(
+            "tgt identity", min=0,
+            max=len(topos[init_ds].id_names) - 1,
+            step=1, initial_value=0,
+        )
+        # PCA mode index — only meaningful when src driver is pca_mode.
+        g_pca_mode = server.gui.add_slider(
+            "PCA mode idx (PCA src only)", min=0, max=20, step=1, initial_value=0,
+        )
+        g_show_src = server.gui.add_checkbox("show source meshes (neu+def)", True)
+        g_show_tgt_neu = server.gui.add_checkbox("show target neutral", True)
+
+    g_status = server.gui.add_text("status", "ready", disabled=True)
+
+    # ───── scene-node registry (so we can clear between mode switches) ──
+    nodes: list = []
+
+    def _clear():
+        nonlocal nodes
+        for h in nodes:
+            try:
+                h.remove()
+            except Exception:
+                pass
+        nodes = []
+
+    # ───── render passes ────────────────────────────────────────────────
+
+    def _render_bind_pose():
+        id_idx = int(g_id.value)
+        c = cache.get(id_idx)
+        verts = c["neu_v"]
+        # NOTE: We deliberately route bind_pose through the GLB path (with our
+        # igl-computed vertex normals embedded) instead of add_mesh_simple.
+        # add_mesh_simple lets three.js auto-compute normals from faces; for
+        # ICT's quad-triangulated mesh that produces visible diagonal contour
+        # artifacts. igl per_vertex_normals (area-weighted) avoids this.
+        rgb = np.full((verts.shape[0], 3), 200, dtype=np.uint8)
+        m = _add_per_vertex_color_mesh(
+            server, "/mesh", verts, cache.faces, rgb,
+            opacity=float(g_mesh_opacity.value), shading=g_shading.value,
+        )
+        nodes.append(m)
+
+        pred = c["joint_pos_pred"]      # [J, 3] or None (model didn't run)
+        gt = c["gt_bind"]                # [J, 3] or None
+
+        if pred is None:
+            g_status.value = (f"id={id_idx} ds={cache.active.name} | model skipped "
+                              f"(no nfs cache) — mesh only")
+            return
+
+        # Helper coloring: filled-circle big for non-helper, ring for helper.
+        sizes_pred = np.full(J, 0.012, dtype=np.float32)
+        sizes_gt = np.full(J, 0.012, dtype=np.float32)
+        for j in helper_set:
+            if 0 <= j < J:
+                sizes_pred[j] = 0.018 if g_show_helpers.value else 0.012
+                sizes_gt[j] = 0.018 if g_show_helpers.value else 0.012
+
+        if g_show_pred.value:
+            cols_pred = np.tile(np.array([[255, 140, 30]], dtype=np.uint8), (J, 1))
+            if g_show_helpers.value:
+                for j in helper_set:
+                    if 0 <= j < J:
+                        cols_pred[j] = [255, 80, 200]
+            h = server.scene.add_point_cloud(
+                "/joints/pred", points=pred, colors=cols_pred, point_size=0.012
+            )
+            nodes.append(h)
+
+        if g_show_gt.value and gt is not None:
+            cols_gt = np.tile(np.array([[60, 130, 255]], dtype=np.uint8), (J, 1))
+            if g_show_helpers.value:
+                for j in helper_set:
+                    if 0 <= j < J:
+                        cols_gt[j] = [60, 200, 255]
+            h = server.scene.add_point_cloud(
+                "/joints/gt", points=gt, colors=cols_gt, point_size=0.014
+            )
+            nodes.append(h)
+
+        if g_show_err.value and gt is not None:
+            points = np.stack([gt, pred], axis=1).astype(np.float32)  # [J, 2, 3]
+            err = np.linalg.norm(pred - gt, axis=-1)                  # [J]
+            err_n = err / max(err.max(), 1e-8)
+            cols = _viridis_rgb(err_n)
+            h = server.scene.add_arrows(
+                "/joints/err_arrows", points=points, colors=cols,
+                shaft_radius=0.0015, head_radius=0.004, head_length=0.008,
+            )
+            nodes.append(h)
+            g_status.value = (
+                f"id={id_idx} | bind err: mean={err.mean()*1000:.2f}mm "
+                f"med={np.median(err)*1000:.2f}mm max={err.max()*1000:.2f}mm"
+            )
+        else:
+            g_status.value = f"id={id_idx} | bind pose (no GT cache)" if gt is None else f"id={id_idx}"
+
+    def _render_weight():
+        id_idx = int(g_id.value)
+        c = cache.get(id_idx)
+        verts = c["neu_v"]
+        W = c["W"]                                 # [V, J] or None
+        if W is None:
+            # mesh-only fallback
+            rgb = np.full((verts.shape[0], 3), 180, dtype=np.uint8)
+            h = _add_per_vertex_color_mesh(server, "/mesh", verts, cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            nodes.append(h)
+            g_status.value = (f"id={id_idx} ds={cache.active.name} | model skipped "
+                              f"(no nfs cache) — mesh only")
+            return
+        mode = g_w_mode.value
+
+        if mode == "single":
+            j = int(g_joint.value.split()[0])
+            vals = W[:, j]
+            vals = vals / max(vals.max(), 1e-8)
+            rgb = _viridis_rgb(vals)
+            g_status.value = (
+                f"id={id_idx} j={j}({rig.joint_names[j]}) | "
+                f"W max={W[:, j].max():.3f} mean={W[:, j].mean():.3f}"
+            )
+        elif mode == "argmax":
+            idx = np.argmax(W, axis=-1)            # [V]
+            rgb = _tab20_rgb(idx, J)
+            uniq = len(np.unique(idx))
+            g_status.value = f"id={id_idx} | argmax mode | {uniq}/{J} joints active"
+        elif mode == "soft":
+            # Soft skin map: blend ONLY top-K joints per vertex (avoid noise from
+            # 60+ tiny weights). K=1 == argmax; K=3 gives clean boundaries
+            # without contour-line artifacts from the long tail.
+            K = max(int(g_soft_topk.value), 1)
+            cmap = cm.get_cmap("tab20", max(J, 20))
+            palette = (cmap(np.arange(J) % cmap.N)[:, :3] * 255).astype(np.float32)
+            Wf = W.astype(np.float32)
+            if K >= J:
+                rgb_f = Wf @ palette
+            else:
+                topk_idx = np.argpartition(-Wf, K - 1, axis=-1)[:, :K]
+                topk_w = np.take_along_axis(Wf, topk_idx, axis=-1)
+                topk_w = topk_w / (topk_w.sum(-1, keepdims=True) + 1e-8)
+                topk_cols = palette[topk_idx]                              # [V, K, 3]
+                rgb_f = (topk_w[..., None] * topk_cols).sum(-2)            # [V, 3]
+            # Post-blend HSV saturation boost — RGB averaging desaturates
+            # opposite hues; this restores tab20-level vividness.
+            sat_boost = float(g_soft_sat.value)
+            if sat_boost > 1.001:
+                from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
+                hsv = rgb_to_hsv(np.clip(rgb_f / 255.0, 0.0, 1.0))
+                hsv[..., 1] = np.clip(hsv[..., 1] * sat_boost, 0.0, 1.0)
+                rgb_f = hsv_to_rgb(hsv) * 255.0
+            rgb = np.clip(rgb_f, 0, 255).astype(np.uint8)
+            uniq = len(np.unique(np.argmax(W, axis=-1)))
+            g_status.value = (
+                f"id={id_idx} | soft top-{K} sat={sat_boost:.1f} | "
+                f"{uniq}/{J} dominant joints"
+            )
+        else:  # entropy
+            eps = 1e-8
+            ent = -np.sum(W * np.log(W + eps), axis=-1)   # [V]
+            max_ent = np.log(J)
+            rgb = _viridis_rgb(ent / max_ent)
+            g_status.value = (
+                f"id={id_idx} | entropy | mean={ent.mean():.3f} "
+                f"max={ent.max():.3f} (log J = {max_ent:.3f})"
+            )
+
+        h = _add_per_vertex_color_mesh(server, "/mesh", verts, cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+        nodes.append(h)
+        # joints as small ref dots
+        h2 = server.scene.add_point_cloud(
+            "/joints/pred", points=c["joint_pos_pred"],
+            colors=np.full((J, 3), 30, dtype=np.uint8), point_size=0.006,
+        )
+        nodes.append(h2)
+
+    def _build_exp(td, id_idx, frame):
+        """Build exp_coeff per driver. Returns (exp, n_frames_for_this_clip) or
+        (None, 0) if exp can't be built for the current GUI state."""
+        if td.exp_driver == "ict_blendshape":
+            ec = state["exp_coeffs"]
+            return ec[frame % ec.shape[0]], ec.shape[0]
+        if td.exp_driver == "mf_real":
+            clip = g_clip.value
+            nm = td.id_names[id_idx]
+            nf = td.n_frames(nm, clip)
+            if nf == 0:
+                return None, 0
+            return (clip, frame % nf), nf
+        if td.exp_driver == "pca_mode":
+            period = max(int(state["exp_coeffs"].shape[0]), 60)
+            amp = float(np.sin(2 * np.pi * (frame % period) / period))
+            return np.array([int(g_pca_mode.value), amp], dtype=np.float32), period
+        return None, 0
+
+    def _render_anim():
+        td = cache.active
+        id_idx = int(g_id.value)
+        if not td.supports_anim:
+            c = cache.get(id_idx)
+            rgb = np.full((c["neu_v"].shape[0], 3), 200, dtype=np.uint8)
+            h = _add_per_vertex_color_mesh(server, "/anim/neu", c["neu_v"], cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            nodes.append(h)
+            g_status.value = (f"ds={td.name}: anim mode unsupported "
+                              f"(no exp driver) — neutral mesh only")
+            return
+        frame = int(g_frame.value)
+        exp, nf = _build_exp(td, id_idx, frame)
+        if exp is None:
+            g_status.value = (f"ds={td.name} id={id_idx} driver={td.exp_driver}: "
+                              f"no usable exp source (clip={g_clip.value!r}) — pick a clip")
+            return
+
+        out = cache.forward_frame(id_idx, exp)
+        gt_v = out["gt_v"]; pred_v = out["pred_v"]
+        T_world = out["T_world"]
+        # Joint position source — user-selectable for diagnosing why joints
+        # appear off-mesh. Defaults to T_world (the animated, FK-resolved pos).
+        src = g_jpos_src.value
+        if src.startswith("bind_pred"):
+            jp = out["joint_pos"] if out["joint_pos"] is not None else None
+        elif src.startswith("rig_ref"):
+            jp = rig.bind_pos.cpu().numpy()
+        else:  # T_world
+            jp = T_world[:, :3, 3] if T_world is not None else out["joint_pos"]
+
+        if gt_v is None:
+            g_status.value = f"ds={td.name} id={id_idx} f={frame}: apply_exp returned None"
+            return
+        if pred_v is None:
+            # mesh-only animation: show GT only
+            rgb_gt = np.tile(np.array([[200, 200, 220]], dtype=np.uint8), (gt_v.shape[0], 1))
+            h = _add_per_vertex_color_mesh(server, "/anim/gt", gt_v, cache.faces, rgb_gt, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            nodes.append(h)
+            g_status.value = (f"id={id_idx} f={frame:03d}/{nf-1} ds={td.name} | "
+                              f"model skipped (no nfs cache) — GT mesh only")
+            return
+
+        if g_err_color.value:
+            err = np.linalg.norm(pred_v - gt_v, axis=-1)
+            err_n = err / max(err.max(), 1e-8)
+            rgb_pred = _viridis_rgb(err_n)
+            err_mm = err.mean() * 1000.0
+        else:
+            rgb_pred = np.tile(np.array([[230, 230, 230]], dtype=np.uint8), (pred_v.shape[0], 1))
+            err_mm = float("nan")
+
+        # Layout: pred at origin, GT shifted +X by mesh width.
+        x_off = float(pred_v[:, 0].max() - pred_v[:, 0].min()) * 1.15
+
+        h = _add_per_vertex_color_mesh(server, "/anim/pred", pred_v, cache.faces, rgb_pred, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+        nodes.append(h)
+        if g_show_gt_anim.value:
+            shifted = gt_v.copy()
+            shifted[:, 0] += x_off
+            rgb_gt = np.tile(np.array([[180, 180, 220]], dtype=np.uint8), (gt_v.shape[0], 1))
+            h2 = _add_per_vertex_color_mesh(server, "/anim/gt", shifted, cache.faces, rgb_gt, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+            nodes.append(h2)
+
+        # Skeleton on pred side: joint points + bones
+        h3 = server.scene.add_point_cloud(
+            "/anim/joints",
+            points=jp,
+            colors=np.full((J, 3), 255, dtype=np.uint8),
+            point_size=0.008,
+        )
+        nodes.append(h3)
+
+        if g_show_bones.value:
+            segs = []
+            for j in range(J):
+                p = int(parent_idx[j])
+                if p >= 0:
+                    segs.append([jp[p], jp[j]])
+            if segs:
+                pts = np.array(segs, dtype=np.float32)            # [E, 2, 3]
+                # add_line_segments wants per-endpoint colors: [E, 2, 3]
+                cols = np.broadcast_to(
+                    np.array([80, 220, 180], dtype=np.uint8),
+                    (pts.shape[0], 2, 3),
+                ).copy()
+                h4 = server.scene.add_line_segments(
+                    "/anim/bones", points=pts, colors=cols, line_width=2.0,
+                )
+                nodes.append(h4)
+
+        if g_show_axes.value:
+            # Plant a small frame at each joint, rotation = T_world[j, :3, :3]
+            # T_world is column-major in this codebase. Build wxyz quat.
+            from scipy.spatial.transform import Rotation as R
+
+            R_mats = T_world[:, :3, :3]  # [J, 3, 3]
+            # quaternions: scipy returns xyzw → reorder to wxyz
+            quats_xyzw = R.from_matrix(R_mats).as_quat()
+            quats_wxyz = np.concatenate(
+                [quats_xyzw[:, 3:4], quats_xyzw[:, :3]], axis=-1
+            )
+            for j in range(J):
+                hf = server.scene.add_frame(
+                    f"/anim/axes/{j:02d}",
+                    wxyz=tuple(quats_wxyz[j]),
+                    position=tuple(jp[j]),
+                    axes_length=0.025,
+                    axes_radius=0.0015,
+                    show_axes=True,
+                    origin_radius=0.0,
+                )
+                nodes.append(hf)
+
+        g_status.value = (
+            f"ds={td.name}[{id_idx}] f={frame:03d}/{nf-1} drv={td.exp_driver} | "
+            f"mean pred err {err_mm:.2f}mm" if g_err_color.value
+            else f"ds={td.name}[{id_idx}] f={frame:03d}/{nf-1}"
+        )
+
+    def _render_cross():
+        src_td = topos[g_src_ds.value]
+        tgt_td = topos[g_tgt_ds.value]
+        src_idx = int(g_src_id.value); tgt_idx = int(g_tgt_id.value)
+        ec = state["exp_coeffs"]
+        nf = ec.shape[0]
+        frame = int(g_frame.value)
+
+        # Build exp_coeff per src driver.
+        src_id_name = src_td.id_names[src_idx]
+        if src_td.exp_driver == "ict_blendshape":
+            exp = ec[frame % nf]
+        elif src_td.exp_driver == "pca_mode":
+            amp = float(np.sin(2 * np.pi * (frame % nf) / nf))
+            exp = np.array([int(g_pca_mode.value), amp], dtype=np.float32)
+        elif src_td.exp_driver == "mf_real":
+            clip = g_clip.value
+            n_real = src_td.n_frames(src_id_name, clip)
+            if n_real == 0:
+                g_status.value = (f"cross: clip {clip!r} has no frames for "
+                                  f"{src_td.name}[{src_id_name}]")
+                return
+            exp = (clip, frame % n_real)
+        else:
+            g_status.value = f"cross: src {src_td.name} has no exp driver"
+            return
+
+        out = cache.retarget(src_td, src_idx, exp, tgt_td, tgt_idx)
+        if not out["model_ran"]:
+            g_status.value = (f"cross: src={src_td.name}[{src_idx}] "
+                              f"tgt={tgt_td.name}[{tgt_idx}] — "
+                              f"model skipped (missing nfs cache on one side)")
+            # still show source mesh if we have it
+            if out["src_def_v"] is not None:
+                rgb = np.full((out["src_def_v"].shape[0], 3), 200, dtype=np.uint8)
+                h = _add_per_vertex_color_mesh(
+                    server, "/cross/src_def", out["src_def_v"], src_td.faces, rgb,
+                    opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value)
+                nodes.append(h)
+            return
+
+        # Layout: src_neu (left -2), src_def (left -1), tgt_neu (mid 0), tgt_pred (right +1)
+        # Use mesh widths per topology so meshes don't overlap.
+        def _w(v):
+            return float(v[:, 0].max() - v[:, 0].min())
+        src_w = max(_w(out["src_neu_v"]), _w(out["src_def_v"]))
+        tgt_w = max(_w(out["tgt_neu_v"]), _w(out["tgt_pred_v"]))
+        gap = max(src_w, tgt_w) * 0.20
+        slot_w = max(src_w, tgt_w) + gap
+
+        positions = {
+            "src_neu":  -2 * slot_w if g_show_src.value else None,
+            "src_def":  -1 * slot_w if g_show_src.value else None,
+            "tgt_neu":   0.0 if g_show_tgt_neu.value else None,
+            "tgt_pred":  1.0 * slot_w,
+        }
+
+        def _put(name, verts, faces, rgb):
+            x = positions[name]
+            if x is None:
+                return
+            v = verts.copy(); v[:, 0] += x
+            h = _add_per_vertex_color_mesh(server, f"/cross/{name}", v, faces, rgb,
+                                           opacity=float(g_mesh_opacity.value),
+                                           shading=g_shading.value, double_sided=g_double_sided.value)
+            nodes.append(h)
+
+        gray = lambda v, c=200: np.full((v.shape[0], 3), c, dtype=np.uint8)
+        _put("src_neu", out["src_neu_v"], src_td.faces, gray(out["src_neu_v"], 200))
+        _put("src_def", out["src_def_v"], src_td.faces,
+             np.tile(np.array([[180, 220, 180]], dtype=np.uint8),
+                     (out["src_def_v"].shape[0], 1)))
+        _put("tgt_neu", out["tgt_neu_v"], tgt_td.faces, gray(out["tgt_neu_v"], 200))
+
+        # Target pred: color by per-vertex L2 error if metrics available (self-retarget).
+        m = out["metrics"]
+        if m is not None:
+            err = np.linalg.norm(out["tgt_pred_v"] - out["src_def_v"], axis=-1)
+            err_n = err / max(err.max(), 1e-8)
+            rgb_pred = _viridis_rgb(err_n)
+        else:
+            rgb_pred = np.tile(np.array([[235, 170, 70]], dtype=np.uint8),
+                               (out["tgt_pred_v"].shape[0], 1))
+        _put("tgt_pred", out["tgt_pred_v"], tgt_td.faces, rgb_pred)
+
+        if m is not None:
+            g_status.value = (
+                f"cross[self] src={src_td.name}[{src_idx}] f={frame:03d} | "
+                f"L2 mean={m['mean_l2_mm']:.2f}mm "
+                f"max={m['max_l2_mm']:.2f}mm | "
+                f"norm_cos={m['norm_cos']:.4f} lap_err={m['lap_err']:.4f}"
+            )
+        else:
+            g_status.value = (
+                f"cross src={src_td.name}[{src_idx}] → tgt={tgt_td.name}[{tgt_idx}] "
+                f"f={frame:03d} | no GT (different id/topo)"
+            )
+
+    # ── render orchestration + locking ─────────────────────────────────
+    import threading, time, traceback
+    render_lock = threading.Lock()
+
+    def render():
+        with render_lock:
+            try:
+                _clear()
+                mode = g_mode.value
+                if mode == "bind_pose":
+                    _render_bind_pose()
+                elif mode == "weight":
+                    _render_weight()
+                elif mode == "anim":
+                    _render_anim()
+                else:  # cross
+                    _render_cross()
+            except Exception:
+                print("[render] EXC:", traceback.format_exc())
+
+    # ── dataset / seq change handlers ──────────────────────────────────
+    def _on_dataset_change(_e=None):
+        ds = g_dataset.value
+        if ds not in topos:
+            g_status.value = f"dataset {ds} not registered"
+            return
+        cache.set_active(topos[ds])
+        g_id.max = len(topos[ds].id_names) - 1
+        if int(g_id.value) > g_id.max:
+            g_id.value = 0
+        _refresh_clip_options()
+        render()
+
+    def _on_id_change(_e=None):
+        _refresh_clip_options()
+        render()
+
+    def _refresh_clip_options():
+        """Re-populate g_clip + adjust g_frame.max based on the currently driven
+        context (anim mode → cache.active; cross mode → src_td)."""
+        if g_mode.value == "cross":
+            td = topos.get(g_src_ds.value)
+            idx = int(g_src_id.value)
+        else:
+            td = cache.active
+            idx = int(g_id.value)
+        if td is None or not td.id_names:
+            return
+        idx = min(idx, len(td.id_names) - 1)
+        clips = td.clips_for(td.id_names[idx])
+        if not clips:
+            clips = ["<none>"]
+        g_clip.options = tuple(clips)
+        if g_clip.value not in clips:
+            g_clip.value = clips[0]
+        # Sync frame slider max to current driver.
+        if td.exp_driver == "mf_real":
+            nf = td.n_frames(td.id_names[idx], g_clip.value)
+            if nf > 0:
+                g_frame.max = nf - 1
+                if int(g_frame.value) > g_frame.max:
+                    g_frame.value = 0
+        elif td.exp_driver == "ict_blendshape":
+            g_frame.max = state["exp_coeffs"].shape[0] - 1
+            if int(g_frame.value) > g_frame.max:
+                g_frame.value = 0
+
+    def _on_src_ds_change(_e=None):
+        if g_src_ds.value in topos:
+            g_src_id.max = len(topos[g_src_ds.value].id_names) - 1
+            if int(g_src_id.value) > g_src_id.max:
+                g_src_id.value = 0
+        _refresh_clip_options()
+        render()
+
+    def _on_src_id_change(_e=None):
+        _refresh_clip_options()
+        render()
+
+    def _on_mode_change(_e=None):
+        _refresh_clip_options()
+        render()
+
+    def _on_clip_change(_e=None):
+        # User picked a different clip — frame max may change.
+        _refresh_clip_options()
+        render()
+
+    def _on_tgt_ds_change(_e=None):
+        if g_tgt_ds.value in topos:
+            g_tgt_id.max = len(topos[g_tgt_ds.value].id_names) - 1
+            if int(g_tgt_id.value) > g_tgt_id.max:
+                g_tgt_id.value = 0
+        render()
+
+    def _on_seq_change(_e=None):
+        seq = g_anim_seq.value
+        try:
+            state["exp_coeffs"] = _load_exp_coeffs(seq)
+        except FileNotFoundError as ex:
+            g_status.value = f"seq missing: {ex}"
+            return
+        g_frame.max = state["exp_coeffs"].shape[0] - 1
+        if int(g_frame.value) > g_frame.max:
+            g_frame.value = 0
+        render()
+
+    # Persistent ambient light used in 'full lit' mode (added once, toggled).
+    _amb_state = {"handle": None}
+
+    def _apply_lighting(_e=None):
+        try:
+            if bool(g_full_lit.value):
+                # Full lit: kill env reflections + uniform ambient → mesh appears
+                # at vertex color regardless of view direction.
+                server.scene.configure_environment_map(
+                    hdri=None, environment_intensity=0.0,
+                )
+                if _amb_state["handle"] is None:
+                    _amb_state["handle"] = server.scene.add_light_ambient(
+                        "/lights/full_lit_ambient",
+                        color=(255, 255, 255), intensity=3.0,
+                    )
+                else:
+                    _amb_state["handle"].visible = True
+            else:
+                if _amb_state["handle"] is not None:
+                    _amb_state["handle"].visible = False
+                hdri = g_env_map.value
+                server.scene.configure_environment_map(
+                    hdri=None if hdri == "none" else hdri,
+                    environment_intensity=float(g_env_intensity.value),
+                )
+        except Exception:
+            import traceback as _tb
+            print("[lighting] EXC:", _tb.format_exc())
+
+    def _apply_view(_e=None):
+        """Snap all current clients to a preset view + optional fake-ortho FOV."""
+        name = g_view.value
+        ortho = bool(g_ortho.value)
+        if name == "free" and not ortho:
+            for c in server.get_clients().values():
+                try: c.camera.fov = math.radians(60.0)
+                except Exception: pass
+            return
+        # ICT face is roughly centered at y≈0.05, z≈0; extent ~0.5.
+        center = np.array([0.0, 0.05, 0.0])
+        # Distance: large when ortho (small FOV needs long throw) else moderate.
+        dist = 8.0 if ortho else 1.8
+        fov = math.radians(8.0) if ortho else math.radians(60.0)
+        presets = {
+            "free":   None,
+            "front":  (center + np.array([0,   0,   dist]),  (0,  1,  0)),
+            "back":   (center + np.array([0,   0,  -dist]),  (0,  1,  0)),
+            "left":   (center + np.array([-dist, 0, 0]),     (0,  1,  0)),
+            "right":  (center + np.array([dist,  0, 0]),     (0,  1,  0)),
+            "top":    (center + np.array([0,   dist, 0.001]),(0,  0, -1)),
+            "bottom": (center + np.array([0,  -dist, 0.001]),(0,  0,  1)),
+        }
+        p = presets.get(name)
+        for c in server.get_clients().values():
+            try:
+                c.camera.fov = fov
+                if p is not None:
+                    pos, up = p
+                    c.camera.position = tuple(pos)
+                    c.camera.look_at = tuple(center)
+                    c.camera.up_direction = tuple(up)
+            except Exception:
+                pass
+
+    def _on_reload(_e=None):
+        import time as _t
+        t0 = _t.time()
+        try:
+            pth = ckpt_dir / "model_hlbs_best.pth"
+            if not pth.exists():
+                cands = sorted(ckpt_dir.glob("model_hlbs_*.pth"))
+                if not cands:
+                    g_status.value = f"reload: no ckpt found in {ckpt_dir}"
+                    return
+                pth = cands[-1]
+            sd = torch.load(pth, map_location=device, weights_only=False)
+            msg = model.load_state_dict(sd, strict=False)
+            cache._cache.clear()  # invalidate cached W / joint_pos / nfs
+            g_ckpt_info.value = (
+                f"{pth.name} | reloaded in {_t.time()-t0:.1f}s "
+                f"(missing={len(msg.missing_keys)} unexpected={len(msg.unexpected_keys)})"
+            )
+            render()
+        except Exception:
+            import traceback as _tb
+            print("[reload] EXC:", _tb.format_exc())
+            g_status.value = "reload FAILED — see console"
+
+    g_reload.on_click(_on_reload)
+    g_view.on_update(_apply_view)
+    g_ortho.on_update(_apply_view)
+    g_shading.on_update(lambda _e: render())
+    g_double_sided.on_update(lambda _e: render())
+    g_env_intensity.on_update(_apply_lighting)
+    g_env_map.on_update(_apply_lighting)
+    g_full_lit.on_update(_apply_lighting)
+    g_dataset.on_update(_on_dataset_change)
+    g_anim_seq.on_update(_on_seq_change)
+    g_src_ds.on_update(_on_src_ds_change)
+    g_tgt_ds.on_update(_on_tgt_ds_change)
+
+    # bind primary controls — render on any change.
+    g_mode.on_update(_on_mode_change)
+    g_id.on_update(_on_id_change)
+    g_src_id.on_update(_on_src_id_change)
+    g_clip.on_update(_on_clip_change)
+    for h in [
+        g_show_gt, g_show_pred, g_show_err, g_show_helpers, g_mesh_opacity,
+        g_w_mode, g_joint, g_soft_topk, g_soft_sat,
+        g_frame, g_show_axes, g_show_bones, g_show_gt_anim, g_err_color,
+        g_jpos_src,
+        g_tgt_id, g_pca_mode, g_show_src, g_show_tgt_neu,
+    ]:
+        h.on_update(lambda _e: render())
+
+    # ── play loop: drives g_frame.value AND calls render directly
+    # (don't rely on on_update firing for programmatic value changes).
+    def _play_loop():
+        while True:
+            try:
+                if g_playing.value and g_mode.value in ("anim", "cross"):
+                    nf = state["exp_coeffs"].shape[0]
+                    nxt = (int(g_frame.value) + 1) % nf
+                    g_frame.value = nxt   # updates UI slider
+                    render()              # explicit render — robust
+                    time.sleep(1.0 / max(int(g_fps.value), 1))
+                else:
+                    time.sleep(0.1)
+            except Exception:
+                print("[play] EXC:", traceback.format_exc())
+                time.sleep(0.5)
+
+    threading.Thread(target=_play_loop, daemon=True).start()
+
+    _refresh_clip_options()
+    _apply_lighting()   # set initial env intensity so first paint isn't blown out
+    render()
+    print(f"[viser] http://localhost:{args.port}")
+    print("[viser] (use ssh -L if remote: ssh -L {p}:localhost:{p} <host>)".format(p=args.port))
+    while True:
+        time.sleep(60)
+
+
+if __name__ == "__main__":
+    main()

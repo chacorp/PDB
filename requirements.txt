@@ -20,6 +20,7 @@ open3d==0.18.0
 vedo==2024.5.1 # optional
 h5py==3.11.0 # SIREN
 easydict
+viser>=1.0.29  # tools/vis/viser_debug.py — interactive HLBS debugger
 https://data.pyg.org/whl/torch-1.13.0%2Bcu117/torch_cluster-1.6.1%2Bpt113cu117-cp38-cp38-linux_x86_64.whl
 https://data.pyg.org/whl/torch-1.13.0%2Bcu117/torch_scatter-2.1.0%2Bpt113cu117-cp38-cp38-linux_x86_64.whl
 https://data.pyg.org/whl/torch-1.13.0%2Bcu117/torch_sparse-0.6.17%2Bpt113cu117-cp38-cp38-linux_x86_64.whl
