@@ -2317,6 +2317,34 @@ class HLBSTrainer:
                             _gd = _gd[:V_c]
                             _tgt_geo = (_gd.unsqueeze(0).expand(B_c, -1, -1)) ** 2
 
+                    # ── Subsample cross-retarget batch ─────────────────
+                    # Same perm for src and tgt (both ICT, same N). All cb
+                    # tensors gather; _tgt_nfs and _tgt_geo also gather; _tgt_bp
+                    # is per-joint so unaffected. _tgt_bp / V_c updated.
+                    if (getattr(opts, 'subsample_ratio', 0) > 0
+                            and cb.src_template.shape[1] == cb.tgt_template.shape[1]):
+                        cb.id_name = cb.src_id_name   # topo detect in _build_subsample_perm
+                        _cperm = self._build_subsample_perm(
+                            cb.src_template, cb,
+                            opts.subsample_ratio, opts.subsample_mode)
+                        if _cperm is not None:
+                            _idx3 = _cperm.unsqueeze(-1).expand(-1, -1, 3)
+                            cb.src_template        = torch.gather(cb.src_template, 1, _idx3)
+                            cb.src_template_normal = torch.gather(cb.src_template_normal, 1, _idx3)
+                            cb.src_vertices        = torch.gather(cb.src_vertices, 1, _idx3)
+                            cb.src_vertices_normal = torch.gather(cb.src_vertices_normal, 1, _idx3)
+                            cb.tgt_template        = torch.gather(cb.tgt_template, 1, _idx3)
+                            cb.tgt_template_normal = torch.gather(cb.tgt_template_normal, 1, _idx3)
+                            cb.tgt_vertices        = torch.gather(cb.tgt_vertices, 1, _idx3)
+                            cb.tgt_vertices_normal = torch.gather(cb.tgt_vertices_normal, 1, _idx3)
+                            if _tgt_nfs is not None:
+                                _idxF = _cperm.unsqueeze(-1).expand(-1, -1, _tgt_nfs.shape[-1])
+                                _tgt_nfs = torch.gather(_tgt_nfs, 1, _idxF)
+                            if _tgt_geo is not None:
+                                _idxJ = _cperm.unsqueeze(-1).expand(-1, -1, _tgt_geo.shape[-1])
+                                _tgt_geo = torch.gather(_tgt_geo, 1, _idxJ)
+                            V_c = cb.tgt_template.shape[1]
+
                     # Forward retarget: A → B
                     pred_tgt = self.model.retarget(
                         cb.src_template, cb.src_template_normal,
