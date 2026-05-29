@@ -2330,6 +2330,7 @@ class HLBSTrainer:
                     # Same perm for src and tgt (both ICT, same N). All cb
                     # tensors gather; _tgt_nfs and _tgt_geo also gather; _tgt_bp
                     # is per-joint so unaffected. _tgt_bp / V_c updated.
+                    _cb_permed = False
                     if (getattr(opts, 'subsample_ratio', 0) > 0
                             and cb.src_template.shape[1] == cb.tgt_template.shape[1]):
                         cb.id_name = cb.src_id_name   # topo detect in _build_subsample_perm
@@ -2337,6 +2338,7 @@ class HLBSTrainer:
                             cb.src_template, cb,
                             opts.subsample_ratio, opts.subsample_mode)
                         if _cperm is not None:
+                            _cb_permed = True
                             _idx3 = _cperm.unsqueeze(-1).expand(-1, -1, 3)
                             cb.src_template        = torch.gather(cb.src_template, 1, _idx3)
                             cb.src_template_normal = torch.gather(cb.src_template_normal, 1, _idx3)
@@ -2514,8 +2516,11 @@ class HLBSTrainer:
                             name=f"{epoch:03d}_{idx:04d}", save=True)
 
                     # Cross-retarget vis — match main mesh vis pattern: 4 GT + 4 pred.
+                    # Skip when the cross-retarget batch was subsampled (cb.faces
+                    # still refers to the original full vertex set → out-of-range).
                     if (getattr(opts, 'lambda_cross_retarget', 0) > 0
-                            and self._cross_pair_loader is not None):
+                            and self._cross_pair_loader is not None
+                            and not _cb_permed):
                         _d = lambda t: t.detach().float().cpu()  # .float(): bf16(AMP)→fp32 for numpy/vis
                         B_c_vis = cb.src_template.shape[0]
                         _sc = lambda i: min(i, B_c_vis - 1)
