@@ -26,6 +26,9 @@ def main():
     p.add_argument('--ckpt', required=True)
     p.add_argument('--epoch', default='-1', help='int, or "best"/-1 for newest')
     p.add_argument('--device', default='cpu')
+    p.add_argument('--vis', action='store_true',
+                   help='Save 3-view PNG of base bind pose (blue) vs predicted (red), '
+                        'with residual arrows and helper joints highlighted.')
     args = p.parse_args()
 
     with open(os.path.join(args.ckpt, 'train_opts.yml')) as f:
@@ -149,6 +152,55 @@ def main():
     print('  top-5 non-helpers by residual norm:')
     for j in sorted(non_helper, key=lambda j: -res_norm[j])[:5]:
         print(f'    j={j:3d}  norm={res_norm[j]:.4f}')
+
+    if args.vis:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        base_np = model.bind_pos_base.cpu().numpy()           # [J, 3]
+        pred_np = joint_pos.squeeze(0).cpu().numpy()           # [J, 3]
+        res_np = res.squeeze(0).cpu().numpy()                  # [J, 3]
+        helper_arr = np.array([j in helper_set for j in range(J)])
+        norms_per_j = np.linalg.norm(res_np, axis=-1)
+        top_movers = np.argsort(-norms_per_j)[:15]
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        views = [('Front (XY)', 0, 1), ('Side (YZ)', 1, 2), ('Top (XZ)', 0, 2)]
+        for ax, (title, a, b) in zip(axes, views):
+            ax.scatter(template_np[::20, a], template_np[::20, b],
+                       c='lightgray', s=0.3, alpha=0.4)
+            # base bind pose (blue)
+            for is_h, color, marker in [(False, 'royalblue', 'o'), (True, 'navy', '^')]:
+                mask = helper_arr == is_h
+                ax.scatter(base_np[mask, a], base_np[mask, b],
+                           c=color, s=30, marker=marker, alpha=0.6,
+                           label=('base helper' if is_h else 'base non-helper') if ax is axes[0] else None)
+            # predicted bind pose (red)
+            for is_h, color, marker in [(False, 'red', 'o'), (True, 'darkred', '^')]:
+                mask = helper_arr == is_h
+                ax.scatter(pred_np[mask, a], pred_np[mask, b],
+                           c=color, s=30, marker=marker, alpha=0.7,
+                           label=('pred helper' if is_h else 'pred non-helper') if ax is axes[0] else None)
+            for j in top_movers:
+                ax.annotate('', xy=(pred_np[j, a], pred_np[j, b]),
+                            xytext=(base_np[j, a], base_np[j, b]),
+                            arrowprops=dict(arrowstyle='->',
+                                            color='darkred' if helper_arr[j] else 'red',
+                                            alpha=0.7, lw=1.5))
+            ax.set_title(title)
+            ax.set_aspect('equal')
+            ax.set_xticks([]); ax.set_yticks([])
+        axes[0].legend(loc='upper left', fontsize=8)
+        fig.suptitle(
+            f'Bind pose @ ICT mean | base(blue) → pred(red). Top-15 movers arrowed.\n'
+            f'lambda_bind_residual={opts.get("lambda_bind_residual")}  '
+            f'lambda_helper_residual={opts.get("lambda_helper_residual")}  '
+            f'(mean residual norm: helper={norms_per_j[sorted(helper_set)].mean():.3f}, '
+            f'non-helper={norms_per_j[non_helper].mean():.3f})',
+            fontsize=10)
+        out_path = os.path.join(args.ckpt, 'bind_pose_vis.png')
+        plt.tight_layout(); plt.savefig(out_path, dpi=120, bbox_inches='tight'); plt.close()
+        print(f'\n[vis] saved → {out_path}')
 
 
 if __name__ == '__main__':
