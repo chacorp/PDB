@@ -374,79 +374,109 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
     return topos
 
 
+_REAL_DATA_BASEDIRS: list[str] = []   # filled from CLI in main()
+
+
+def _real_data_basedirs() -> list[Path]:
+    """Candidate base dirs to scan for real animation .npy frames. Built from:
+      1. --data_basedirs CLI args (highest priority)
+      2. Environment variable HLBS_DATA_BASEDIRS (colon-sep)
+      3. Hardcoded defaults that cover both servers we've seen + dataloader's
+         --data_toggle pca variant ({base} and {base}/pca)
+    Order matters — first hit wins per (id, clip) pair (we still aggregate
+    across all hits to maximize coverage).
+    """
+    out = list(_REAL_DATA_BASEDIRS)
+    env = os.environ.get("HLBS_DATA_BASEDIRS", "")
+    if env:
+        out.extend([s for s in env.split(":") if s])
+    out.extend([
+        # dataloader_CBD.py default + this-server discovery + likely siblings
+        "/data/sihun", "/data2/sihun", "/data/inyup", "/data2/inyup",
+        # dataloader's --data_toggle off variant (template_data_basedir = base+/pca)
+        "/data/sihun/pca", "/data2/sihun/pca", "/data/inyup/pca", "/data2/inyup/pca",
+        # observed on this server: data nested under a user dir
+        "/data/inyup/data/sihun", "/data2/inyup/data/sihun",
+    ])
+    seen, dedup = set(), []
+    for b in out:
+        p = Path(b).resolve()
+        if p in seen or not p.is_dir():
+            continue
+        seen.add(p); dedup.append(p)
+    return dedup
+
+
 def _discover_real_clips(ds_name: str, id_names: list[str]) -> dict | None:
-    """Scan disk for per-id real animation clips.
+    """Scan all candidate base dirs for per-id real animation clips.
     Returns {id_name: {clip_name: [sorted frame paths]}} or None if nothing found.
 
-    Layout by topology (all under /data/inyup/...):
+    Sub-paths per topology (relative to a basedir):
       mf:   multiface_align/{ROM,SEN}/{train,test}/vertices_npy/{id}/{clip}/*.npy
-      biwi: data/sihun/BIWI_align_deci/{train,test}/vertices_npy/{id}_{clip}/*.npy
-      coma: data/sihun/VOCA-COMA/COMA/{train,test}/{id}/vertices_npy/{clip}/*.npy
+      biwi: BIWI_align_deci/{train,test}/vertices_npy/{id}_{clip}/*.npy
+      coma: VOCA-COMA/COMA/{train,test}/{id}/vertices_npy/{clip}/*.npy
     """
     catalog: dict[str, dict[str, list]] = {nm: {} for nm in id_names}
+    bases = _real_data_basedirs()
 
-    if ds_name == "mf":
-        roots = [
-            "/data/inyup/multiface_align/ROM/test/vertices_npy",
-            "/data/inyup/multiface_align/ROM/train/vertices_npy",
-            "/data/inyup/multiface_align/SEN/test/vertices_npy",
-            "/data/inyup/multiface_align/SEN/train/vertices_npy",
-        ]
-        for root in roots:
-            rp = Path(root)
-            if not rp.is_dir(): continue
-            split_tag = rp.parts[-3] + "/" + rp.parts[-2]   # e.g. ROM/test
-            for id_dir in rp.iterdir():
-                nm = id_dir.name
-                if nm not in catalog or not id_dir.is_dir(): continue
-                for clip_dir in id_dir.iterdir():
-                    if not clip_dir.is_dir(): continue
-                    frames = sorted(clip_dir.glob("*.npy"))
-                    frames = [f for f in frames if f.stat().st_size > 1024]
-                    if frames:
-                        catalog[nm][f"{split_tag}/{clip_dir.name}"] = frames
+    def _add(catalog_id: str, key: str, frames: list[Path]):
+        if frames and key not in catalog[catalog_id]:
+            catalog[catalog_id][key] = frames
 
-    elif ds_name == "biwi":
-        roots = [
-            "/data/inyup/data/sihun/BIWI_align_deci/test/vertices_npy",
-            "/data/inyup/data/sihun/BIWI_align_deci/train/vertices_npy",
-        ]
-        for root in roots:
-            rp = Path(root)
-            if not rp.is_dir(): continue
-            split_tag = rp.parts[-2]
-            for sub in rp.iterdir():
-                if not sub.is_dir(): continue
-                # id is everything before the first underscore (F2_e37 → F2)
-                nm, _, clip = sub.name.partition("_")
-                if nm not in catalog: continue
-                frames = sorted(sub.glob("*.npy"))
-                frames = [f for f in frames if f.stat().st_size > 1024]
-                if frames:
-                    catalog[nm][f"{split_tag}/{clip}"] = frames
-
-    elif ds_name == "coma":
-        roots = [
-            "/data/inyup/data/sihun/VOCA-COMA/COMA/test",
-            "/data/inyup/data/sihun/VOCA-COMA/COMA/train",
-        ]
-        for root in roots:
-            rp = Path(root)
-            if not rp.is_dir(): continue
-            split_tag = rp.parts[-1]
-            for id_dir in rp.iterdir():
-                if not id_dir.is_dir() or id_dir.name not in catalog:
+    for base in bases:
+        if ds_name == "mf":
+            for split in ("ROM/test", "ROM/train", "SEN/test", "SEN/train"):
+                rp = base / "multiface_align" / split / "vertices_npy"
+                if not rp.is_dir():
                     continue
-                vnp = id_dir / "vertices_npy"
-                if not vnp.is_dir(): continue
-                for clip_dir in vnp.iterdir():
-                    if not clip_dir.is_dir(): continue
-                    frames = sorted(clip_dir.glob("*.npy"))
+                for id_dir in rp.iterdir():
+                    nm = id_dir.name
+                    if nm not in catalog or not id_dir.is_dir():
+                        continue
+                    for clip_dir in id_dir.iterdir():
+                        if not clip_dir.is_dir():
+                            continue
+                        frames = sorted(clip_dir.glob("*.npy"))
+                        frames = [f for f in frames if f.stat().st_size > 1024]
+                        _add(nm, f"{split}/{clip_dir.name}", frames)
+        elif ds_name == "biwi":
+            for split in ("test", "train"):
+                rp = base / "BIWI_align_deci" / split / "vertices_npy"
+                if not rp.is_dir():
+                    continue
+                for sub in rp.iterdir():
+                    if not sub.is_dir():
+                        continue
+                    nm, _, clip = sub.name.partition("_")
+                    if nm not in catalog:
+                        continue
+                    frames = sorted(sub.glob("*.npy"))
                     frames = [f for f in frames if f.stat().st_size > 1024]
-                    if frames:
-                        catalog[nm := id_dir.name][f"{split_tag}/{clip_dir.name}"] = frames
+                    _add(nm, f"{split}/{clip}", frames)
+        elif ds_name == "coma":
+            for split in ("test", "train"):
+                rp = base / "VOCA-COMA" / "COMA" / split
+                if not rp.is_dir():
+                    continue
+                for id_dir in rp.iterdir():
+                    if not id_dir.is_dir() or id_dir.name not in catalog:
+                        continue
+                    vnp = id_dir / "vertices_npy"
+                    if not vnp.is_dir():
+                        continue
+                    for clip_dir in vnp.iterdir():
+                        if not clip_dir.is_dir():
+                            continue
+                        frames = sorted(clip_dir.glob("*.npy"))
+                        frames = [f for f in frames if f.stat().st_size > 1024]
+                        _add(id_dir.name, f"{split}/{clip_dir.name}", frames)
 
     has_any = any(clips for clips in catalog.values())
+    if has_any:
+        total = sum(len(c) for c in catalog.values())
+        with_data = sum(1 for c in catalog.values() if c)
+        print(f"[real-clips] {ds_name}: {total} clips across {with_data}/{len(id_names)} ids "
+              f"(scanned {len(bases)} basedirs)")
     return catalog if has_any else None
 
 
@@ -460,10 +490,8 @@ def _try_load_pca(ds_name: str, id_names: list[str]) -> dict | None:
     """
     if ds_name != "mf":
         return None
-    bases = [
-        Path("/data/sihun/pca/multiface_align"),
-        Path("/data/sihun/multiface_align"),
-    ]
+    # Scan every candidate basedir × {pca, plain} × {SEN, ROM} × {train, test}.
+    bases = [b / "multiface_align" for b in _real_data_basedirs()]
     splits = ["SEN/train", "SEN/test", "ROM/train", "ROM/test"]
     out = {}
     for nm in id_names:
@@ -819,7 +847,21 @@ def main():
     )
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument(
+        "--data_basedirs", type=str, nargs="*", default=[],
+        help="Extra base dirs to scan for animation data, in addition to "
+             "auto-discovery of /data/{sihun,inyup}, /data2/..., and their "
+             "/pca variants. Each should contain multiface_align/, "
+             "BIWI_align_deci/, and/or VOCA-COMA/ subdirs. Also honors env "
+             "var HLBS_DATA_BASEDIRS (colon-separated).",
+    )
     args = parser.parse_args()
+    # Make CLI basedirs visible to the discovery functions.
+    global _REAL_DATA_BASEDIRS
+    _REAL_DATA_BASEDIRS = list(args.data_basedirs or [])
+    _bases = _real_data_basedirs()
+    print(f"[data] real-clip basedirs ({len(_bases)} present): "
+          + ", ".join(str(b) for b in _bases))
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     ckpt_dir = Path(args.ckpt)
