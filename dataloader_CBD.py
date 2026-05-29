@@ -294,6 +294,9 @@ class EvalDataset(data.Dataset):
             _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
             if os.path.isfile(_aug_path):
                 use_aug = True
+                # Suffix id_name → per-id bind pose GT lookup routes to the aug
+                # variant ('{id}_aug' key from {id}_aug_bind_pos_landmark.npy).
+                id_name = f"{id_name}_aug"
                 _ca = self._caricat_template_cache_ict.get(id_index)
                 if _ca is None:
                     _t_np = np.load(_aug_path).astype(np.float32)
@@ -423,6 +426,9 @@ class EvalDataset(data.Dataset):
             _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
             if os.path.isfile(_aug_path):
                 use_aug = True
+                # Suffix id_name → per-id bind pose GT lookup routes to the aug
+                # variant ('{id}_aug' key from {id}_aug_bind_pos_landmark.npy).
+                id_name = f"{id_name}_aug"
                 _ca = self._caricat_template_cache_mf.get(id_name)
                 if _ca is None:
                     _t_np = np.load(_aug_path).astype(np.float32)
@@ -491,6 +497,9 @@ class EvalDataset(data.Dataset):
             _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
             if os.path.isfile(_aug_path):
                 use_aug = True
+                # Suffix id_name → per-id bind pose GT lookup routes to the aug
+                # variant ('{id}_aug' key from {id}_aug_bind_pos_landmark.npy).
+                id_name = f"{id_name}_aug"
                 _ca = self._caricat_template_cache_mf.get(id_name)
                 if _ca is None:
                     _t_np = np.load(_aug_path).astype(np.float32)

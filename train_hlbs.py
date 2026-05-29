@@ -1481,17 +1481,26 @@ class HLBSTrainer:
         self._per_id_bind_pose_gt = {}    # id_name → [J, 3] tensor on self.device
         if getattr(opts, 'per_id_bind_pose_dir', None):
             import glob as _glob
-            _files = _glob.glob(os.path.join(opts.per_id_bind_pose_dir, '*_bind_pos_landmark.npy'))
-            for _fp in _files:
-                _k = os.path.basename(_fp).replace('_bind_pos_landmark.npy', '')
-                self._per_id_bind_pose_gt[_k] = torch.from_numpy(
-                    np.load(_fp)).to(self.device).float()
+            _bp_dirs = [opts.per_id_bind_pose_dir]
+            # Also load aug bind pose GT from the caricat dir; filenames there
+            # are {id}_aug_bind_pos_landmark.npy → keys auto-suffix '_aug',
+            # matching the id_name the dataloader emits for caricat samples.
+            if (getattr(opts, 'caricat_aug_dir', '')
+                    and getattr(opts, 'caricat_prob', 0) > 0
+                    and os.path.isdir(opts.caricat_aug_dir)):
+                _bp_dirs.append(opts.caricat_aug_dir)
+            for _bp_dir in _bp_dirs:
+                for _fp in _glob.glob(os.path.join(_bp_dir, '*_bind_pos_landmark.npy')):
+                    _k = os.path.basename(_fp).replace('_bind_pos_landmark.npy', '')
+                    self._per_id_bind_pose_gt[_k] = torch.from_numpy(
+                        np.load(_fp)).to(self.device).float()
             if self._per_id_bind_pose_gt:
-                print(f"[per-id bind_pose GT] Loaded {len(self._per_id_bind_pose_gt)} from "
-                      f"{opts.per_id_bind_pose_dir}")
+                _n_aug = sum(1 for k in self._per_id_bind_pose_gt if k.endswith('_aug'))
+                print(f"[per-id bind_pose GT] Loaded {len(self._per_id_bind_pose_gt)} "
+                      f"({_n_aug} aug) from {_bp_dirs}")
             else:
                 print(f"[per-id bind_pose GT] WARNING: no *_bind_pos_landmark.npy in "
-                      f"{opts.per_id_bind_pose_dir}. L_bind_reg falls back to per-topo mean.")
+                      f"{_bp_dirs}. L_bind_reg falls back to per-topo mean.")
 
         # ── Per-topo geodesic dist tables (for GMM Gauss / L_net_center / L_dist) ──
         self._geo_dist_per_topo = {}    # topo → [J, V] tensor on self.device
