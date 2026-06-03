@@ -1066,6 +1066,15 @@ def main():
         g_show_src = server.gui.add_checkbox("show source meshes (neu+def)", True)
         g_show_tgt_neu = server.gui.add_checkbox("show target neutral", True)
 
+    with server.gui.add_folder("Sequence stats"):
+        g_seq_stats_md = server.gui.add_markdown(
+            "**seq stats**: idle — click Compute"
+        )
+        g_seq_stats_btn = server.gui.add_button("Compute (current seq)")
+        g_seq_stats_force = server.gui.add_button(
+            "Force recompute (ignore cache)"
+        )
+
     with server.gui.add_folder("Render to video"):
         g_render_dir = server.gui.add_text(
             "out dir", str(_REPO / "_diag" / "render"),
@@ -1766,6 +1775,7 @@ def main():
             sd = torch.load(pth, map_location=device, weights_only=False)
             msg = model.load_state_dict(sd, strict=False)
             cache._cache.clear()  # invalidate cached W / joint_pos / nfs
+            _seq_stats_cache.clear()  # ckpt changed → stale stats
             g_ckpt_info.value = (
                 f"{pth.name} | reloaded in {_t.time()-t0:.1f}s "
                 f"(missing={len(msg.missing_keys)} unexpected={len(msg.unexpected_keys)})"
@@ -1859,6 +1869,128 @@ def main():
         _th.Thread(target=_worker, daemon=True).start()
 
     g_render_btn.on_click(_on_render_video)
+
+    # ── Sequence stats: aggregate self-retarget metrics over current clip/seq.
+    # Mirrors eval_hlbs.py.evaluate_self() — MSE / L2 (mean/med/p95/p99/max/
+    # max-mean) / normal-cos / Laplacian-err — for the (cache.active, g_id,
+    # current sequence) tuple. Runs in a background thread; clip changes mid-
+    # run cancel the worker.
+    _seq_stats_cancel = threading.Event()
+    _seq_stats_thread: list = [None]
+    _seq_stats_cache: dict = {}   # (ds_name, id_idx, driver, seq_label) → markdown
+
+    def _seq_stats_key():
+        td = cache.active
+        if td is None or not td.supports_anim:
+            return None
+        id_idx = int(g_id.value)
+        if td.exp_driver == "ict_blendshape":
+            return (td.name, id_idx, "ict", g_anim_seq.value)
+        if td.exp_driver == "mf_real":
+            return (td.name, id_idx, "real", g_clip.value)
+        if td.exp_driver == "pca_mode":
+            return (td.name, id_idx, "pca", int(g_pca_mode.value))
+        return None
+
+    def _seq_stats_worker(force: bool = False):
+        try:
+            td = cache.active
+            if not td.supports_anim:
+                g_seq_stats_md.content = f"**seq stats**: `{td.name}` has no anim driver"
+                return
+            id_idx = int(g_id.value)
+            nf_full = int(g_frame.max) + 1
+            if nf_full <= 0:
+                g_seq_stats_md.content = "**seq stats**: empty sequence"
+                return
+            key = _seq_stats_key()
+            if (not force) and key is not None and key in _seq_stats_cache:
+                g_seq_stats_md.content = (
+                    _seq_stats_cache[key] + "\n\n_(cached — click Force recompute to refresh)_"
+                )
+                return
+            all_l2_mm, mses, lap_errs, norm_coss, l2_max_per_frame = [], [], [], [], []
+            t0 = time.time()
+            with torch.no_grad():
+                for f in range(nf_full):
+                    if _seq_stats_cancel.is_set():
+                        g_seq_stats_md.content = "**seq stats**: cancelled"
+                        return
+                    exp, _ = _build_exp(td, id_idx, f)
+                    if exp is None:
+                        continue
+                    out = cache.forward_frame(id_idx, exp)
+                    if out["pred_v"] is None or out["gt_v"] is None:
+                        continue
+                    pred = out["pred_v"]; gt = out["gt_v"]
+                    l2 = np.linalg.norm(pred - gt, axis=-1) * 1000.0  # [V] in mm
+                    all_l2_mm.append(l2)
+                    l2_max_per_frame.append(float(l2.max()))
+                    m = _compute_metrics(pred, gt, td.faces)
+                    mses.append(m["mse"])
+                    lap_errs.append(m["lap_err"])
+                    norm_coss.append(m["norm_cos"])
+                    if (f + 1) % 5 == 0:
+                        run_mean = float(np.mean([a.mean() for a in all_l2_mm]))
+                        g_seq_stats_md.content = (
+                            f"**seq stats** (computing {f+1}/{nf_full}) "
+                            f"mean L2 so far ≈ {run_mean:.2f} mm"
+                        )
+            if not all_l2_mm:
+                g_seq_stats_md.content = (
+                    f"**seq stats** `{td.name}[{id_idx}]`: no usable frames "
+                    "(model_ran=False — nfs cache?)"
+                )
+                return
+            pv = np.concatenate(all_l2_mm)
+            elapsed = time.time() - t0
+            # Seq label — what clip / seq is currently driving frames?
+            if td.exp_driver == "ict_blendshape":
+                seq_lbl = g_anim_seq.value
+            elif td.exp_driver in ("mf_real", "biwi_real", "coma_real"):
+                seq_lbl = g_clip.value
+            elif td.exp_driver == "pca_mode":
+                seq_lbl = f"PCA mode {int(g_pca_mode.value)}"
+            else:
+                seq_lbl = "?"
+            md = (
+                f"**ds**=`{td.name}[{id_idx}]`  **seq**=`{seq_lbl}`  "
+                f"**frames**=`{len(mses)}/{nf_full}`  "
+                f"**elapsed**=`{elapsed:.1f}s`\n\n"
+                f"| metric | value |\n|---|---|\n"
+                f"| MSE | {np.mean(mses):.6f} |\n"
+                f"| L2 mean (mm) | {pv.mean():.3f} |\n"
+                f"| L2 median (mm) | {np.median(pv):.3f} |\n"
+                f"| L2 p95 (mm) | {np.percentile(pv, 95):.3f} |\n"
+                f"| L2 p99 (mm) | {np.percentile(pv, 99):.3f} |\n"
+                f"| L2 max (mm) | {pv.max():.3f} |\n"
+                f"| L2 max-mean (mm) | {np.mean(l2_max_per_frame):.3f} |\n"
+                f"| normal cos | {np.mean(norm_coss):.4f} |\n"
+                f"| Laplacian err | {np.mean(lap_errs):.4f} |\n"
+            )
+            g_seq_stats_md.content = md
+            if key is not None:
+                _seq_stats_cache[key] = md
+        except Exception:
+            import traceback as _tb
+            g_seq_stats_md.content = "**seq stats**: FAILED — see console"
+            print("[seq stats] EXC:", _tb.format_exc())
+
+    def _on_compute_seq_stats(_e=None, force: bool = False):
+        # Cancel any in-flight worker, then launch a fresh one.
+        _seq_stats_cancel.set()
+        old = _seq_stats_thread[0]
+        if old is not None and old.is_alive():
+            old.join(timeout=0.2)
+        _seq_stats_cancel.clear()
+        new = threading.Thread(
+            target=_seq_stats_worker, args=(force,), daemon=True,
+        )
+        _seq_stats_thread[0] = new
+        new.start()
+
+    g_seq_stats_btn.on_click(lambda _e: _on_compute_seq_stats(force=False))
+    g_seq_stats_force.on_click(lambda _e: _on_compute_seq_stats(force=True))
 
     def _on_preview(_e=None):
         """Capture one frame at the chosen W/H, save to disk AND show in GUI
