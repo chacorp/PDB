@@ -901,7 +901,30 @@ def main():
     g_mode = server.gui.add_dropdown(
         "Mode", options=["bind_pose", "weight", "anim", "cross"], initial_value="bind_pose"
     )
-    g_reload = server.gui.add_button("Reload ckpt (hot)")
+    def _list_epoch_tags(_ckpt_dir):
+        """List of selectable epoch tags: 'best' + each numbered epoch desc."""
+        out = []
+        if (_ckpt_dir / "model_hlbs_best.pth").exists():
+            out.append("best")
+        epochs = []
+        for p in _ckpt_dir.glob("model_hlbs_*.pth"):
+            stem = p.stem.replace("model_hlbs_", "")
+            if stem == "best":
+                continue
+            try:
+                epochs.append(int(stem))
+            except ValueError:
+                pass
+        for e in sorted(epochs, reverse=True):
+            out.append(f"{e:03d}")
+        return out or ["best"]
+
+    _epoch_tags = _list_epoch_tags(ckpt_dir)
+    g_epoch = server.gui.add_dropdown(
+        "epoch", options=_epoch_tags, initial_value=_epoch_tags[0],
+    )
+    g_reload = server.gui.add_button("Reload ckpt (re-read selected epoch)")
+    g_refresh_epochs = server.gui.add_button("↻ refresh epoch list")
     g_ckpt_info = server.gui.add_text(
         "ckpt", str(ckpt_dir.name), disabled=True,
     )
@@ -1777,17 +1800,18 @@ def main():
         import time as _t
         t0 = _t.time()
         try:
-            pth = ckpt_dir / "model_hlbs_best.pth"
+            tag = g_epoch.value
+            if tag == "best":
+                pth = ckpt_dir / "model_hlbs_best.pth"
+            else:
+                pth = ckpt_dir / f"model_hlbs_{tag}.pth"
             if not pth.exists():
-                cands = sorted(ckpt_dir.glob("model_hlbs_*.pth"))
-                if not cands:
-                    g_status.value = f"reload: no ckpt found in {ckpt_dir}"
-                    return
-                pth = cands[-1]
+                g_ckpt_info.value = f"reload: {pth.name} not found"
+                return
             sd = torch.load(pth, map_location=device, weights_only=False)
             msg = model.load_state_dict(sd, strict=False)
-            cache._cache.clear()  # invalidate cached W / joint_pos / nfs
-            _seq_stats_cache.clear()  # ckpt changed → stale stats
+            cache._cache.clear()
+            _seq_stats_cache.clear()
             g_ckpt_info.value = (
                 f"{pth.name} | reloaded in {_t.time()-t0:.1f}s "
                 f"(missing={len(msg.missing_keys)} unexpected={len(msg.unexpected_keys)})"
@@ -1797,6 +1821,13 @@ def main():
             import traceback as _tb
             print("[reload] EXC:", _tb.format_exc())
             g_status.value = "reload FAILED — see console"
+
+    def _on_refresh_epochs(_e=None):
+        tags = _list_epoch_tags(ckpt_dir)
+        g_epoch.options = tuple(tags)
+        if g_epoch.value not in tags:
+            g_epoch.value = tags[0]
+        g_ckpt_info.value = f"epoch list refreshed: {len(tags)} ckpts available"
 
     def _step_frame(delta):
         nxt = int(g_frame.value) + delta
@@ -1824,24 +1855,32 @@ def main():
             return f"pca_mode{int(g_pca_mode.value)}"
         return "clip0"
 
+    def _ckpt_prefix() -> str:
+        """{ckpt_dir_name}/e{epoch_tag} — namespaces every render under the
+        currently-loaded checkpoint AND epoch, so switching epochs doesn't
+        overwrite previous renders."""
+        return f"{ckpt_dir.name}/e{g_epoch.value}"
+
     def _compute_render_subpath() -> str:
-        """Auto subpath under g_render_dir base. Encodes mode + src/tgt + clip."""
+        """Auto subpath under g_render_dir base. Encodes ckpt + epoch + mode
+        + src/tgt + clip so every render lives in its own dir."""
+        pfx = _ckpt_prefix()
         mode = g_mode.value
         if mode == "anim":
             td = cache.active
             ds = td.name if td else "unknown"
-            return f"anim_self/{ds}_id{int(g_id.value)}/{_clip_label_for(td)}"
+            return f"{pfx}/anim_self/{ds}_id{int(g_id.value)}/{_clip_label_for(td)}"
         if mode == "cross":
             src_ds = g_src_ds.value; src_id = int(g_src_id.value)
             tgt_ds = g_tgt_ds.value; tgt_id = int(g_tgt_id.value)
             kind = "cross_self" if (src_ds == tgt_ds and src_id == tgt_id) else "cross_cross"
             src_td = topos.get(src_ds)
-            return (f"{kind}/{src_ds}_id{src_id}_to_{tgt_ds}_id{tgt_id}/"
+            return (f"{pfx}/{kind}/{src_ds}_id{src_id}_to_{tgt_ds}_id{tgt_id}/"
                     f"{_clip_label_for(src_td)}")
         # bind_pose / weight — single-frame, group by mode + ds + id
         td = cache.active
         ds = td.name if td else "unknown"
-        return f"{mode}/{ds}_id{int(g_id.value)}"
+        return f"{pfx}/{mode}/{ds}_id{int(g_id.value)}"
 
     def _refresh_render_subpath(_e=None):
         try:
@@ -2088,6 +2127,8 @@ def main():
     g_preview_btn.on_click(_on_preview)
 
     g_reload.on_click(_on_reload)
+    g_refresh_epochs.on_click(_on_refresh_epochs)
+    g_epoch.on_update(_on_reload)   # auto-reload on epoch change
     g_view.on_update(_apply_view)
     g_ortho.on_update(_apply_view)
     g_shading.on_update(lambda _e: render())
