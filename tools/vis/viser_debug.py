@@ -1077,7 +1077,12 @@ def main():
 
     with server.gui.add_folder("Render to video"):
         g_render_dir = server.gui.add_text(
-            "out dir", str(_REPO / "_diag" / "render"),
+            "render BASE dir",
+            str(_REPO / "_diag" / "render"),
+        )
+        g_render_subpath = server.gui.add_text(
+            "auto subpath (computed)", "(updates on mode/id/clip change)",
+            disabled=True,
         )
         g_render_name = server.gui.add_text("video filename", "out.mp4")
         g_render_fps = server.gui.add_slider(
@@ -1088,6 +1093,9 @@ def main():
         )
         g_render_h = server.gui.add_slider(
             "render height", min=256, max=1080, step=64, initial_value=720,
+        )
+        g_render_keep_pngs = server.gui.add_checkbox(
+            "keep per-frame PNGs (uncheck = video only)", False,
         )
         g_preview_btn = server.gui.add_button(
             "Preview (capture current frame @ chosen W/H)"
@@ -1545,6 +1553,10 @@ def main():
                     _render_cross()
             except Exception:
                 print("[render] EXC:", traceback.format_exc())
+        try:
+            _refresh_render_subpath()
+        except NameError:
+            pass  # called before _refresh_render_subpath defined (startup only)
 
     # ── dataset / seq change handlers ──────────────────────────────────
     def _on_dataset_change(_e=None):
@@ -1794,6 +1806,49 @@ def main():
     g_prev_frame.on_click(lambda _e: _step_frame(-1))
     g_next_frame.on_click(lambda _e: _step_frame(+1))
 
+    def _sanitize_path_part(s: str) -> str:
+        return s.replace("/", "_").replace("\\", "_").replace(" ", "_")
+
+    def _clip_label_for(td) -> str:
+        """Return a path-safe label for the current animation source on td."""
+        if td is None:
+            return "clip0"
+        if td.exp_driver == "ict_blendshape":
+            return _sanitize_path_part(g_anim_seq.value)
+        if td.exp_driver == "mf_real":
+            v = g_clip.value
+            if not v or v == "<none>":
+                return "clip0"
+            return _sanitize_path_part(v)
+        if td.exp_driver == "pca_mode":
+            return f"pca_mode{int(g_pca_mode.value)}"
+        return "clip0"
+
+    def _compute_render_subpath() -> str:
+        """Auto subpath under g_render_dir base. Encodes mode + src/tgt + clip."""
+        mode = g_mode.value
+        if mode == "anim":
+            td = cache.active
+            ds = td.name if td else "unknown"
+            return f"anim_self/{ds}_id{int(g_id.value)}/{_clip_label_for(td)}"
+        if mode == "cross":
+            src_ds = g_src_ds.value; src_id = int(g_src_id.value)
+            tgt_ds = g_tgt_ds.value; tgt_id = int(g_tgt_id.value)
+            kind = "cross_self" if (src_ds == tgt_ds and src_id == tgt_id) else "cross_cross"
+            src_td = topos.get(src_ds)
+            return (f"{kind}/{src_ds}_id{src_id}_to_{tgt_ds}_id{tgt_id}/"
+                    f"{_clip_label_for(src_td)}")
+        # bind_pose / weight — single-frame, group by mode + ds + id
+        td = cache.active
+        ds = td.name if td else "unknown"
+        return f"{mode}/{ds}_id{int(g_id.value)}"
+
+    def _refresh_render_subpath(_e=None):
+        try:
+            g_render_subpath.value = _compute_render_subpath()
+        except Exception:
+            pass
+
     def _on_render_video(_e=None):
         """Sweep all frames at current camera/lighting/mode, dump PNGs, ffmpeg."""
         import threading as _th
@@ -1805,8 +1860,9 @@ def main():
                 g_render_progress.value = "no client connected — open the page first"
                 return
             client = clients[0]
-            out_dir = Path(g_render_dir.value).expanduser()
+            out_dir = Path(g_render_dir.value).expanduser() / _compute_render_subpath()
             out_dir.mkdir(parents=True, exist_ok=True)
+            g_render_subpath.value = _compute_render_subpath()
             nf = int(g_frame.max) + 1
             H = int(g_render_h.value); W = int(g_render_w.value)
             orig = int(g_frame.value)
@@ -1836,6 +1892,7 @@ def main():
             # pip-installs its own ffmpeg binary on demand). Fall back to system
             # ffmpeg subprocess. If both fail, PNGs remain on disk.
             fps_int = int(g_render_fps.value)
+            encode_ok = False
             try:
                 import imageio
                 with imageio.get_writer(
@@ -1844,6 +1901,7 @@ def main():
                 ) as w:
                     for f in range(saved):
                         w.append_data(imageio.imread(out_dir / f"frame_{f:04d}.png"))
+                encode_ok = True
                 g_render_progress.value = (
                     f"DONE  {saved} frames → {vid_path}  ({_t.time()-t0:.1f}s)"
                 )
@@ -1853,6 +1911,7 @@ def main():
                            "-i", str(out_dir / "frame_%04d.png"),
                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(vid_path)]
                     _sp.run(cmd, check=True, capture_output=True)
+                    encode_ok = True
                     g_render_progress.value = (
                         f"DONE (system ffmpeg) {saved} frames → {vid_path}"
                     )
@@ -1861,11 +1920,20 @@ def main():
                         f"video encode failed (PNGs saved at {out_dir}): "
                         f"imageio: {ex_io} / ffmpeg: {ex_ff}"
                     )
-            finally:
-                # Restore original frame
-                if g_mode.value in ("anim", "cross"):
-                    g_frame.value = orig
-                    render()
+            # PNG cleanup — default delete frames if video encoded OK and user
+            # didn't ask to keep them. Encoding failure → always keep PNGs.
+            if encode_ok and not bool(g_render_keep_pngs.value):
+                deleted = 0
+                for p in sorted(out_dir.glob("frame_*.png")):
+                    try: p.unlink(); deleted += 1
+                    except Exception: pass
+                g_render_progress.value = (
+                    g_render_progress.value + f"  (cleaned {deleted} PNGs)"
+                )
+            # Restore original frame (always — even on encode failure)
+            if g_mode.value in ("anim", "cross"):
+                g_frame.value = orig
+                render()
         _th.Thread(target=_worker, daemon=True).start()
 
     g_render_btn.on_click(_on_render_video)
@@ -2003,8 +2071,9 @@ def main():
             client = clients[0]
             H = int(g_render_h.value); W = int(g_render_w.value)
             img = client.get_render(height=H, width=W, transport_format="png")
-            out_dir = Path(g_render_dir.value).expanduser()
+            out_dir = Path(g_render_dir.value).expanduser() / _compute_render_subpath()
             out_dir.mkdir(parents=True, exist_ok=True)
+            g_render_subpath.value = _compute_render_subpath()
             preview_path = out_dir / "preview.png"
             from imageio.v3 import imwrite as _imwrite
             _imwrite(preview_path, img)
