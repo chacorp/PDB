@@ -749,6 +749,213 @@ class IdentityCache:
         return out
 
 
+class BaselineRunner:
+    """Lazy NFR / NFS loaders + per-(src,tgt) precompute cache for cross-
+    retargeting baselines.
+
+    Both NFR and NFS expose `inference(gt_vertices[T,V,3], src_mesh, tgt_mesh)`
+    returning `[T, V, 3]` predicted target vertices. We wrap them so the cross
+    mode can call either side-by-side with HLBS.
+    """
+
+    def __init__(self, device, repo_root: Path):
+        self.device = device
+        self.repo = repo_root
+        self._nfr = None       # NFR_helper
+        self._nfs = None       # NFS module
+        # precomp[(method, src_key, tgt_key)] = (src_mesh, tgt_mesh, src_precomp,
+        #                                         tgt_precomp) for NFR; just
+        # (src_mesh, tgt_mesh) for NFS (it builds operators internally).
+        self._precomp: dict = {}
+
+    def _ensure_legacy_symlinks(self):
+        """NFR_helper resolves data/utils/ckpt paths relative to legacy/.
+        Symlink the repo-root dirs into legacy/ so paths resolve (idempotent)."""
+        legacy = self.repo / "legacy"
+        for nm in ("data", "utils", "ckpts_comparison", "experiments"):
+            dst = legacy / nm
+            if dst.exists() or dst.is_symlink():
+                continue
+            src = self.repo / nm
+            if src.exists():
+                try:
+                    dst.symlink_to(src.absolute())
+                    print(f"[baseline] symlinked {dst} → {src}")
+                except Exception as e:
+                    print(f"[baseline] symlink {dst} failed: {e}")
+
+    def _ensure_cupy(self):
+        """NFR's deformation_transfer hard-requires cupy (no CPU fallback).
+        Auto-install cupy-cuda12x via pip if not present."""
+        try:
+            import cupy  # noqa: F401
+            return
+        except ImportError:
+            import subprocess
+            print("[baseline] cupy missing — pip install cupy-cuda12x (one-time)")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "cupy-cuda12x"])
+            import cupy  # noqa: F401
+
+    def _load_nfr(self):
+        if self._nfr is not None:
+            return self._nfr
+        # cupy is a hard dep of deformation_transfer.py — install if missing.
+        self._ensure_cupy()
+        # NFR_helper uses Path(__file__).parents[0] as its base, which resolves
+        # to legacy/ — but the actual data lives at repo root. Bridge with
+        # symlinks (idempotent, one-time setup on first NFR use).
+        self._ensure_legacy_symlinks()
+        sys.path.insert(0, str(self.repo / "legacy"))
+        try:
+            from legacy.evaluation import NFR_helper
+            class _Opts: pass
+            opts = _Opts(); opts.ict_face_only = False
+            self._nfr = NFR_helper(opts=opts, device=str(self.device))
+            print("[baseline] NFR loaded")
+        finally:
+            try: sys.path.remove(str(self.repo / "legacy"))
+            except ValueError: pass
+        return self._nfr
+
+    def _load_nfs(self):
+        if self._nfs is not None:
+            return self._nfs
+        import yaml as _yaml
+        from models.NFS import NFS
+        ckpt_dir = self.repo / "ckpts_comparison" / "NFS-best"
+        with open(ckpt_dir / "train_opts.yml") as f:
+            opts_dict = _yaml.safe_load(f)
+
+        class _Opts: pass
+        opts = _Opts()
+        for k, v in opts_dict.items():
+            setattr(opts, k, v)
+        opts.device = str(self.device); opts.is_train = False
+        self._nfs = NFS(opts=opts).to(self.device)
+        sd = torch.load(ckpt_dir / "model_best.pth",
+                        map_location=self.device, weights_only=False)
+        self._nfs.load_state_dict(sd, strict=False)
+        self._nfs.eval()
+        print(f"[baseline] NFS loaded: {ckpt_dir}/model_best.pth")
+        return self._nfs
+
+    def _meshes(self, src_neu_v, src_faces, tgt_neu_v, tgt_faces):
+        import trimesh
+        src = trimesh.Trimesh(vertices=src_neu_v, faces=src_faces,
+                              process=False, maintain_order=True)
+        tgt = trimesh.Trimesh(vertices=tgt_neu_v, faces=tgt_faces,
+                              process=False, maintain_order=True)
+        return src, tgt
+
+    def _nfr_src_precomp(self, key, src_mesh):
+        """Cache (dfn_info, img) per src mesh — built once, ~30-60s on ICT."""
+        ck = ("nfr_src", *key)
+        if ck in self._precomp:
+            return self._precomp[ck]
+        nfr = self._load_nfr()
+        import utils.nfr_utils as nfr_utils
+        dfn = nfr_utils.get_dfn_info(src_mesh, map_location=self.device)
+        img = nfr.renderer.render_img(src_mesh).float().to(self.device)
+        self._precomp[ck] = (dfn, img)
+        return self._precomp[ck]
+
+    def _nfr_tgt_precomp(self, key, tgt_mesh):
+        """Cache (dfn_info, img, operators) per tgt mesh — operators are the
+        expensive bit (Poisson LU factorization, 1-3 min on ICT)."""
+        ck = ("nfr_tgt", *key)
+        if ck in self._precomp:
+            return self._precomp[ck]
+        nfr = self._load_nfr()
+        import utils.nfr_utils as nfr_utils
+        dfn = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
+        img = nfr.renderer.render_img(tgt_mesh).float().to(self.device)
+        ops = nfr.get_mesh_operators(tgt_mesh)
+        self._precomp[ck] = (dfn, img, ops)
+        return self._precomp[ck]
+
+    @torch.no_grad()
+    def retarget(self, method: str, src_td, src_idx, src_neu_v, src_def_v,
+                 tgt_td, tgt_idx, tgt_neu_v,
+                 progress_cb=None) -> np.ndarray | None:
+        """Run the chosen baseline. Returns tgt_pred_v [V_tgt, 3] or None.
+
+        Precomputes (mesh operators, DFN info, rendered img) are cached per
+        (src_topo, src_id) and (tgt_topo, tgt_id) so first call is slow
+        (~1-3 min for ICT-sized meshes) and subsequent calls are fast.
+        progress_cb(msg) called with elapsed-time ticker every ~1.5s so the
+        UI shows live progress instead of a stuck status.
+        """
+        import threading as _th, time as _time
+
+        def _msg(s):
+            if progress_cb is not None:
+                try: progress_cb(s)
+                except Exception: pass
+
+        def _with_ticker(prefix, fn):
+            """Run fn() while a background thread updates progress_cb every
+            1.5s with elapsed time, so the status bar doesn't appear frozen."""
+            _msg(f"{prefix}  [0.0s]")
+            stop = _th.Event()
+            def _tick():
+                t0 = _time.time()
+                while not stop.wait(1.5):
+                    _msg(f"{prefix}  [{_time.time()-t0:.1f}s elapsed]")
+            th = _th.Thread(target=_tick, daemon=True)
+            th.start()
+            try:
+                t0 = _time.time()
+                out = fn()
+                _msg(f"{prefix}  ✓ done in {_time.time()-t0:.1f}s")
+                return out
+            finally:
+                stop.set()
+                th.join(timeout=0.2)
+
+        if method == "nfr":
+            if self._nfr is None:
+                _with_ticker("NFR: loading model + assets", self._load_nfr)
+            nfr = self._nfr
+            src_mesh, tgt_mesh = self._meshes(
+                src_neu_v, src_td.faces, tgt_neu_v, tgt_td.faces)
+            src_key = (src_td.name, src_idx)
+            tgt_key = (tgt_td.name, tgt_idx)
+            if ("nfr_src", *src_key) not in self._precomp:
+                _with_ticker(
+                    f"NFR: building src precomp [{src_td.name}#{src_idx}] V={src_neu_v.shape[0]}",
+                    lambda: self._nfr_src_precomp(src_key, src_mesh),
+                )
+            src_pc = self._nfr_src_precomp(src_key, src_mesh)
+            if ("nfr_tgt", *tgt_key) not in self._precomp:
+                _with_ticker(
+                    f"NFR: building tgt precomp [{tgt_td.name}#{tgt_idx}] V={tgt_neu_v.shape[0]} (Poisson LU)",
+                    lambda: self._nfr_tgt_precomp(tgt_key, tgt_mesh),
+                )
+            tgt_pc = self._nfr_tgt_precomp(tgt_key, tgt_mesh)
+            verts = torch.from_numpy(src_def_v).unsqueeze(0).to(self.device).float()
+            pred = _with_ticker(
+                f"NFR: inferring f={src_idx}→{tgt_idx}",
+                lambda: nfr.inference(verts, src_mesh, tgt_mesh,
+                                      src_precompute=src_pc, tgt_precompute=tgt_pc),
+            )
+            return pred[0].cpu().numpy().astype(np.float32)
+        elif method == "nfs":
+            if self._nfs is None:
+                _with_ticker("NFS: loading model", self._load_nfs)
+            nfs = self._nfs
+            src_mesh, tgt_mesh = self._meshes(
+                src_neu_v, src_td.faces, tgt_neu_v, tgt_td.faces)
+            verts = torch.from_numpy(src_def_v).unsqueeze(0).to(self.device).float()
+            pred = _with_ticker(
+                f"NFS: inferring (no precompute cache — full pipeline) V={tgt_neu_v.shape[0]}",
+                lambda: nfs.inference(verts, src_mesh, tgt_mesh),
+            )
+            if pred.dim() == 4:
+                pred = pred[0]
+            return pred[0].cpu().numpy().astype(np.float32)
+        return None
+
+
 def _compute_metrics(pred_v: np.ndarray, gt_v: np.ndarray, faces: np.ndarray) -> dict:
     """Per-frame eval metrics: MSE, mean L2, max L2, normal cosine, Laplacian err."""
     diff = pred_v - gt_v
@@ -888,6 +1095,7 @@ def main():
           f"anim_seqs={avail_seqs} model_needs_nfs={model_needs_nfs}")
 
     cache = IdentityCache(model, rig, device, model_needs_nfs=model_needs_nfs)
+    baseline = BaselineRunner(device, _REPO)
     init_ds = "ict_train" if "ict_train" in topos else avail_ds[0]
     cache.set_active(topos[init_ds])
     init_seq = avail_seqs[0]
@@ -1088,6 +1296,11 @@ def main():
         )
         g_show_src = server.gui.add_checkbox("show source meshes (neu+def)", True)
         g_show_tgt_neu = server.gui.add_checkbox("show target neutral", True)
+        g_compare_method = server.gui.add_dropdown(
+            "method",
+            options=["hlbs (ours)", "nfr", "nfs"],
+            initial_value="hlbs (ours)",
+        )
 
     with server.gui.add_folder("Sequence stats"):
         g_seq_stats_md = server.gui.add_markdown(
@@ -1482,6 +1695,35 @@ def main():
             return
 
         out = cache.retarget(src_td, src_idx, exp, tgt_td, tgt_idx)
+        # If the user picked a baseline method (nfr / nfs), override tgt_pred_v
+        # with that baseline's prediction. src_neu/src_def/tgt_neu stay as
+        # they are (computed from topologies, method-independent).
+        method = g_compare_method.value
+        if method != "hlbs (ours)" and out["src_def_v"] is not None and out["tgt_neu_v"] is not None:
+            try:
+                def _set_status(s):
+                    g_status.value = s
+                baseline_pred = baseline.retarget(
+                    method=method.split()[0],
+                    src_td=src_td, src_idx=src_idx,
+                    src_neu_v=out["src_neu_v"], src_def_v=out["src_def_v"],
+                    tgt_td=tgt_td, tgt_idx=tgt_idx, tgt_neu_v=out["tgt_neu_v"],
+                    progress_cb=_set_status,
+                )
+                if baseline_pred is not None:
+                    out["tgt_pred_v"] = baseline_pred
+                    out["model_ran"] = True
+                    # Recompute self-retarget metrics with this baseline's pred.
+                    if (src_td.name == tgt_td.name) and (src_idx == tgt_idx):
+                        out["metrics"] = _compute_metrics(
+                            baseline_pred, out["src_def_v"], tgt_td.faces)
+                    else:
+                        out["metrics"] = None
+            except Exception:
+                import traceback as _tb
+                print(f"[baseline {method}] EXC:", _tb.format_exc())
+                g_status.value = f"baseline {method} failed — see console"
+                return
         if not out["model_ran"]:
             g_status.value = (f"cross: src={src_td.name}[{src_idx}] "
                               f"tgt={tgt_td.name}[{tgt_idx}] — "
@@ -1544,17 +1786,18 @@ def main():
             rgb_pred = _tile(tgt_c, out["tgt_pred_v"].shape[0])
         _put("tgt_pred", out["tgt_pred_v"], tgt_td.faces, rgb_pred)
 
+        method_tag = method.split()[0] if method != "hlbs (ours)" else "hlbs"
         if m is not None:
             g_status.value = (
-                f"cross[self] src={src_td.name}[{src_idx}] f={frame:03d} | "
+                f"cross[self/{method_tag}] src={src_td.name}[{src_idx}] f={frame:03d} | "
                 f"L2 mean={m['mean_l2_mm']:.2f}mm "
                 f"max={m['max_l2_mm']:.2f}mm | "
                 f"norm_cos={m['norm_cos']:.4f} lap_err={m['lap_err']:.4f}"
             )
         else:
             g_status.value = (
-                f"cross src={src_td.name}[{src_idx}] → tgt={tgt_td.name}[{tgt_idx}] "
-                f"f={frame:03d} | no GT (different id/topo)"
+                f"cross[{method_tag}] src={src_td.name}[{src_idx}] → "
+                f"tgt={tgt_td.name}[{tgt_idx}] f={frame:03d} | no GT"
             )
 
     # ── render orchestration + locking ─────────────────────────────────
@@ -2150,6 +2393,18 @@ def main():
     g_id.on_update(_on_id_change)
     g_src_id.on_update(_on_src_id_change)
     g_clip.on_update(_on_clip_change)
+
+    def _on_method_change(_e=None):
+        method = g_compare_method.value
+        if method != "hlbs (ours)":
+            g_status.value = (
+                f"method → {method} | first call ~1-3 min on ICT "
+                "(Poisson LU), then cached. Rendering..."
+            )
+        else:
+            g_status.value = f"method → hlbs (ours) | rendering..."
+        render()
+    g_compare_method.on_update(_on_method_change)
     for h in [
         g_show_gt, g_show_pred, g_show_err, g_show_helpers, g_mesh_opacity,
         g_w_mode, g_joint, g_soft_topk, g_soft_sat, g_palette,
