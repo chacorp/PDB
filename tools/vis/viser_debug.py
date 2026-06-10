@@ -236,9 +236,13 @@ class TopoData:
         return self._verts_provider(id_name)
 
     def ict_id_coeff(self, id_name: str) -> np.ndarray | None:
-        """Return [100] id_coeff for this id, or None if not ICT."""
+        """Return [100] id_coeff for this id, or None if unavailable.
+        _ict_id_vecs may be an array (ict_train/val, indexed by trailing int) or
+        a dict {id_name: coeff} (ict_real — only the ids with a known coeff)."""
         if self._ict_id_vecs is None:
             return None
+        if isinstance(self._ict_id_vecs, dict):
+            return self._ict_id_vecs.get(id_name)
         if id_name.startswith("ict_"):
             i = int(id_name.split("_")[-1])
             return self._ict_id_vecs[i]
@@ -260,6 +264,21 @@ class TopoData:
             if id_c is None: return None
             exp_T = exp_coeff[None, :] if exp_coeff.ndim == 1 else exp_coeff
             return self._ict_model.apply_coeffs(id_c, exp_T)[0].astype(np.float32)
+        elif self.exp_driver == "ict_real_blend":
+            # Real ICT capture: keep the captured neutral (_mesh.obj, matches the
+            # validated precompute) and add the ICT-blendshape expression delta.
+            # Only the ids with a known id_coeff can be a source; others are
+            # target-only (returns None -> caller treats as no source frame).
+            if self._ict_model is None:
+                return None
+            id_c = self.ict_id_coeff(id_name)
+            if id_c is None:
+                return None
+            neu = self._verts_provider(id_name).astype(np.float32)
+            exp_T = exp_coeff[None, :] if exp_coeff.ndim == 1 else exp_coeff
+            full = self._ict_model.apply_coeffs(id_c, exp_T)[0].astype(np.float32)
+            full0 = self._ict_model.apply_coeffs(id_c, None)[0].astype(np.float32)
+            return (neu + (full - full0)).astype(np.float32)
         elif self.exp_driver == "pca_mode":
             if self._pca_per_id is None or id_name not in self._pca_per_id:
                 return None
@@ -370,6 +389,55 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
         )
         td._real_clips = real_clips
         topos[ds_name] = td
+
+    # ── ICT real captures (m00..w09) ───────────────────────────────────
+    # Neutral from the validated precompute dir's *_mesh.obj (so the on-disk
+    # NFR precompute auto-matches -> no jitter). Same topology as synth ICT, so
+    # faces = ict.faces. Target-capable for ALL ids; source-capable only for the
+    # ids whose 100-d id_coeff is known (split_set/id_vecs, == ict_data_split
+    # 'train' order) -> ict_real_blend driver. Built only if found on this host.
+    import glob as _glob
+    _real_dir = None
+    for _r in ("/data/sihun", "/data/inyup", "/data2/inyup"):
+        _d = os.path.join(_r, "ICT-audio2face/ICT/precompute-real-fullhead")
+        if os.path.isdir(_d) and _glob.glob(os.path.join(_d, "*_mesh.obj")):
+            _real_dir = _d
+            break
+    if _real_dir is not None:
+        import trimesh as _tm
+        real_ids = sorted(os.path.basename(p)[:-len("_mesh.obj")]
+                          for p in _glob.glob(os.path.join(_real_dir, "*_mesh.obj")))
+        # id_coeff for the 10 real-split ids (id_vecs row order == ict_data_split['train'])
+        id_coeff_map: dict = {}
+        try:
+            from utils.keys import ict_data_split
+            _ict_base = os.path.dirname(os.path.dirname(_real_dir))  # .../ICT-audio2face
+            _ivp = os.path.join(_ict_base, "split_set", "id_vecs.npy")
+            if os.path.exists(_ivp):
+                _iv = np.load(_ivp).astype(np.float32)
+                for _i, _nm in enumerate(ict_data_split["train"]):
+                    if _i < len(_iv):
+                        id_coeff_map[_nm] = _iv[_i]
+        except Exception as _e:
+            print(f"[ict_real] id_coeff load skipped ({_e}) — target-only")
+        _neu_cache: dict = {}
+
+        def _real_neu(nm, _d=_real_dir, _c=_neu_cache, _tmm=_tm):
+            if nm not in _c:
+                m = _tmm.load(os.path.join(_d, f"{nm}_mesh.obj"),
+                              process=False, maintain_order=True)
+                _c[nm] = np.asarray(m.vertices, dtype=np.float32)
+            return _c[nm]
+
+        topos["ict_real"] = TopoData(
+            name="ict_real", topo="ict", id_names=real_ids,
+            faces=ict.faces.astype(np.uint32), nfs_dir=None,
+            geo_dist=geo_per_topo.get("ict"), supports_anim=True,
+            exp_driver="ict_real_blend",
+            _verts_provider=_real_neu, _ict_id_vecs=id_coeff_map, _ict_model=ict,
+        )
+        print(f"[ict_real] {len(real_ids)} ids (source-capable: {len(id_coeff_map)}) "
+              f"<- {_real_dir}")
 
     return topos
 
@@ -1367,6 +1435,12 @@ def main():
             options=["hlbs (ours)", "nfr", "nfs"],
             initial_value="hlbs (ours)",
         )
+        # Optional datasets that depend on per-server data (precompute / meshes).
+        # Shown so it's clear when one is unavailable on the current host.
+        _opt_avail = "  ".join(
+            f"{_nm}: {'있음' if _nm in topos else '없음(이 서버)'}"
+            for _nm in ("ict_real",))
+        server.gui.add_text("optional datasets", _opt_avail, disabled=True)
 
     with server.gui.add_folder("Sequence stats"):
         g_seq_stats_md = server.gui.add_markdown(
@@ -1743,7 +1817,7 @@ def main():
 
         # Build exp_coeff per src driver.
         src_id_name = src_td.id_names[src_idx]
-        if src_td.exp_driver == "ict_blendshape":
+        if src_td.exp_driver in ("ict_blendshape", "ict_real_blend"):
             exp = ec[frame % nf]
         elif src_td.exp_driver == "pca_mode":
             amp = float(np.sin(2 * np.pi * (frame % nf) / nf))
@@ -2153,7 +2227,7 @@ def main():
         """Return a path-safe label for the current animation source on td."""
         if td is None:
             return "clip0"
-        if td.exp_driver == "ict_blendshape":
+        if td.exp_driver in ("ict_blendshape", "ict_real_blend"):
             return _sanitize_path_part(g_anim_seq.value)
         if td.exp_driver == "mf_real":
             v = g_clip.value
@@ -2305,7 +2379,7 @@ def main():
         if td is None or not td.supports_anim:
             return None
         id_idx = int(g_id.value)
-        if td.exp_driver == "ict_blendshape":
+        if td.exp_driver in ("ict_blendshape", "ict_real_blend"):
             return (td.name, id_idx, "ict", g_anim_seq.value)
         if td.exp_driver == "mf_real":
             return (td.name, id_idx, "real", g_clip.value)
