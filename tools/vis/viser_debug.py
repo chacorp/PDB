@@ -847,29 +847,93 @@ class BaselineRunner:
                               process=False, maintain_order=True)
         return src, tgt
 
-    def _nfr_src_precomp(self, key, src_mesh):
-        """Cache (dfn_info, img) per src mesh — built once, ~30-60s on ICT."""
+    # ── Validated NFR precompute on disk ────────────────────────────────
+    # Matches legacy/eval_comp.py: load the SAME dfn_info / img / operators
+    # the comparison eval used. Computing these on-the-fly under the current
+    # numpy/igl stack yields slightly different DFN basis / Poisson operators
+    # → frame-to-frame render jitter. Loading the validated set removes it.
+    _PRECOMPUTE_SUBDIRS = {
+        'ict':  'ICT-audio2face/ICT/precompute-real-fullhead',
+        'mf':   'multiface_align/precomputes',
+        'biwi': 'BIWI_align_deci/precomputes',
+        'coma': 'VOCA-COMA/precomputes',
+        'voca': 'VOCA-COMA/precomputes',
+    }
+    _PRECOMPUTE_ROOTS = ('/data/sihun', '/data/inyup', '/data2/inyup')
+
+    def _load_disk_precompute(self, topo, id_name, want_ops):
+        """Load (dfn_info, img[, operators]) from disk, searching multiple data
+        roots (sihun → inyup → data2). Returns the tuple or None (caller then
+        falls back to on-the-fly, which can introduce jitter). id_name must
+        match the precompute file prefix — true for mf/biwi/coma; ICT random
+        identities have no validated precompute so this returns None there."""
+        import os, pickle
+        sub = self._PRECOMPUTE_SUBDIRS.get(topo)
+        if sub is None or not id_name:
+            return None
+        for root in self._PRECOMPUTE_ROOTS:
+            prefix = os.path.join(root, sub, id_name)
+            dfn_p, img_p = prefix + '_dfn_info.pkl', prefix + '_img.npy'
+            if not (os.path.exists(dfn_p) and os.path.exists(img_p)):
+                continue
+            with open(dfn_p, 'rb') as f:
+                dfn = pickle.load(f)
+            dfn = [x.to(self.device).float() if isinstance(x, torch.Tensor) else x
+                   for x in dfn]
+            img = torch.tensor(np.load(img_p)).float().to(self.device)
+            if not want_ops:
+                print(f"[NFR precompute] disk(src) {topo}/{id_name} <- {root}")
+                return (dfn, img)
+            ops_p = prefix + '_operators.pkl'
+            if not os.path.exists(ops_p):
+                return None
+            try:
+                with open(ops_p, 'rb') as f:
+                    lu_solver, idxs, vals, rhs = pickle.load(f)
+                if isinstance(idxs, torch.Tensor): idxs = idxs.to(self.device)
+                if isinstance(vals, torch.Tensor): vals = vals.to(self.device)
+            except (ModuleNotFoundError, ImportError) as e:
+                print(f"[NFR precompute] operators load failed ({e}) — on-the-fly")
+                return None
+            print(f"[NFR precompute] disk(tgt) {topo}/{id_name} <- {root}")
+            return (dfn, img, (lu_solver, idxs, vals, rhs))
+        return None
+
+    def _nfr_src_precomp(self, key, src_mesh, topo=None, id_name=None):
+        """Cache (dfn_info, img) per src mesh. Prefers validated disk precompute
+        (multi-root); else on-the-fly (~30-60s on ICT; may cause jitter)."""
         ck = ("nfr_src", *key)
         if ck in self._precomp:
             return self._precomp[ck]
+        disk = self._load_disk_precompute(topo, id_name, want_ops=False)
+        if disk is not None:
+            self._precomp[ck] = disk
+            return disk
         nfr = self._load_nfr()
         import utils.nfr_utils as nfr_utils
         dfn = nfr_utils.get_dfn_info(src_mesh, map_location=self.device)
         img = nfr.renderer.render_img(src_mesh).float().to(self.device)
+        print(f"[NFR precompute] ON-THE-FLY(src) {topo}/{id_name} — may jitter")
         self._precomp[ck] = (dfn, img)
         return self._precomp[ck]
 
-    def _nfr_tgt_precomp(self, key, tgt_mesh):
-        """Cache (dfn_info, img, operators) per tgt mesh — operators are the
-        expensive bit (Poisson LU factorization, 1-3 min on ICT)."""
+    def _nfr_tgt_precomp(self, key, tgt_mesh, topo=None, id_name=None):
+        """Cache (dfn_info, img, operators) per tgt mesh. Prefers validated disk
+        precompute (multi-root); else on-the-fly (Poisson LU 1-3 min; may jitter).
+        operators are the expensive bit and the most jitter-sensitive."""
         ck = ("nfr_tgt", *key)
         if ck in self._precomp:
             return self._precomp[ck]
+        disk = self._load_disk_precompute(topo, id_name, want_ops=True)
+        if disk is not None:
+            self._precomp[ck] = disk
+            return disk
         nfr = self._load_nfr()
         import utils.nfr_utils as nfr_utils
         dfn = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
         img = nfr.renderer.render_img(tgt_mesh).float().to(self.device)
         ops = nfr.get_mesh_operators(tgt_mesh)
+        print(f"[NFR precompute] ON-THE-FLY(tgt) {topo}/{id_name} — may jitter")
         self._precomp[ck] = (dfn, img, ops)
         return self._precomp[ck]
 
@@ -920,18 +984,20 @@ class BaselineRunner:
                 src_neu_v, src_td.faces, tgt_neu_v, tgt_td.faces)
             src_key = (src_td.name, src_idx)
             tgt_key = (tgt_td.name, tgt_idx)
+            src_idn = src_td.id_names[src_idx]
+            tgt_idn = tgt_td.id_names[tgt_idx]
             if ("nfr_src", *src_key) not in self._precomp:
                 _with_ticker(
                     f"NFR: building src precomp [{src_td.name}#{src_idx}] V={src_neu_v.shape[0]}",
-                    lambda: self._nfr_src_precomp(src_key, src_mesh),
+                    lambda: self._nfr_src_precomp(src_key, src_mesh, src_td.topo, src_idn),
                 )
-            src_pc = self._nfr_src_precomp(src_key, src_mesh)
+            src_pc = self._nfr_src_precomp(src_key, src_mesh, src_td.topo, src_idn)
             if ("nfr_tgt", *tgt_key) not in self._precomp:
                 _with_ticker(
                     f"NFR: building tgt precomp [{tgt_td.name}#{tgt_idx}] V={tgt_neu_v.shape[0]} (Poisson LU)",
-                    lambda: self._nfr_tgt_precomp(tgt_key, tgt_mesh),
+                    lambda: self._nfr_tgt_precomp(tgt_key, tgt_mesh, tgt_td.topo, tgt_idn),
                 )
-            tgt_pc = self._nfr_tgt_precomp(tgt_key, tgt_mesh)
+            tgt_pc = self._nfr_tgt_precomp(tgt_key, tgt_mesh, tgt_td.topo, tgt_idn)
             verts = torch.from_numpy(src_def_v).unsqueeze(0).to(self.device).float()
             pred = _with_ticker(
                 f"NFR: inferring f={src_idx}→{tgt_idx}",
@@ -2106,24 +2172,29 @@ def main():
 
     def _compute_render_subpath() -> str:
         """Auto subpath under g_render_dir base. Encodes ckpt + epoch + mode
-        + src/tgt + clip so every render lives in its own dir."""
+        + src/tgt + clip so every render lives in its own dir.
+        For baseline methods (nfr / nfs) a '/{method}' subfolder is appended so
+        baseline renders never overwrite the hlbs (ours) outputs."""
         pfx = _ckpt_prefix()
+        # baseline nickname as deepest subfolder; empty for "hlbs (ours)"
+        _method = g_compare_method.value
+        mtag = "" if _method.startswith("hlbs") else f"/{_method}"
         mode = g_mode.value
         if mode == "anim":
             td = cache.active
             ds = td.name if td else "unknown"
-            return f"{pfx}/anim_self/{ds}_id{int(g_id.value)}/{_clip_label_for(td)}"
+            return f"{pfx}/anim_self/{ds}_id{int(g_id.value)}/{_clip_label_for(td)}{mtag}"
         if mode == "cross":
             src_ds = g_src_ds.value; src_id = int(g_src_id.value)
             tgt_ds = g_tgt_ds.value; tgt_id = int(g_tgt_id.value)
             kind = "cross_self" if (src_ds == tgt_ds and src_id == tgt_id) else "cross_cross"
             src_td = topos.get(src_ds)
             return (f"{pfx}/{kind}/{src_ds}_id{src_id}_to_{tgt_ds}_id{tgt_id}/"
-                    f"{_clip_label_for(src_td)}")
+                    f"{_clip_label_for(src_td)}{mtag}")
         # bind_pose / weight — single-frame, group by mode + ds + id
         td = cache.active
         ds = td.name if td else "unknown"
-        return f"{pfx}/{mode}/{ds}_id{int(g_id.value)}"
+        return f"{pfx}/{mode}/{ds}_id{int(g_id.value)}{mtag}"
 
     def _refresh_render_subpath(_e=None):
         try:
