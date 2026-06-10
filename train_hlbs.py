@@ -163,6 +163,14 @@ def Options():
                         help='#1 1-ring Laplacian weight smoothness loss (topology-independent).')
     parser.add_argument("--lambda_wref", type=float, default=0.0,
                         help='#3 reference-weight prior: MSE to closest-bone one-hot (L_id).')
+    parser.add_argument("--lambda_inside_bind", type=float, default=0.0,
+                        help='Hinge penalty when bind-pose joints protrude outside the '
+                             'source mesh (SkinTokens "Bone-Mesh Containment" idea, '
+                             'supervised). 0 = off. Approx SDF via nearest-vertex-normal.')
+    parser.add_argument("--lambda_inside_def", type=float, default=0.0,
+                        help='Same penalty applied to DEFORMED joint positions vs the '
+                             'predicted deformed mesh — catches joints that pop out '
+                             'after FK chain. Subsample → skipped (faces invalid).')
     parser.add_argument("--w_metric", type=int, default=1, choices=[0, 1],
                         help='#2 log GT-free weight-quality metric to TB (diagnostic, no loss).')
 
@@ -1843,7 +1851,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -2024,6 +2032,8 @@ class HLBSTrainer:
                                 or opts.lambda_net_center > 0
                                 or getattr(opts, 'lambda_wlap', 0) > 0
                                 or getattr(opts, 'lambda_wref', 0) > 0
+                                or getattr(opts, 'lambda_inside_bind', 0) > 0
+                                or getattr(opts, 'lambda_inside_def', 0) > 0
                                 or getattr(opts, 'w_metric', 0))
                 if _need_extras:
                     pred_lbs, _extras = self.model(
@@ -2266,6 +2276,30 @@ class HLBSTrainer:
                     if _wq is not None:
                         running["metric-W_smooth"] += float(_wq)
 
+                # ── Bone-Mesh Containment: bind-pose joints ──────────────
+                # Hinge penalty when a bind joint pops out of the (subsampled)
+                # source mesh. Uses dataloader-provided src_n; works permed too.
+                if (getattr(opts, 'lambda_inside_bind', 0) > 0
+                        and _joint_pos is not None):
+                    for k, v in self.model.inside_mesh_loss(
+                            _joint_pos, src_v, src_n).items():
+                        loss_dict[f'L_inside_bind'] = v
+
+                # ── Bone-Mesh Containment: deformed joint positions ──────
+                # Deformed joint = T_world[j][:3, 3]. Check against pred_lbs
+                # (deformed mesh). Skip when permed: pred_lbs faces invalid
+                # → kNN-PCA normals would be needed, deferred.
+                if (getattr(opts, 'lambda_inside_def', 0) > 0
+                        and not is_permed
+                        and _need_extras and 'T_world' in _extras):
+                    from utils.mesh_utils import calc_norm_torch
+                    _Tw = _extras['T_world']                # [B, J, 4, 4]
+                    _def_jp = _Tw[..., :3, 3]                # [B, J, 3]
+                    _pred_n = calc_norm_torch(pred_lbs, batch.faces, at='verts')
+                    for k, v in self.model.inside_mesh_loss(
+                            _def_jp, pred_lbs, _pred_n).items():
+                        loss_dict[f'L_inside_def'] = v
+
                 # ── Hierarchy locality loss (uses pre-computed W) ────────
                 if opts.lambda_hier > 0:
                     _md = batch.mesh_data if hasattr(batch, 'mesh_data') else None
@@ -2436,6 +2470,8 @@ class HLBSTrainer:
                     "L_dist": opts.lambda_dist,
                     "L_wlap": getattr(opts, 'lambda_wlap', 0.0),
                     "L_wref": getattr(opts, 'lambda_wref', 0.0),
+                    "L_inside_bind": getattr(opts, 'lambda_inside_bind', 0.0),
+                    "L_inside_def":  getattr(opts, 'lambda_inside_def', 0.0),
                     "L_sigma": opts.lambda_sigma_reg,
                     "L_net_center": opts.lambda_net_center,
                     "L_cross_retarget": opts.lambda_cross_retarget,

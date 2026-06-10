@@ -1676,6 +1676,42 @@ class HierarchicalLBS_FullPred(nn.Module):
         """
         return self._w_smoothness_area(W.float(), source_vert, faces)
 
+    def inside_mesh_loss(self, joint_pos, vertices, vertex_normals):
+        """Hinge penalty: joint protrudes outside mesh → penalize, inside → 0.
+
+        Differentiable signed-distance approximation
+        (Skin Tokens, Zhang 2026, "Bone-Mesh Containment" reward; supervised
+        adaptation):
+
+          For each joint J:
+            1. find nearest vertex V_k on the mesh (argmin Euclidean dist).
+            2. signed distance ≈ (J − V_k) · n_k where n_k is V_k's outward
+               vertex normal.
+               → > 0  if J is on the OUTER side of V_k  (joint outside)
+               → < 0  if J is on the INNER side          (joint inside)
+            3. hinge:  max(0, signed_dist)² .
+            4. mean over batch and joints.
+
+        Cost: B·J·N pairwise distances + 1 argmin + 2 gathers. For ICT
+        N=11248, J=66, B=8: ~6M floats, trivial on GPU.
+
+        Approximation note: at concavities the nearest-vertex-normal can flip
+        sign incorrectly. For closed head meshes this is rare; if needed,
+        replace with libigl signed_distance (igl.signed_distance) for exact
+        SDF (CPU, slower).
+        """
+        # joint_pos: [B, J, 3], vertices: [B, N, 3], vertex_normals: [B, N, 3]
+        B, J, _ = joint_pos.shape
+        diff = joint_pos.unsqueeze(2) - vertices.unsqueeze(1)        # [B, J, N, 3]
+        d2 = (diff ** 2).sum(-1)                                      # [B, J, N]
+        nearest_idx = d2.argmin(dim=-1)                               # [B, J]
+        idx_e = nearest_idx.unsqueeze(-1).expand(-1, -1, 3)
+        V_near = torch.gather(vertices, 1, idx_e)                     # [B, J, 3]
+        N_near = torch.gather(vertex_normals, 1, idx_e)               # [B, J, 3]
+        signed_dist = ((joint_pos - V_near) * N_near).sum(dim=-1)     # [B, J]
+        hinge = signed_dist.clamp(min=0.0)
+        return {'L_inside': hinge.pow(2).mean()}
+
 
 # ── Quick sanity check ────────────────────────────────────────────────────
 if __name__ == '__main__':
