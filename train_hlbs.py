@@ -331,6 +331,11 @@ def Options():
                         help='Plateau inner radius for face region (where t_mask=1)')
     parser.add_argument("--face_mask_r1", type=float, default=2.25,
                         help='Plateau outer radius (where t_mask=0)')
+    parser.add_argument("--no_face_mask", action='store_true',
+                        help='Ablation: disable the face mask (softmax over ALL '
+                             'joints, no non-face->base routing). Relies on weight '
+                             'locality (wref/wlap) + recon to keep non-face inert.')
+    parser.set_defaults(no_face_mask=False)
 
     # DiffusionNet options (per-module)
     parser.add_argument("--dfn_skin", dest='dfn_skin', action='store_true',
@@ -1420,6 +1425,11 @@ class HLBSTrainer:
                 _aj = json.load(f)
             self._face_joint_idx = _aj['face_joint_idx']
             self._base_joint_idx = _aj['base_joint_idx']
+            if getattr(opts, 'no_face_mask', False):
+                # Ablation: disable face mask -> softmax over ALL joints, no
+                # non-face->base routing (use_face_mask becomes False in model).
+                self._face_joint_idx = None
+                print("[face-mask] DISABLED via --no_face_mask")
             _helper_list = _aj.get('helper_joint_idx', [])
             # use_helpers=0 → don't apply helper-aware logic (helpers learned as regular joints).
             self._helper_joint_idx = list(_helper_list) if self._use_helpers else []
