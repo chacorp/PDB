@@ -974,6 +974,16 @@ class BaselineRunner:
     _PRECOMPUTE_ROOTS = ('/data/sihun', '/data/inyup', '/data2/inyup')
 
     def _load_disk_precompute(self, topo, id_name, want_ops):
+        """Cached wrapper: load the validated precompute ONCE per
+        (topo, id, want_ops) and memoize (None included), so per-frame baseline
+        inference doesn't re-read ~30MB from disk every frame."""
+        ck = ("disk_pc", topo, id_name, want_ops)
+        if ck not in self._precomp:
+            self._precomp[ck] = self._load_disk_precompute_uncached(
+                topo, id_name, want_ops)
+        return self._precomp[ck]
+
+    def _load_disk_precompute_uncached(self, topo, id_name, want_ops):
         """Load (dfn_info, img[, operators]) from disk, searching multiple data
         roots (sihun → inyup → data2). Returns the tuple or None (caller then
         falls back to on-the-fly, which can introduce jitter). id_name must
