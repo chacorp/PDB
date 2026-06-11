@@ -864,11 +864,26 @@ class BaselineRunner:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "cupy-cuda12x"])
             import cupy  # noqa: F401
 
+    def _ensure_tensorboard(self):
+        """legacy/evaluation.py imports torch.utils.tensorboard.SummaryWriter at
+        module load, which needs the `tensorboard` package. Auto-install if
+        missing (one-time) so the NFR/NFS baselines can be loaded."""
+        try:
+            import tensorboard  # noqa: F401
+            return
+        except ImportError:
+            import subprocess
+            print("[baseline] tensorboard missing — pip install (one-time)")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "tensorboard"])
+            import tensorboard  # noqa: F401
+
     def _load_nfr(self):
         if self._nfr is not None:
             return self._nfr
         # cupy is a hard dep of deformation_transfer.py — install if missing.
         self._ensure_cupy()
+        # legacy.evaluation imports tensorboard at module level.
+        self._ensure_tensorboard()
         # NFR_helper uses Path(__file__).parents[0] as its base, which resolves
         # to legacy/ — but the actual data lives at repo root. Bridge with
         # symlinks (idempotent, one-time setup on first NFR use).
@@ -888,6 +903,7 @@ class BaselineRunner:
     def _load_nfs(self):
         if self._nfs is not None:
             return self._nfs
+        self._ensure_tensorboard()
         import yaml as _yaml
         from models.NFS import NFS
         ckpt_dir = self.repo / "ckpts_comparison" / "NFS-best"

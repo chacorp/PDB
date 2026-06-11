@@ -119,10 +119,10 @@ class NFR_helper():
         self.criterion = nn.MSELoss()
         
         # mesh normalizer
-        self.normalizer = nfr_utils.Normalizer(f'{abs_path}/data/ICT_live_100', 'cuda:0')
+        self.normalizer = nfr_utils.Normalizer(f'{abs_path}/data/ICT_live_100', self.device)
 
         # image feature normalizer
-        self.img_normalizer = nfr_utils.Normalizer_img(f'{abs_path}/data/MF_all_v5', 'cuda:0')
+        self.img_normalizer = nfr_utils.Normalizer_img(f'{abs_path}/data/MF_all_v5', self.device)
 
         # set pytorch3d renderer
         #self.renderer = myutils.renderer(view_d=2.5, img_size=256, fragments=True)
@@ -170,7 +170,7 @@ class NFR_helper():
         _nfr_ckpt = f'{abs_path}/ckpts_comparison/experiments/ICT_augment_cnn_ext_dfn4_grad/ICT_augment_cnn_ext_dfn4_grad_0.pth'
         if not os.path.exists(_nfr_ckpt):
             _nfr_ckpt = f'{abs_path}/experiments/ICT_augment_cnn_ext_dfn4_grad/ICT_augment_cnn_ext_dfn4_grad_0.pth'
-        ckpt = torch.load(_nfr_ckpt, map_location='cuda:0')
+        ckpt = torch.load(_nfr_ckpt, map_location=self.device)
         # ckpt.keys() == dict_keys(['epoch', 'model', 'optim', 'lr_sched', 'args'])
         model = nfr_utils.load_state_dict(model, ckpt['model'])
 
