@@ -1027,7 +1027,7 @@ class BaselineRunner:
         ck = ("nfr_src", *key)
         if ck in self._precomp:
             return self._precomp[ck]
-        disk = self._load_disk_precompute(topo, id_name, want_ops=False)
+        disk = self._load_disk_precompute_uncached(topo, id_name, want_ops=False)
         if disk is not None:
             self._precomp[ck] = disk
             return disk
@@ -1046,7 +1046,7 @@ class BaselineRunner:
         ck = ("nfr_tgt", *key)
         if ck in self._precomp:
             return self._precomp[ck]
-        disk = self._load_disk_precompute(topo, id_name, want_ops=True)
+        disk = self._load_disk_precompute_uncached(topo, id_name, want_ops=True)
         if disk is not None:
             self._precomp[ck] = disk
             return disk
