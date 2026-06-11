@@ -923,6 +923,34 @@ class BaselineRunner:
         print(f"[baseline] NFS loaded: {ckpt_dir}/model_best.pth")
         return self._nfs
 
+    @torch.no_grad()
+    def _nfs_forward_precompute(self, nfs, gt_vertices, src_faces, src_dfn,
+                                src_img, tgt_template, tgt_faces, tgt_dfn,
+                                tgt_img, tgt_ops):
+        """NFS forward using validated disk precompute — mirrors legacy
+        eval_comp._forward_nfs_precompute. Sets precomputes explicitly
+        (update_precomputes) so the DiffusionNet encoders don't hit the
+        'no precomputes' path, and uses the validated dfn/operators (no jitter)."""
+        dev = self.device
+        tgt_img_feat = nfs.get_img_feat(tgt_img)
+        tgt_verts_t = torch.tensor(tgt_template).float().unsqueeze(0).to(dev)
+        tgt_faces_t = torch.tensor(tgt_faces).long().to(dev)
+        tgt_vert_feat = nfs.get_local_feature(tgt_verts_t, tgt_faces_t, tgt_img_feat).float()
+        nfs.mesh_id_encoder.update_precomputes(tgt_dfn)
+        pred_id = nfs.encode_id(tgt_vert_feat, tgt_dfn)
+        pred_seg = nfs.encode_seg(tgt_vert_feat, tgt_dfn)
+        src_img_feat = nfs.get_img_feat(src_img)
+        src_faces_t = torch.tensor(src_faces).long().to(dev)
+        gt_v = gt_vertices.to(dev).float()
+        vfe = [nfs.get_local_feature(gt_v[t:t+1], src_faces_t, src_img_feat).float()
+               for t in range(gt_v.shape[0])]
+        vert_feat_exp = torch.cat(vfe, dim=0)
+        pred_exp = nfs.encode_exp(vert_feat_exp, src_dfn, batch_process=True)
+        inputs = (tgt_vert_feat, pred_exp, pred_id, pred_seg, None,
+                  tgt_verts_t, tgt_faces_t, tgt_ops)
+        pred_outputs, _ = nfs.decode(inputs, batch_process=True)
+        return pred_outputs
+
     def _meshes(self, src_neu_v, src_faces, tgt_neu_v, tgt_faces):
         import trimesh
         src = trimesh.Trimesh(vertices=src_neu_v, faces=src_faces,
@@ -1093,13 +1121,29 @@ class BaselineRunner:
             if self._nfs is None:
                 _with_ticker("NFS: loading model", self._load_nfs)
             nfs = self._nfs
-            src_mesh, tgt_mesh = self._meshes(
-                src_neu_v, src_td.faces, tgt_neu_v, tgt_td.faces)
+            src_idn = src_td.id_names[src_idx]
+            tgt_idn = tgt_td.id_names[tgt_idx]
+            src_pc = self._load_disk_precompute(src_td.topo, src_idn, want_ops=False)
+            tgt_pc = self._load_disk_precompute(tgt_td.topo, tgt_idn, want_ops=True)
             verts = torch.from_numpy(src_def_v).unsqueeze(0).to(self.device).float()
-            pred = _with_ticker(
-                f"NFS: inferring (no precompute cache — full pipeline) V={tgt_neu_v.shape[0]}",
-                lambda: nfs.inference(verts, src_mesh, tgt_mesh),
-            )
+            if src_pc is not None and tgt_pc is not None:
+                src_dfn, src_img = src_pc
+                tgt_dfn, tgt_img, tgt_ops = tgt_pc
+                pred = _with_ticker(
+                    f"NFS: inferring (disk precompute) {src_td.name}#{src_idx}->{tgt_td.name}#{tgt_idx}",
+                    lambda: self._nfs_forward_precompute(
+                        nfs, verts, src_td.faces, src_dfn, src_img,
+                        tgt_neu_v, tgt_td.faces, tgt_dfn, tgt_img, tgt_ops),
+                )
+            else:
+                print(f"[NFS precompute] ON-THE-FLY src={src_td.topo}/{src_idn} "
+                      f"tgt={tgt_td.topo}/{tgt_idn} — may jitter / 'no precomputes'")
+                src_mesh, tgt_mesh = self._meshes(
+                    src_neu_v, src_td.faces, tgt_neu_v, tgt_td.faces)
+                pred = _with_ticker(
+                    f"NFS: inferring (no precompute — full pipeline) V={tgt_neu_v.shape[0]}",
+                    lambda: nfs.inference(verts, src_mesh, tgt_mesh),
+                )
             if pred.dim() == 4:
                 pred = pred[0]
             return pred[0].cpu().numpy().astype(np.float32)
