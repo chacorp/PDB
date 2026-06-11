@@ -1425,11 +1425,6 @@ class HLBSTrainer:
                 _aj = json.load(f)
             self._face_joint_idx = _aj['face_joint_idx']
             self._base_joint_idx = _aj['base_joint_idx']
-            if getattr(opts, 'no_face_mask', False):
-                # Ablation: disable face mask -> softmax over ALL joints, no
-                # non-face->base routing (use_face_mask becomes False in model).
-                self._face_joint_idx = None
-                print("[face-mask] DISABLED via --no_face_mask")
             _helper_list = _aj.get('helper_joint_idx', [])
             # use_helpers=0 → don't apply helper-aware logic (helpers learned as regular joints).
             self._helper_joint_idx = list(_helper_list) if self._use_helpers else []
@@ -1438,6 +1433,11 @@ class HLBSTrainer:
                   f"helpers={len(_helper_list)} "
                   f"({'use_helpers=ON' if self._use_helpers else 'use_helpers=OFF — treated as regular face joints'}) "
                   f"from {opts.active_joints_json}")
+            if getattr(opts, 'no_face_mask', False):
+                # Ablation: disable face mask -> softmax over ALL joints, no
+                # non-face->base routing (use_face_mask becomes False in model).
+                self._face_joint_idx = None
+                print("[face-mask] DISABLED via --no_face_mask")
 
         # ── Load helper mirror pairs (for L_mirror loss) ─────────────────
         # Reads name pairs from helper_joints_*.json; resolves to joint indices
