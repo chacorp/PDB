@@ -290,7 +290,7 @@ class EvalDataset(data.Dataset):
         # → caricaturized identity in the same expression. Falls back to non-aug
         # silently if the per-id aug file is missing.
         use_aug = False
-        if self._caricat_prob > 0 and np.random.random() < self._caricat_prob:
+        if getattr(self, "_caricat_prob", 0) > 0 and np.random.random() < self._caricat_prob:
             _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
             if os.path.isfile(_aug_path):
                 use_aug = True
@@ -422,7 +422,7 @@ class EvalDataset(data.Dataset):
         # caricaturized variant; preserve this frame's deformation by adding
         # (aligned_vertices - orig_template) to the aug template.
         use_aug = False
-        if self._caricat_prob > 0 and np.random.random() < self._caricat_prob:
+        if getattr(self, "_caricat_prob", 0) > 0 and np.random.random() < self._caricat_prob:
             _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
             if os.path.isfile(_aug_path):
                 use_aug = True
@@ -493,7 +493,7 @@ class EvalDataset(data.Dataset):
 
         # Caricaturization aug — see get_mf_SEN for details.
         use_aug = False
-        if self._caricat_prob > 0 and np.random.random() < self._caricat_prob:
+        if getattr(self, "_caricat_prob", 0) > 0 and np.random.random() < self._caricat_prob:
             _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
             if os.path.isfile(_aug_path):
                 use_aug = True
@@ -562,7 +562,7 @@ class CBDDataset(data.Dataset):
         self._caricat_prob = float(getattr(opts, 'caricat_prob', 0.0) or 0.0) if is_train else 0.0
         self._caricat_template_cache_ict = {}   # id_index → (template_np, template_t, template_normal_t)
         self._caricat_template_cache_mf = {}    # id_name  → same
-        if self._caricat_prob > 0 and self._caricat_aug_dir:
+        if getattr(self, "_caricat_prob", 0) > 0 and self._caricat_aug_dir:
             if not os.path.isdir(self._caricat_aug_dir):
                 print(f"[caricat] WARN: --caricat_aug_dir '{self._caricat_aug_dir}' "
                       f"not found → disabling caricaturization aug")
@@ -1467,9 +1467,14 @@ class CBDDataset(data.Dataset):
             template = template * scale + trans
             deformed = deformed * scale + trans
             smooth_deformed = smooth_deformed * scale + trans
+            # Emit per-sample aug transform (tensors [3]) so the trainer can map
+            # the fixed per-id bind-pose GT into the augmented frame (GT*scale+trans)
+            # for L_bind_reg. No-op (ones/zeros) when aug is off.
+            scale_t = (scale.reshape(3) if torch.is_tensor(scale) else torch.ones(3)).float()
+            trans_t = (trans.reshape(3) if torch.is_tensor(trans) else torch.zeros(3)).float()
 
             id_idx = torch.tensor(id_mesh, dtype=torch.long)
-            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed, id_idx)
+            return (template, deformed, faces, template_normal, deformed_normal, seg, bs_coeff, id_name, mesh_data, smooth_deformed, id_idx, scale_t, trans_t)
     
     def get_slice_idx(self, F_idx, WS):
         """
@@ -1707,6 +1712,14 @@ class CBDDataBatch:
                 self.id_idx = torch.stack(transposed_data[10], 0)  # [B]
             else:
                 self.id_idx = None
+            # scale/trans (random aug) at [11]/[12] — to map per-id bind GT into
+            # the augmented frame in L_bind_reg. None when not emitted (no aug build).
+            if len(transposed_data) > 12:
+                self.scale = torch.stack(transposed_data[11], 0)  # [B, 3]
+                self.trans = torch.stack(transposed_data[12], 0)  # [B, 3]
+            else:
+                self.scale = None
+                self.trans = None
             # neutral_span_inv precompute disabled (swap pressure)
             self.neutral_span_inv = None
     

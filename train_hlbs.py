@@ -2158,6 +2158,14 @@ class HLBSTrainer:
                         targets.append(tgt)
                         n_per_topo += 1
                     target_batch = torch.stack(targets, dim=0)               # [B, J, 3]
+                    # Under random scale/trans aug, the mesh (hence predicted
+                    # joint_pos) lives in the augmented frame. Map the fixed bind
+                    # GT into that frame so L_bind_reg is consistent: GT*scale+trans
+                    # (per sample). No-op when aug off (scale=1, trans=0 / None).
+                    if getattr(batch, 'scale', None) is not None:
+                        _bsc = batch.scale.to(target_batch.device).unsqueeze(1)  # [B,1,3]
+                        _btr = batch.trans.to(target_batch.device).unsqueeze(1)  # [B,1,3]
+                        target_batch = target_batch * _bsc + _btr
                     # Exclude helper joints: their per-id GT = parent's per-id pos,
                     # so MSE would lock helpers onto parent, killing the helper's
                     # degree of freedom. Restrict L_bind_reg to non-helper joints.
