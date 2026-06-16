@@ -854,7 +854,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         """Prepare skin_input and adain_input based on mode."""
         source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
         if nfs_feat is not None:
-            nfs_normed = self.nfs_layer_norm(nfs_feat)
+            nfs_normed = self.nfs_layer_norm(nfs_feat.to(self.nfs_layer_norm.weight.device))
             if self.nfs_concat:
                 skin_input = torch.cat([source_feat, nfs_normed], dim=-1)  # [B, N, 262]
                 _adain = source_feat if self.adain_pos_norm else None

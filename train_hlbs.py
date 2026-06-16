@@ -163,6 +163,8 @@ def Options():
                         help='#1 1-ring Laplacian weight smoothness loss (topology-independent).')
     parser.add_argument("--lambda_wref", type=float, default=0.0,
                         help='#3 reference-weight prior: MSE to closest-bone one-hot (L_id).')
+    parser.add_argument("--lambda_ortho", type=float, default=0.0,
+                        help='Simplicits eq7-inspired off-diagonal weight orthogonality: decorrelate per-joint weight columns (mean_v W_i*W_j -> 0, i!=j) to induce sparse/disjoint skinning regions. diag NOT forced (partition-of-unity). 0=off.')
     parser.add_argument("--lambda_inside_bind", type=float, default=0.0,
                         help='Hinge penalty when bind-pose joints protrude outside the '
                              'source mesh (SkinTokens "Bone-Mesh Containment" idea, '
@@ -352,6 +354,8 @@ def Options():
     parser.add_argument("--nfs_feat_dir", type=str, default=None,
                         help='Directory with NFS per-identity features (*_nfs_feat.npy). '
                              'If set, skin_weight_net and bind_pose_net use these as input.')
+    parser.add_argument("--nfs_feat_dim", type=int, default=256,
+                        help='Per-vertex NFS/Diff3F feature dim (matches --nfs_feat_dir files).')
     parser.add_argument("--nfs_concat", dest='nfs_concat', action='store_true',
                         help='Concat seg feat with pos+norm as input [262], 4 layers.')
     parser.set_defaults(nfs_concat=False)
@@ -1618,7 +1622,7 @@ class HLBSTrainer:
             dfn_skin=opts.dfn_skin,
             dfn_bind=opts.dfn_bind,
             dfn_exp=opts.dfn_exp,
-            nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
+            nfs_feat_dim=opts.nfs_feat_dim if opts.nfs_feat_dir else 0,
             nfs_concat=opts.nfs_concat if hasattr(opts, 'nfs_concat') else False,
             adain_pos_norm=opts.adain_pos_norm if hasattr(opts, 'adain_pos_norm') else False,
             freeze_bind_pose=opts.freeze_bind_pose if hasattr(opts, 'freeze_bind_pose') else False,
@@ -1662,6 +1666,7 @@ class HLBSTrainer:
 
         # Load NFS pretrained features
         self._nfs_feat_cache = {}
+        self._nfs_feat_dim = getattr(opts, 'nfs_feat_dim', 256)
         self._nfs_on_cpu = getattr(opts, 'nfs_on_cpu', False)
         if opts.nfs_feat_dir:
             import glob as _glob
@@ -1861,7 +1866,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_ortho": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -1941,7 +1946,7 @@ class HLBSTrainer:
                                 f = f.to(self.device, non_blocking=True)
                             feats.append(f)
                         else:
-                            feats.append(torch.zeros(N_cur, 256, device=self.device))
+                            feats.append(torch.zeros(N_cur, self._nfs_feat_dim, device=self.device))
                     _nfs_feat = torch.stack(feats, dim=0)  # [B, N, 256]
 
                 # ── Subsample augmentation (Track A) ──
@@ -2287,6 +2292,19 @@ class HLBSTrainer:
                             _W, src_v, _joint_pos).items():
                         loss_dict[k] = v
 
+                # ── Simplicits eq7-inspired weight orthogonality (adapted) ──
+                # off-diagonal Gram of per-joint weight columns -> 0:
+                # decorrelate joints' influence over vertices => disjoint,
+                # per-vertex-sparse skinning. diag NOT forced to 1 (our W is
+                # partition-of-unity, unlike Simplicits free eigenmodes).
+                # Valid on subsampled batches (MC over present vertices).
+                if getattr(opts, 'lambda_ortho', 0) > 0 and _W is not None:
+                    _Wm = _W                                          # [B, N, J]
+                    _G = torch.bmm(_Wm.transpose(1, 2), _Wm) / _Wm.shape[1]  # [B, J, J]
+                    _Jn = _G.shape[-1]
+                    _off = _G * (1.0 - torch.eye(_Jn, device=_G.device, dtype=_G.dtype))
+                    loss_dict['L_ortho'] = (_off ** 2).sum(dim=(1, 2)).mean()
+
                 # ── #2 GT-free weight-quality metric (diagnostic, no loss) ─
                 if (getattr(opts, 'w_metric', 0) and not is_permed
                         and _W is not None):
@@ -2351,7 +2369,7 @@ class HLBSTrainer:
                                 if self._nfs_on_cpu: _f = _f.to(self.device, non_blocking=True)
                                 _feats.append(_f)
                             else:
-                                _feats.append(torch.zeros(V_c, 256, device=self.device))
+                                _feats.append(torch.zeros(V_c, self._nfs_feat_dim, device=self.device))
                         _tgt_nfs = torch.stack(_feats, dim=0)
 
                     # Per-id bind_pos cache for tgt (Phase B GT > legacy > per-topo mean)
@@ -2442,7 +2460,7 @@ class HLBSTrainer:
                                     if self._nfs_on_cpu: _f = _f.to(self.device, non_blocking=True)
                                     _feats.append(_f)
                                 else:
-                                    _feats.append(torch.zeros(V_c, 256, device=self.device))
+                                    _feats.append(torch.zeros(V_c, self._nfs_feat_dim, device=self.device))
                             _src_nfs = torch.stack(_feats, dim=0)
 
                         _src_bp = None
@@ -2488,6 +2506,7 @@ class HLBSTrainer:
                     "L_dist": opts.lambda_dist,
                     "L_wlap": getattr(opts, 'lambda_wlap', 0.0),
                     "L_wref": getattr(opts, 'lambda_wref', 0.0),
+                    "L_ortho": getattr(opts, 'lambda_ortho', 0.0),
                     "L_inside_bind": getattr(opts, 'lambda_inside_bind', 0.0),
                     "L_inside_def":  getattr(opts, 'lambda_inside_def', 0.0),
                     "L_sigma": opts.lambda_sigma_reg,
@@ -2672,7 +2691,7 @@ class HLBSTrainer:
                                     f = f.to(self.device, non_blocking=True)
                                 feats.append(f)
                             else:
-                                feats.append(torch.zeros(N_cur, 256, device=self.device))
+                                feats.append(torch.zeros(N_cur, self._nfs_feat_dim, device=self.device))
                         _nfs_feat = torch.stack(feats, dim=0)
 
                     # Update DiffusionNet precomputes for val topology
