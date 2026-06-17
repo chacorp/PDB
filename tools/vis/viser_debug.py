@@ -146,6 +146,7 @@ def _build_model(ckpt_dir: Path, device: torch.device):
         dfn_bind=getattr(opts, "dfn_bind", False),
         dfn_exp=getattr(opts, "dfn_exp", False),
         nfs_feat_dim=int(getattr(opts, "nfs_feat_dim", 256)) if getattr(opts, "nfs_feat_dir", None) else 0,
+        nfs_proj_dim=int(getattr(opts, "nfs_proj_dim", 0)),
         nfs_concat=getattr(opts, "nfs_concat", False),
         adain_pos_norm=getattr(opts, "adain_pos_norm", False),
         freeze_bind_pose=getattr(opts, "freeze_bind_pose", False),
