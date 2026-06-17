@@ -516,6 +516,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         nfs_feat_dim: int = 0,
         nfs_concat: bool = False,
         adain_pos_norm: bool = False,
+        nfs_proj_dim: int = 0,
         freeze_bind_pose: bool = False,
         use_gmm_hybrid: bool = False,
         init_log_sigma: float = -1.2,
@@ -682,14 +683,25 @@ class HierarchicalLBS_FullPred(nn.Module):
         # nfs_concat mode: concat [pos+norm(6) + seg_feat(256)] = 262, AdaIN on pos+norm(6), 4 layers
         # nfs_feat only mode: seg_feat(256) only, AdaIN on seg_feat(256), 2 layers
         # original mode: pos+norm(6), AdaIN on pos+norm(6), num_layers
+        # Optional small-MLP bottleneck on nfs/Diff3F feature: project raw
+        # high-dim feature (e.g. Diff3F 2048d) -> nfs_proj_dim before LayerNorm+
+        # concat. Learned, task-aware denoise (vs fixed PCA). 0 = use raw.
+        self.nfs_proj_dim = int(nfs_proj_dim)
+        self.nfs_proj = None
+        if nfs_feat_dim > 0 and self.nfs_proj_dim > 0:
+            self.nfs_proj = nn.Sequential(
+                nn.Linear(nfs_feat_dim, 256), nn.ELU(), nn.Linear(256, self.nfs_proj_dim),
+            ).to(device)
+        _eff_nfs = self.nfs_proj_dim if (nfs_feat_dim > 0 and self.nfs_proj_dim > 0) else nfs_feat_dim
+
         if nfs_feat_dim > 0 and nfs_concat:
-            _skin_in = 6 + nfs_feat_dim
-            _bind_in = 6 + nfs_feat_dim
+            _skin_in = 6 + _eff_nfs
+            _bind_in = 6 + _eff_nfs
             _adain_dim = 6 if adain_pos_norm else None  # None = same as in_dim
             _n_layers = num_layers
         elif nfs_feat_dim > 0:
-            _skin_in = nfs_feat_dim
-            _bind_in = nfs_feat_dim
+            _skin_in = _eff_nfs
+            _bind_in = _eff_nfs
             _adain_dim = None
             _n_layers = 2
         else:
@@ -699,7 +711,7 @@ class HierarchicalLBS_FullPred(nn.Module):
             _n_layers = num_layers
 
         # LayerNorm for seg features (normalize scale across topologies)
-        self.nfs_layer_norm = nn.LayerNorm(nfs_feat_dim) if nfs_feat_dim > 0 else None
+        self.nfs_layer_norm = nn.LayerNorm(_eff_nfs) if nfs_feat_dim > 0 else None
 
         if dfn_skin:
             from models.encoder import BaseDiffusionNetEncoder
@@ -854,6 +866,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         """Prepare skin_input and adain_input based on mode."""
         source_feat = torch.cat([source_vert, source_normal], dim=-1)  # [B, N, 6]
         if nfs_feat is not None:
+            if self.nfs_proj is not None:
+                nfs_feat = self.nfs_proj(nfs_feat.to(self.nfs_proj[0].weight.device))
             nfs_normed = self.nfs_layer_norm(nfs_feat.to(self.nfs_layer_norm.weight.device))
             if self.nfs_concat:
                 skin_input = torch.cat([source_feat, nfs_normed], dim=-1)  # [B, N, 262]

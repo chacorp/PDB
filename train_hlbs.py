@@ -356,6 +356,8 @@ def Options():
                              'If set, skin_weight_net and bind_pose_net use these as input.')
     parser.add_argument("--nfs_feat_dim", type=int, default=256,
                         help='Per-vertex NFS/Diff3F feature dim (matches --nfs_feat_dir files).')
+    parser.add_argument("--nfs_proj_dim", type=int, default=0,
+                        help='If >0, project nfs/Diff3F feature down to this dim via small MLP (Linear->ELU->Linear) before LayerNorm+concat. Learned task-aware bottleneck/denoise. 0=raw.')
     parser.add_argument("--nfs_concat", dest='nfs_concat', action='store_true',
                         help='Concat seg feat with pos+norm as input [262], 4 layers.')
     parser.set_defaults(nfs_concat=False)
@@ -1625,6 +1627,7 @@ class HLBSTrainer:
             nfs_feat_dim=opts.nfs_feat_dim if opts.nfs_feat_dir else 0,
             nfs_concat=opts.nfs_concat if hasattr(opts, 'nfs_concat') else False,
             adain_pos_norm=opts.adain_pos_norm if hasattr(opts, 'adain_pos_norm') else False,
+            nfs_proj_dim=getattr(opts, 'nfs_proj_dim', 0),
             freeze_bind_pose=opts.freeze_bind_pose if hasattr(opts, 'freeze_bind_pose') else False,
             use_gmm_hybrid=opts.use_gmm_hybrid if hasattr(opts, 'use_gmm_hybrid') else False,
             init_log_sigma=opts.init_log_sigma if hasattr(opts, 'init_log_sigma') else -1.2,
