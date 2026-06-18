@@ -1400,6 +1400,7 @@ def main():
         g_show_pred = server.gui.add_checkbox("show Pred joints", True)
         g_show_err = server.gui.add_checkbox("show error arrows", True)
         g_show_helpers = server.gui.add_checkbox("highlight helpers", True)
+        g_bind_bones = server.gui.add_checkbox("skeleton bones (anim-style)", False)
 
     with server.gui.add_folder("Weight"):
         g_w_mode = server.gui.add_dropdown(
@@ -1450,6 +1451,7 @@ def main():
         g_fps = server.gui.add_slider("fps", min=1, max=60, step=1, initial_value=15)
         g_show_axes = server.gui.add_checkbox("joint axes triads", True)
         g_show_bones = server.gui.add_checkbox("bones", True)
+        g_show_joints = server.gui.add_checkbox("joint points", True)
         g_show_gt_anim = server.gui.add_checkbox("GT mesh side-by-side", True)
         g_err_color = server.gui.add_checkbox("color pred by L2 error", True)
         g_err_cmap = server.gui.add_dropdown(
@@ -1501,6 +1503,7 @@ def main():
         )
         g_show_src = server.gui.add_checkbox("show source meshes (neu+def)", True)
         g_show_tgt_neu = server.gui.add_checkbox("show target neutral", True)
+        g_cross_err = server.gui.add_checkbox("self-retarget error overlay", True)
         g_compare_method = server.gui.add_dropdown(
             "method",
             options=["hlbs (ours)", "nfr", "nfs"],
@@ -1622,6 +1625,12 @@ def main():
                 "/joints/pred", points=pred, colors=cols_pred, point_size=0.012
             )
             nodes.append(h)
+            if g_bind_bones.value:
+                _bsegs = [[pred[int(parent_idx[j])], pred[j]] for j in range(J) if int(parent_idx[j]) >= 0]
+                if _bsegs:
+                    _bpts = np.array(_bsegs, dtype=np.float32)
+                    _bcols = np.broadcast_to(np.array([80, 220, 180], dtype=np.uint8), (_bpts.shape[0], 2, 3)).copy()
+                    nodes.append(server.scene.add_line_segments("/joints/pred_bones", points=_bpts, colors=_bcols, line_width=2.0))
 
         if g_show_gt.value and gt is not None:
             cols_gt = np.tile(np.array([[60, 130, 255]], dtype=np.uint8), (J, 1))
@@ -1823,13 +1832,14 @@ def main():
             nodes.append(h2)
 
         # Skeleton on pred side: joint points + bones
-        h3 = server.scene.add_point_cloud(
-            "/anim/joints",
-            points=jp,
-            colors=np.full((J, 3), 255, dtype=np.uint8),
-            point_size=0.008,
-        )
-        nodes.append(h3)
+        if g_show_joints.value:
+            h3 = server.scene.add_point_cloud(
+                "/anim/joints",
+                points=jp,
+                colors=np.full((J, 3), 255, dtype=np.uint8),
+                point_size=0.008,
+            )
+            nodes.append(h3)
 
         if g_show_bones.value:
             segs = []
@@ -1985,7 +1995,7 @@ def main():
         _put("tgt_neu", out["tgt_neu_v"], tgt_td.faces, _tile(tgt_c, out["tgt_neu_v"].shape[0]))
 
         m = out["metrics"]
-        if m is not None:
+        if g_cross_err.value and m is not None:
             err = np.linalg.norm(out["tgt_pred_v"] - out["src_def_v"], axis=-1)
             err_n = np.clip(err / max(err.max(), 1e-8), 0, 1)
             heat = _err_rgb(err_n, g_err_cmap.value).astype(np.float32)
@@ -2625,7 +2635,7 @@ def main():
         g_show_gt, g_show_pred, g_show_err, g_show_helpers, g_mesh_opacity,
         g_w_mode, g_joint, g_soft_topk, g_soft_sat, g_palette,
         g_frame, g_show_axes, g_show_bones, g_show_gt_anim, g_err_color, g_err_cmap,
-        g_jpos_src,
+        g_jpos_src, g_show_joints, g_bind_bones, g_cross_err,
         g_tgt_id, g_pca_mode, g_show_src, g_show_tgt_neu,
     ]:
         h.on_update(lambda _e: render())
