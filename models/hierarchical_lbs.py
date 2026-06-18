@@ -1181,6 +1181,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         tgt_nfs_feat: torch.Tensor = None,
         tgt_bind_pos_cache: torch.Tensor = None,
         tgt_dist_sq_geo: torch.Tensor = None,
+    return_joints: bool = False,
     ):
         """
         Cross-retargeting: apply SOURCE expression to TARGET identity.
@@ -1261,6 +1262,8 @@ class HierarchicalLBS_FullPred(nn.Module):
         v_per_joint = torch.einsum('bjkl,bnl->bnjk', G[:, :, :3, :], v_h)
         rigid_v     = torch.einsum('bnj,bnjk->bnk', W_tgt, v_per_joint)
 
+        if return_joints:
+            return rigid_v, tgt_joint_pos, T_world
         return rigid_v
 
     # ── σ shrinkage loss ─────────────────────────────────────────────────

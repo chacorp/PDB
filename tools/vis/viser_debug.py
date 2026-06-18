@@ -780,6 +780,7 @@ class IdentityCache:
 
         out = {"src_neu_v": src_base["neu_v"], "src_def_v": None,
                "tgt_neu_v": tgt_base["neu_v"], "tgt_pred_v": None,
+               "src_joint_pos": None, "tgt_joint_pos": None, "tgt_T_world": None,
                "metrics": None, "model_ran": False}
 
         src_id_name = src_topo.id_names[src_id_idx]
@@ -800,14 +801,18 @@ class IdentityCache:
         def _b(a):
             return torch.from_numpy(a).unsqueeze(0).to(self.device)
 
-        rigid_v = self.model.retarget(
+        rigid_v, _tgt_jp, _tgt_Tw = self.model.retarget(
             src_neu_vert=_b(src_neu_v), src_neu_norm=_b(src_neu_n),
             src_def_vert=_b(src_def_v), src_def_norm=_b(src_def_n),
             tgt_neu_vert=_b(tgt_neu_v), tgt_neu_norm=_b(tgt_neu_n),
             tgt_nfs_feat=tgt_base["nfs"],
             tgt_dist_sq_geo=tgt_base["dist_sq_geo"],
+            return_joints=True,
         )
         out["tgt_pred_v"] = rigid_v[0].cpu().numpy()
+        out["tgt_joint_pos"] = _tgt_jp[0].cpu().numpy()
+        out["tgt_T_world"] = _tgt_Tw[0].cpu().numpy()
+        out["src_joint_pos"] = src_base.get("joint_pos_pred")
         out["model_ran"] = True
 
         # Metrics: if src == tgt (same id, same topo), self-retarget — compare to
@@ -1504,6 +1509,7 @@ def main():
         g_show_src = server.gui.add_checkbox("show source meshes (neu+def)", True)
         g_show_tgt_neu = server.gui.add_checkbox("show target neutral", True)
         g_cross_err = server.gui.add_checkbox("self-retarget error overlay", True)
+        g_cross_joints = server.gui.add_dropdown("cross joints", options=["off", "bind (neutrals)", "posed (tgt anim)"], initial_value="off")
         g_compare_method = server.gui.add_dropdown(
             "method",
             options=["hlbs (ours)", "nfr", "nfs"],
@@ -2006,6 +2012,39 @@ def main():
         else:
             rgb_pred = _tile(tgt_c, out["tgt_pred_v"].shape[0])
         _put("tgt_pred", out["tgt_pred_v"], tgt_td.faces, rgb_pred)
+
+        # ── optional joint overlays (#5) ──────────────────────────────
+        _cj = g_cross_joints.value
+        if _cj != "off":
+            def _draw_j(prefix, jp, x_off, bones=True, axes=False, Tw=None):
+                if jp is None or x_off is None:
+                    return
+                jp = jp.copy(); jp[:, 0] += x_off
+                nodes.append(server.scene.add_point_cloud(
+                    prefix + "/pts", points=jp.astype(np.float32),
+                    colors=np.tile(np.array([255, 255, 255], dtype=np.uint8), (len(jp), 1)),
+                    point_size=0.009))
+                if bones:
+                    _seg = [[jp[int(parent_idx[j])], jp[j]] for j in range(len(jp)) if int(parent_idx[j]) >= 0]
+                    if _seg:
+                        _p = np.array(_seg, dtype=np.float32)
+                        _c = np.broadcast_to(np.array([80, 220, 180], dtype=np.uint8), (_p.shape[0], 2, 3)).copy()
+                        nodes.append(server.scene.add_line_segments(prefix + "/bones", points=_p, colors=_c, line_width=2.0))
+                if axes and Tw is not None:
+                    from scipy.spatial.transform import Rotation as _R
+                    _q = _R.from_matrix(Tw[:, :3, :3]).as_quat()
+                    _q = np.concatenate([_q[:, 3:4], _q[:, :3]], axis=-1)
+                    for j in range(len(jp)):
+                        nodes.append(server.scene.add_frame(
+                            prefix + f"/ax/{j:02d}", wxyz=tuple(_q[j]), position=tuple(jp[j]),
+                            axes_length=0.02, axes_radius=0.0012, show_axes=True, origin_radius=0.0))
+            if _cj == "bind (neutrals)":
+                _draw_j("/cross/sj", out.get("src_joint_pos"), positions["src_neu"], bones=True)
+                _draw_j("/cross/tj", out.get("tgt_joint_pos"), positions["tgt_neu"], bones=True)
+            elif _cj == "posed (tgt anim)":
+                _Tw = out.get("tgt_T_world")
+                _jp = _Tw[:, :3, 3] if _Tw is not None else None
+                _draw_j("/cross/tjp", _jp, positions["tgt_pred"], bones=True, axes=True, Tw=_Tw)
 
         method_tag = method.split()[0] if method != "hlbs (ours)" else "hlbs"
         if m is not None:
@@ -2635,7 +2674,7 @@ def main():
         g_show_gt, g_show_pred, g_show_err, g_show_helpers, g_mesh_opacity,
         g_w_mode, g_joint, g_soft_topk, g_soft_sat, g_palette,
         g_frame, g_show_axes, g_show_bones, g_show_gt_anim, g_err_color, g_err_cmap,
-        g_jpos_src, g_show_joints, g_bind_bones, g_cross_err,
+        g_jpos_src, g_show_joints, g_bind_bones, g_cross_err, g_cross_joints,
         g_tgt_id, g_pca_mode, g_show_src, g_show_tgt_neu,
     ]:
         h.on_update(lambda _e: render())
