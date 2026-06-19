@@ -823,6 +823,43 @@ class IdentityCache:
         return out
 
 
+_CUPY_CUSPARSE_SHIM_DONE = False
+
+
+def _install_cupy_cusparse_shim():
+    """Legacy operators.pkl pickled the Poisson LU solver (cupyx SuperLU) and a
+    MatDescriptor under the OLD cupy module path `cupy.cusparse`. Modern cupy
+    moved these to cupyx.* so unpickling raises ModuleNotFoundError /
+    AttributeError and the NFR/NFS baselines silently fall back to on-the-fly
+    operators (jitter + per-frame recompute). Register a lazy shim module that
+    resolves any legacy `cupy.cusparse.<name>` from where it now lives. Idempotent;
+    no-op if cupy isn't importable (e.g. CPU-only viser node)."""
+    global _CUPY_CUSPARSE_SHIM_DONE
+    if _CUPY_CUSPARSE_SHIM_DONE:
+        return
+    import sys as _sys, types as _types, importlib as _il
+    _cands = []
+    for _n in ('cupyx.cusparse', 'cupyx.scipy.sparse.linalg',
+               'cupyx.scipy.sparse', 'cupy'):
+        try:
+            _cands.append(_il.import_module(_n))
+        except Exception:
+            pass
+    if not _cands:
+        _CUPY_CUSPARSE_SHIM_DONE = True  # no cupy here; nothing to shim
+        return
+
+    class _Lazy(_types.ModuleType):
+        def __getattr__(self, k):
+            for _m in _cands:
+                if hasattr(_m, k):
+                    return getattr(_m, k)
+            raise AttributeError(k)
+
+    _sys.modules.setdefault('cupy.cusparse', _Lazy('cupy.cusparse'))
+    _CUPY_CUSPARSE_SHIM_DONE = True
+
+
 class BaselineRunner:
     """Lazy NFR / NFS loaders + per-(src,tgt) precompute cache for cross-
     retargeting baselines.
@@ -970,43 +1007,6 @@ class BaselineRunner:
     # the comparison eval used. Computing these on-the-fly under the current
     # numpy/igl stack yields slightly different DFN basis / Poisson operators
     # → frame-to-frame render jitter. Loading the validated set removes it.
-_CUPY_CUSPARSE_SHIM_DONE = False
-
-
-def _install_cupy_cusparse_shim():
-    """Legacy operators.pkl pickled the Poisson LU solver (cupyx SuperLU) and a
-    MatDescriptor under the OLD cupy module path `cupy.cusparse`. Modern cupy
-    moved these to cupyx.* so unpickling raises ModuleNotFoundError /
-    AttributeError and the NFR/NFS baselines silently fall back to on-the-fly
-    operators (jitter + per-frame recompute). Register a lazy shim module that
-    resolves any legacy `cupy.cusparse.<name>` from where it now lives. Idempotent;
-    no-op if cupy isn't importable (e.g. CPU-only viser node)."""
-    global _CUPY_CUSPARSE_SHIM_DONE
-    if _CUPY_CUSPARSE_SHIM_DONE:
-        return
-    import sys as _sys, types as _types, importlib as _il
-    _cands = []
-    for _n in ('cupyx.cusparse', 'cupyx.scipy.sparse.linalg',
-               'cupyx.scipy.sparse', 'cupy'):
-        try:
-            _cands.append(_il.import_module(_n))
-        except Exception:
-            pass
-    if not _cands:
-        _CUPY_CUSPARSE_SHIM_DONE = True  # no cupy here; nothing to shim
-        return
-
-    class _Lazy(_types.ModuleType):
-        def __getattr__(self, k):
-            for _m in _cands:
-                if hasattr(_m, k):
-                    return getattr(_m, k)
-            raise AttributeError(k)
-
-    _sys.modules.setdefault('cupy.cusparse', _Lazy('cupy.cusparse'))
-    _CUPY_CUSPARSE_SHIM_DONE = True
-
-
     _PRECOMPUTE_SUBDIRS = {
         'ict':  'ICT-audio2face/ICT/precompute-real-fullhead',
         'mf':   'multiface_align/precomputes',
