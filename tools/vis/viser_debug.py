@@ -432,7 +432,7 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
 
         topos["ict_real"] = TopoData(
             name="ict_real", topo="ict", id_names=real_ids,
-            faces=ict.faces.astype(np.uint32), nfs_dir=None,
+            faces=ict.faces.astype(np.uint32), nfs_dir=nfs_dir,
             geo_dist=geo_per_topo.get("ict"), supports_anim=True,
             exp_driver="ict_real_blend",
             _verts_provider=_real_neu, _ict_id_vecs=id_coeff_map, _ict_model=ict,
