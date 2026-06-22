@@ -90,6 +90,10 @@ def Options():
     # surface losses
     parser.add_argument("--lambda_normal", type=float, default=0.0,
                         help='Normal consistency loss (1 - cos(n_pred, n_gt))')
+    parser.add_argument("--normal_full_only", action='store_true',
+                        help='Compute recon-normal ONLY on full-mesh batches; skip on '
+                             'subsampled (permed) batches instead of kNN-PCA approximation. '
+                             'Scale --lambda_normal up (~4x for mix4) to compensate frequency.')
     parser.add_argument("--lambda_curvature", type=float, default=0.0,
                         help='Curvature loss (Laplacian difference)')
 
@@ -2107,7 +2111,7 @@ class HLBSTrainer:
                 # Pred normals must still be estimated since pred_lbs is the model output:
                 # use PCA-on-kNN (Hoppe '92, Klasing '09; PyTorch3D estimate_pointcloud_normals)
                 # with sign alignment against template normal src_n.
-                if opts.lambda_normal > 0:
+                if opts.lambda_normal > 0 and not (getattr(opts, 'normal_full_only', False) and is_permed):
                     if is_permed:
                         from pytorch3d.ops import estimate_pointcloud_normals
                         k = max(4, int(getattr(opts, 'normal_knn_k', 16)))
