@@ -178,6 +178,7 @@ class NFR_helper():
             model.global_pn.update_precomputes(dfn_info)
         model.float()
         model.to('cuda')
+        model.eval()  # CRITICAL: disable p=0.5 dropout in DiffusionNet encoder -> deterministic inference (was train-mode -> per-frame jitter)
         return model
 
     def get_img_feat(self, img):
