@@ -860,6 +860,78 @@ def _install_cupy_cusparse_shim():
     _CUPY_CUSPARSE_SHIM_DONE = True
 
 
+_BASELINE_ENV_CHECKED = False
+_BASELINE_ENV_MSG = ""
+
+
+def _ensure_baseline_env():
+    """One-time env guard for NFR/NFS baselines: need GPU + cupy + GPU-compiled
+    pytorch3d. Workspace reopens reset /opt/conda (pytorch3d -> editable CPU
+    build, cupy/tensorboard gone), so this self-heals like training's
+    _ensure_pytorch3d_gpu. Returns (ok, msg). cupy auto-install can take effect
+    mid-session; a pytorch3d rebuild needs a viser RESTART (C-ext already loaded)."""
+    global _BASELINE_ENV_CHECKED, _BASELINE_ENV_MSG
+    if _BASELINE_ENV_CHECKED:
+        return (_BASELINE_ENV_MSG == "OK"), _BASELINE_ENV_MSG
+    import sys, os, subprocess
+    import torch
+    _BASELINE_ENV_CHECKED = True
+    if not torch.cuda.is_available():
+        _BASELINE_ENV_MSG = "no GPU on this node -> NFR/NFS disabled (cupy operators are CUDA). Use a GPU viser node."
+        print(f"[baseline env] {_BASELINE_ENV_MSG}")
+        return False, _BASELINE_ENV_MSG
+    try:
+        import cupy, cupyx  # noqa: F401
+    except Exception:
+        print("[baseline env] cupy missing -> installing cupy-cuda12x (one-time)...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "cupy-cuda12x"], check=False)
+        try:
+            import cupy, cupyx  # noqa: F401
+        except Exception as e:
+            _BASELINE_ENV_MSG = f"cupy install failed ({e}) -> NFR/NFS operators unavailable."
+            print(f"[baseline env] {_BASELINE_ENV_MSG}")
+            return False, _BASELINE_ENV_MSG
+
+    def _p3d_gpu_ok():
+        try:
+            import torch as _t
+            from pytorch3d.ops import knn_points
+            a = _t.rand(1, 16, 3, device="cuda")
+            knn_points(a, a, K=3)
+            return True
+        except Exception:
+            return False
+
+    if not _p3d_gpu_ok():
+        print("[baseline env] pytorch3d not GPU-compiled -> rebuilding (one-time ~5-10min)...")
+        env = os.environ.copy()
+        env["FORCE_CUDA"] = "1"
+        try:
+            cc = torch.cuda.get_device_capability(0)
+            env["TORCH_CUDA_ARCH_LIST"] = f"{cc[0]}.{cc[1]}"
+        except Exception:
+            pass
+        for ch in ("/usr/local/cuda-12.4", "/usr/local/cuda"):
+            if os.path.isdir(ch):
+                env["CUDA_HOME"] = ch
+                env["PATH"] = ch + "/bin:" + env.get("PATH", "")
+                env["LD_LIBRARY_PATH"] = ch + "/lib64:" + env.get("LD_LIBRARY_PATH", "")
+                break
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "pytorch3d"], check=False, env=env)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "fvcore", "iopath"], check=False, env=env)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-build-isolation",
+                        "--no-cache-dir", "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.9"],
+                       check=False, env=env)
+        _BASELINE_ENV_MSG = ("pytorch3d rebuilt to GPU -> RESTART viser to use it "
+                             "(this process still has the CPU build loaded).")
+        print(f"[baseline env] {_BASELINE_ENV_MSG}")
+        return False, _BASELINE_ENV_MSG
+
+    _BASELINE_ENV_MSG = "OK"
+    print("[baseline env] GPU + cupy + pytorch3d(GPU) ready.")
+    return True, _BASELINE_ENV_MSG
+
+
 class BaselineRunner:
     """Lazy NFR / NFS loaders + per-(src,tgt) precompute cache for cross-
     retargeting baselines.
@@ -1171,6 +1243,16 @@ class BaselineRunner:
             finally:
                 stop.set()
                 th.join(timeout=0.2)
+
+        if method in ("nfr", "nfs"):
+            _ok, _msg = _ensure_baseline_env()
+            if not _ok:
+                _msg2 = f"[{method}] baseline unavailable: {_msg}"
+                print(_msg2)
+                if progress_cb is not None:
+                    try: progress_cb(_msg2)
+                    except Exception: pass
+                return None
 
         if method == "nfr":
             if self._nfr is None:
