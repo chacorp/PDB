@@ -1104,6 +1104,36 @@ class BaselineRunner:
         return self._precomp[ck]
 
     @torch.no_grad()
+    def _nfs_src_precomp(self, key, src_mesh):
+        """On-the-fly NFS src precompute (dfn_info, img) cached per src id, so
+        dfn is computed ONCE and reused across all frames (compute-once =
+        official design; eliminates per-frame recompute + jitter)."""
+        ck = ("nfs_src", *key)
+        if ck in self._precomp:
+            return self._precomp[ck]
+        import utils.nfr_utils as nfr_utils
+        dfn = nfr_utils.get_dfn_info(src_mesh, map_location=self.device)
+        img = self._nfs.renderer.render_img(src_mesh).float().to(self.device)
+        self._precomp[ck] = (dfn, img)
+        return self._precomp[ck]
+
+    def _nfs_tgt_precomp(self, key, tgt_mesh):
+        """On-the-fly NFS tgt precompute (dfn_info, img, operators) cached per
+        tgt id. operators=get_mesh_operators -> cupy SuperLU (needs cupy+GPU)."""
+        ck = ("nfs_tgt", *key)
+        if ck in self._precomp:
+            return self._precomp[ck]
+        import utils.nfr_utils as nfr_utils
+        try:
+            from utils.mesh_utils import get_mesh_operators
+        except Exception as e:
+            raise RuntimeError(f"NFS baseline needs cupy+GPU (get_mesh_operators import: {e})")
+        dfn = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
+        img = self._nfs.renderer.render_img(tgt_mesh).float().to(self.device)
+        ops = get_mesh_operators(tgt_mesh)
+        self._precomp[ck] = (dfn, img, ops)
+        return self._precomp[ck]
+
     def retarget(self, method: str, src_td, src_idx, src_neu_v, src_def_v,
                  tgt_td, tgt_idx, tgt_neu_v,
                  progress_cb=None) -> np.ndarray | None:
@@ -1190,13 +1220,25 @@ class BaselineRunner:
                         tgt_neu_v, tgt_td.faces, tgt_dfn, tgt_img, tgt_ops),
                 )
             else:
-                print(f"[NFS precompute] ON-THE-FLY src={src_td.topo}/{src_idn} "
-                      f"tgt={tgt_td.topo}/{tgt_idn} — may jitter / 'no precomputes'")
+                # No disk precompute: compute dfn/img/operators ON-THE-FLY but
+                # ONCE per id (cached in self._precomp) and reuse across all
+                # frames via the same precompute path. compute-once = official
+                # design -> no per-frame recompute, no jitter. (operators need
+                # cupy+GPU; on a CPU node this raises -> NFS needs a GPU node.)
                 src_mesh, tgt_mesh = self._meshes(
                     src_neu_v, src_td.faces, tgt_neu_v, tgt_td.faces)
+                src_key = (src_td.name, src_idx)
+                tgt_key = (tgt_td.name, tgt_idx)
+                if ("nfs_tgt", *tgt_key) not in self._precomp:
+                    print(f"[NFS precompute] ON-THE-FLY(once) src={src_td.topo}/{src_idn} "
+                          f"tgt={tgt_td.topo}/{tgt_idn} — computing dfn/img/operators (cached)")
+                s_dfn, s_img       = self._nfs_src_precomp(src_key, src_mesh)
+                t_dfn, t_img, t_ops = self._nfs_tgt_precomp(tgt_key, tgt_mesh)
                 pred = _with_ticker(
-                    f"NFS: inferring (no precompute — full pipeline) V={tgt_neu_v.shape[0]}",
-                    lambda: nfs.inference(verts, src_mesh, tgt_mesh),
+                    f"NFS: inferring (on-the-fly precompute, cached) {src_td.name}#{src_idx}->{tgt_td.name}#{tgt_idx}",
+                    lambda: self._nfs_forward_precompute(
+                        nfs, verts, src_td.faces, s_dfn, s_img,
+                        tgt_neu_v, tgt_td.faces, t_dfn, t_img, t_ops),
                 )
             if pred.dim() == 4:
                 pred = pred[0]
