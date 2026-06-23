@@ -1245,12 +1245,12 @@ class BaselineRunner:
                 th.join(timeout=0.2)
 
         if method in ("nfr", "nfs"):
-            _ok, _msg = _ensure_baseline_env()
+            _ok, _envmsg = _ensure_baseline_env()
             if not _ok:
-                _msg2 = f"[{method}] baseline unavailable: {_msg}"
-                print(_msg2)
+                _envmsg2 = f"[{method}] baseline unavailable: {_envmsg}"
+                print(_envmsg2)
                 if progress_cb is not None:
-                    try: progress_cb(_msg2)
+                    try: progress_cb(_envmsg2)
                     except Exception: pass
                 return None
 
