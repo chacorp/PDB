@@ -96,8 +96,8 @@ def plateau_hat_r(
 def plateau_hat_points(
         X: torch.Tensor,
         C: torch.Tensor=torch.tensor([[0.0, 0.0, 0.5]]), 
-        r0: float=1.0,
-        r1: float=2.25,
+        r0: float=1.25, # 1.0
+        r1: float=2.5,  # 2.25
         kind: str = "quintic",
         normalize=None,
         eps=1e-12

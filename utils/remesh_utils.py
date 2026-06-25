@@ -260,6 +260,8 @@ def calc_norm_torch(batch_v, face, at='face'):
     Returns:
         norm | face_norm (torch.tensor): corresponding normal vector
     """
+    at=at.lower()
+    
     B_S = batch_v.shape[0]
     N_V = batch_v.shape[1]
 
@@ -268,7 +270,7 @@ def calc_norm_torch(batch_v, face, at='face'):
     cross = torch.linalg.cross(span[..., 0, :], span[..., 1, :], dim=-1) # --> [B, F, 3]
     face_norm = torch.nn.functional.normalize(cross, p=2, dim=-1)  # --> [B, F, 3]
     
-    if at == 'face':
+    if at == 'triangle' or at == 'tri' or at == 'faces' or at == 'face' or at=='f':
         return face_norm
     else: # at == 'vertex'
         idx = torch.cat([face[:, 0], face[:, 1], face[:, 2]], dim=0)

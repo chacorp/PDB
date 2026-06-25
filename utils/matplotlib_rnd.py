@@ -292,8 +292,8 @@ def vis_mesh_key_weight(
     V = normalize_homogeneous(verts)
     
     view  = translate(0, 0, -4.5)
-    proj  = perspective(55, 1.0, 1.0, 100.0)
-#     proj = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
+#     proj  = perspective(55, 1.0, 1.0, 100.0)
+    proj = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
     MV   = proj @ view
     
     
@@ -358,7 +358,10 @@ def vis_mesh_all_cage_weights(
     mesh_scale=1.0,
     mesh_trans=np.array([0,0.0,0]),
     light_dir=np.array([0,0,1]),
-    view_yrots=(0, 90, 180)
+    view_yrots=(0, 90, 180),
+    save=False,
+    logdir='.', 
+    name='test'
 ):
     """
     Visualizing per cage weight for each face (triangle).
@@ -500,7 +503,13 @@ def vis_mesh_all_cage_weights(
                 ax.legend(handles=handles, bbox_to_anchor=(1.02, 1.0), loc='upper left',
                           borderaxespad=0., fontsize=7, ncol=1)
 
-    plt.show()
+    # plt.show()
+    if save:
+        plt.savefig('{}/{}.png'.format(logdir, name), bbox_inches = 'tight')
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
 
 def plot_image_array(Vs, 
                      Fs, 

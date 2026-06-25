@@ -60,6 +60,12 @@ def distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, re
     #     import pdb;pdb.set_trace()
     return loss
 
+# def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02):
+#     dist = torch.sqrt(((mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]) ** 2).sum(dim=-1) + 1e-8)
+#     penalty = torch.relu(dist - tau) ** 2
+#     loss = (coordinate_weight * penalty).sum(dim=-1).mean()
+#     return loss
+    
 def distance_loss(
         mesh_vertices,
         cage_vertices,
@@ -81,7 +87,7 @@ def distance_loss(
     mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
     cage_vertices_expand = cage_vertices[:,None]
     
-    mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand)
+    mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand).sum(dim=-1)
 
     #w = torch.softmax((coordinate_weight / tau), dim=-1)
     w = coordinate_weight
