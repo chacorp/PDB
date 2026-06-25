@@ -42,7 +42,7 @@ from utils.mesh_utils import calc_norm_torch
 
 from models.baseline import CageNet
 from models.NGBC import NeuralGeneralizedBarycentricCoordinate
-from utils.loss_utils import *
+from utils.loss_utils import * #distance_loss
 
 
 # sys.path = list(set(sys.path))
@@ -99,6 +99,8 @@ def Options():
     parser.set_defaults(use_laplacian=False)
     parser.add_argument("--use_normal_loss",dest='use_normal_loss', action='store_true')
     parser.set_defaults(use_normal_loss=False)
+    parser.add_argument("--use_dist_loss",dest='use_dist_loss', action='store_true')
+    parser.set_defaults(use_dist_loss=False)
 
     
     parser.add_argument("--no_t_mask",dest='no_t_mask', action='store_true')
@@ -114,6 +116,8 @@ def Options():
     parser.set_defaults(use_data3=False)
     parser.add_argument("--use_data9",dest='use_data9', action='store_true')
     parser.set_defaults(use_data9=False)
+    parser.add_argument("--use_data8",dest='use_data8', action='store_true')
+    parser.set_defaults(use_data8=False)
     parser.add_argument("--data_toggle",dest='data_toggle', action='store_true')
     parser.set_defaults(data_toggle=False)
 
@@ -1024,6 +1028,22 @@ class Trainer():
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}]\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}]\n")
 
+    def random_trans_scale(self, template, vertices):
+        """
+            not used
+        """
+        ## Random Augmentation ---------------------------------------------------------
+        trans, scale = 0.0, 1.0
+        if self.opts.data_rand_trans:
+            t_range = 0.1
+            trans = (torch.rand((1, 3))*t_range - t_range*0.5)
+        if self.opts.data_rand_scale:
+            scale = torch.rand((1)).repeat(3) * 0.4 + 0.8
+        template = template * scale + trans
+        vertices = vertices * scale + trans
+        ## -----------------------------------------------------------------------------
+        
+        return template, vertices, scale, trans
     
     def train_v5(self, epochs):
         self.optimizer = torch.optim.AdamW(
@@ -1147,7 +1167,8 @@ class Trainer():
             "recon-neu": self.opts.lambda_vert,
             "exp-z": self.opts.lambda_vert * 0.5,
             "exp-v": self.opts.lambda_vert,
-            "shape": self.opts.lambda_vert,            
+            "shape": self.opts.lambda_vert,  
+            "dist": 0.5,          
             # "pou": self.opts.lambda_vert,
             # symm 
         }
@@ -1175,8 +1196,10 @@ class Trainer():
                 "exp-z": 0.0,
                 "exp-v": 0.0,
                 "shape": 0.0,
-                "total": 0.0
+                "total": 0.0,
             }
+            if self.opts.use_dist_loss:
+                running_losses['dist']=0.0
             if self.opts.pou_loss:
                 running_losses['pou']=0.0
             if self.opts.use_laplacian:
@@ -1195,14 +1218,18 @@ class Trainer():
             for index, batch in pbar:
                 self.optimizer.zero_grad()
                 
+                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
+                
                 with torch.no_grad():
                     ## sampling points with probability
                     # margin = 0.8
                     # _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
-                        
+                    # batch.template, batch.vertices, scale, trans = self.random_trans_scale(batch.template, batch.vertices)
+                    
                     ## random sampling and random permutation
                     N = batch.template.shape[1]
-                    use_perm = torch.rand(1) > 0.7
+                    use_perm = torch.rand(1) > 0.3
                     # use_perm= False
                     if use_perm:
                         N_range = N-torch.randint(100, N//6, (1,)).item()
@@ -1224,8 +1251,15 @@ class Trainer():
                 ## B: number of batch, Nv : number of vertices, Nc: number of control vertices
                 ## weight prediction: (B, Nv, Nc)
                 ## key_d prediction:  (B, Nc, 3+3) [deformed cage]
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, t_mask, pred_key_weight = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, \
+                pred_source, t_mask, pred_key_weight, pred_cage_s, pred_cage_d = self.model(
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
+                    batch.mesh_data, epoch=epoch
+                )
+                #if mesh_data=='ict':
+                _, _, _, exp_z_full, \
+                _, _, _, pred_cage_s_full, pred_cage_d_full = self.model(
+                    batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
                     batch.mesh_data, epoch=epoch
                 )
                 # ------------------------------------------------------------------------------------------------
@@ -1251,8 +1285,6 @@ class Trainer():
                 # ------------------------------------------------------------------------------------------------
                 
                 # loss -------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
                 
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
@@ -1269,6 +1301,20 @@ class Trainer():
                     # should be static on elsewhere
                     loss_dict['recon-def'] += F.mse_loss(
                         batch_template_v*inv_t_mask, pred_vertices*inv_t_mask
+                    )
+
+                # loss_dict['dist'] = distance_loss(
+                #     batch_template_v, pred_cage_s, pred_key_weight
+                # )
+                #+ distance_loss(
+                #    batch_vertices_v, pred_cage_d, pred_key_weight
+                #)
+                # if mesh_data =='ict':
+                if self.opts.use_dist_loss:
+                    loss_dict['dist'] = F.mse_loss(
+                        pred_cage_s_full, pred_cage_s
+                    ) + F.mse_loss(
+                        pred_cage_d_full, pred_cage_d
                     )
 
                 # directly hanging mesh vertex position ----------------------------------------------------------
@@ -1492,7 +1538,8 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _, _ = self.model(
+                    pred_vertices, recon_vertices, recon_source, exp_z, \
+                    pred_source, _, _, _, _ = self.model(
                         batch.template, batch.vertices, 
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
@@ -1788,7 +1835,8 @@ class Trainer():
                 ## B: number of batch, Nv : number of vertices, Nc: number of control vertices
                 ## weight prediction: (B, Nv, Nc)
                 ## key_d prediction:  (B, Nc, 3+3) [deformed cage]
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, t_mask, pred_key_weight = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, \
+                pred_source, t_mask, pred_key_weight, key_s, key_d = self.model(
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
@@ -2022,7 +2070,8 @@ class Trainer():
                 
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
-                    pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _, _ = self.model(
+                    pred_vertices, recon_vertices, recon_source, exp_z, \
+                    pred_source, _, _, _, _ = self.model(
                         batch.template, batch.vertices, 
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
