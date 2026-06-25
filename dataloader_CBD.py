@@ -32,7 +32,8 @@ class EvalDataset(data.Dataset):
                  data_name='coma',
                  toggle=True,
                  ict_cap_id_num=2, # 0~20
-                 ict_cap_exp_num=0 # 0 or 1
+                 ict_cap_exp_num=0, # 0 or 1
+                 max_id=-1,         # max number of identities to use (-1 = all)
                 ):
         super().__init__()
         self.opts = opts
@@ -40,7 +41,7 @@ class EvalDataset(data.Dataset):
         self.mode = 'test'
         
         #data_name_list = ['voca','mf_SEN','biwi','coma','mf_ROM']
-        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict','ict-cap']
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict','ict-cap','ict_face_only'] # 0 1 2 3 4 5 6 7
         self.data_name = data_name
         
         d_mask = [dn==data_name for dn in data_name_list]
@@ -75,6 +76,9 @@ class EvalDataset(data.Dataset):
             self.ict_face_model=ICT_face_model()
             self.ict_len = len(self.iden_vecs)
             self.ict_exp_len = len(self.expression_vecs)
+            if max_id > 0 and self.ict_len > max_id:
+                self.iden_vecs = self.iden_vecs[:max_id]
+                self.ict_len = max_id
             self.len = self.ict_len * self.ict_exp_len
             self.get_data = self.get_ict
 
@@ -82,7 +86,7 @@ class EvalDataset(data.Dataset):
             from utils.remesh_utils import ICT_face_model
             self.ict_face_model=ICT_face_model()
             self.iden_vecs = torch.load(f'{__abs_path__}/ict_face_pt/ict_id_vecs_test.pt').numpy()
-            
+
             if ict_cap_id_num > -1:
                 self.iden_vecs = self.iden_vecs[ict_cap_id_num]
             else:
@@ -92,9 +96,22 @@ class EvalDataset(data.Dataset):
                 self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240318_MySlate_922_exp_coeffs.npy')
             else:
                 self.expression_vecs = np.load(f'{__abs_path__}/_cap/20240325_MySlate_924_exp_coeffs.npy')
-            
+
             self.len = len(self.expression_vecs)
             self.get_data = self.get_ict_cap
+
+        if self.data_name=='ict_face_only':
+            from utils.remesh_utils import ICT_face_model
+            self.iden_vecs = torch.load(f'{__abs_path__}/ict_face_pt/ict_id_vecs_test.pt').numpy()
+            self.expression_vecs = np.load(f'{__abs_path__}/data/ICT_live_100/expression_vecs_test.npy')
+            self.ict_face_model = ICT_face_model(face_only=True)
+            self.ict_len = len(self.iden_vecs)
+            self.ict_exp_len = len(self.expression_vecs)
+            if max_id > 0 and self.ict_len > max_id:
+                self.iden_vecs = self.iden_vecs[:max_id]
+                self.ict_len = max_id
+            self.len = self.ict_len * self.ict_exp_len
+            self.get_data = self.get_ict_face_only
             
             
         if self.data_name=='voca':
@@ -102,6 +119,8 @@ class EvalDataset(data.Dataset):
             with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.voca_mesh = pickle.load(f)
             self.get_data = self.get_voca
+            self.voca_datalist = self._limit_by_id(self.voca_datalist, self.voca_data_split[self.mode], max_id)
+            self.len = len(self.voca_datalist)
             
         
         if self.data_name=='biwi':
@@ -110,12 +129,16 @@ class EvalDataset(data.Dataset):
             with open(f"{self.template_data_basedir}/BIWI_align_deci/templates_align_deci.pkl",'rb') as f:
                 self.biwi_mesh = pickle.load(f) # meshes
             self.get_data = self.get_biwi
+            self.biwi_datalist = self._limit_by_id(self.biwi_datalist, self.biwi_data_split[self.mode], max_id)
+            self.len = len(self.biwi_datalist)
         
         if self.data_name=='mf_SEN':
             self.mf_SEN_std = np.load(f"{__abs_path__}/utils/mf/standardization.npy", allow_pickle=True).item()
             with open(f"{self.template_data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
                 self.mf_SEN_mesh = pickle.load(f)
             self.get_data = self.get_mf_SEN
+            self.mf_SEN_datalist = self._limit_by_id(self.mf_SEN_datalist, self.mf_data_split[self.mode], max_id)
+            self.len = len(self.mf_SEN_datalist)
             # adj_mat = igl.adjacency_matrix(self.mf_SEN_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -128,6 +151,8 @@ class EvalDataset(data.Dataset):
             with open(f"{self.template_data_basedir}/VOCA-COMA/voca_templates.pkl",'rb') as f:
                 self.coma_mesh = pickle.load(f)
             self.get_data = self.get_coma
+            self.coma_datalist = self._limit_by_id(self.coma_datalist, self.voca_data_split[self.mode], max_id)
+            self.len = len(self.coma_datalist)
             # adj_mat = igl.adjacency_matrix(self.coma_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -140,6 +165,8 @@ class EvalDataset(data.Dataset):
             with open(f"{self.template_data_basedir}/multiface_align/mf_templates.pkl",'rb') as f:
                 self.mf_ROM_mesh = pickle.load(f)
             self.get_data = self.get_mf_ROM
+            self.mf_ROM_datalist = self._limit_by_id(self.mf_ROM_datalist, self.mf_data_split[self.mode], max_id)
+            self.len = len(self.mf_ROM_datalist)
             # adj_mat = igl.adjacency_matrix(self.mf_ROM_mesh["face"])
             # degree = np.asarray(adj_mat.sum(axis=1)).squeeze()
             # adj_mat_norm = scipy.sparse.diags(1/degree) @ adj_mat
@@ -159,7 +186,15 @@ class EvalDataset(data.Dataset):
     def __len__(self):
         return self.len
         #return self.len_anim_all
-    
+
+    @staticmethod
+    def _limit_by_id(datalist, split_ids, max_id):
+        """Return datalist filtered to paths belonging to the first max_id IDs."""
+        if max_id <= 0 or max_id >= len(split_ids):
+            return datalist
+        keep = set(split_ids[:max_id])
+        return [p for p in datalist if any(id_name in p for id_name in keep)]
+
     def load_data_txt(self, txt_file):
         with open(txt_file, 'r') as f:
             tmp = f.readlines()
@@ -286,30 +321,56 @@ class EvalDataset(data.Dataset):
         
         return vertices, template, vertices_normal, template_normal, faces
 
-    def get_ict_cap(self, index):        
+    def get_ict_cap(self, index):
         #id_coeff=np.zeros((100,))
         id_coeff = self.iden_vecs
-        
+
         exp_coeff = self.expression_vecs[index]
         faces = self.ict_face_model.faces
-        
+
         vertices, template, _ = self.ict_face_model.apply_coeffs(
             id_coeff, exp_coeff, return_all=True, #region=region_dice
-        ) 
+        )
         vertices=vertices[0]
         template=template[0]
-        
+
         template_normal = igl.per_vertex_normals(template, faces)
         vertices_normal = igl.per_vertex_normals(vertices, faces)
-        
+
         template = torch.tensor(template).float()
         vertices = torch.tensor(vertices).float()
         faces = torch.tensor(faces).long()
         template_normal = torch.tensor(template_normal).float()
         vertices_normal = torch.tensor(vertices_normal).float()
-        
+
         return vertices, template, vertices_normal, template_normal, faces
-        
+
+    def get_ict_face_only(self, index):
+        id_index = index // self.ict_exp_len
+        index = index % self.ict_exp_len
+
+        id_coeff  = self.iden_vecs[id_index]
+        exp_coeff = self.expression_vecs[index]
+        faces = self.ict_face_model.faces
+
+        # region=1: face_only region (9409 verts)
+        vertices, template, _ = self.ict_face_model.apply_coeffs(
+            id_coeff, exp_coeff, return_all=True, region=1
+        )
+        vertices = vertices[0]
+        template = template[0]
+
+        template_normal = igl.per_vertex_normals(template, faces)
+        vertices_normal = igl.per_vertex_normals(vertices, faces)
+
+        template = torch.tensor(template).float()
+        vertices = torch.tensor(vertices).float()
+        faces = torch.tensor(faces).long()
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+
+        return vertices, template, vertices_normal, template_normal, faces
+
     def get_voca(self, index):
         file_path=self.voca_datalist[index]
         id_name = file_path.split('/')[6]
@@ -361,8 +422,8 @@ class EvalDataset(data.Dataset):
         template = torch.tensor(template_np).float()
         
         vertices_np = np.load(file_path)
-        R, t, _ = procrustes_LDM(vertices_np, template_np)
-        vertices_np = vertices_np @ R.T + t
+        # R, t, _ = procrustes_LDM(vertices_np, template_np)
+        # vertices_np = vertices_np @ R.T + t
         vertices = torch.tensor(vertices_np).float()
         
         # faces_np = self.mf_SEN_std['new_f']
@@ -410,8 +471,8 @@ class EvalDataset(data.Dataset):
         # vertices_np = np.load(file_path)
         # vertices = torch.tensor(vertices_np).float()
         vertices_np = np.load(file_path)
-        R, t, _ = procrustes_LDM(vertices_np, template_np)
-        vertices_np = vertices_np @ R.T + t
+        # R, t, _ = procrustes_LDM(vertices_np, template_np)
+        # vertices_np = vertices_np @ R.T + t
         vertices = torch.tensor(vertices_np).float()
         
         # faces_np = self.mf_ROM_std['new_f']
@@ -470,9 +531,9 @@ class CBDDataset(data.Dataset):
             use_ict=False
             use_ict_narrow=False
         elif self.opts.use_data1:
-            use_voca=False
-            use_coma=False
-            use_biwi=False
+            use_voca=True
+            use_coma=True
+            use_biwi=True
             use_mf_SEN=True
             use_mf_ROM=True
             use_ict=False
@@ -486,19 +547,19 @@ class CBDDataset(data.Dataset):
             use_ict=True
             use_ict_narrow=False
         elif self.opts.use_data3:
+            use_voca=True
+            use_coma=True
+            use_biwi=True
+            use_mf_SEN=True
+            use_mf_ROM=True
+            use_ict=True
+            use_ict_narrow=False
+        elif self.opts.use_data8:
             use_voca=False
             use_coma=True
             use_biwi=False
             use_mf_SEN=True
             use_mf_ROM=True
-            use_ict=True
-            use_ict_narrow=False
-        elif self.opts.use_data9:
-            use_voca=False
-            use_coma=False
-            use_biwi=False
-            use_mf_SEN=False
-            use_mf_ROM=False
             use_ict=True
             use_ict_narrow=True
         elif self.opts.use_data9:
@@ -1257,6 +1318,11 @@ class CBDDataset(data.Dataset):
             raise ValueError('got wrong number')
             
         mesh_data = torch.tensor(mesh_data)
+        
+#         (template, deformed, faces, template_normal, deformed_normal, seg, exp_coeff, id_name) = datas
+
+#         template, deformed = self.random_trans_scale(template, deformed)
+        
         return (*datas, mesh_data)
     
     def get_slice_idx(self, F_idx, WS):
