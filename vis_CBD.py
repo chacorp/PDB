@@ -19,14 +19,9 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from dataloader_CBD import (
-    CBDdataSampler,
-    CBDDataset,
     CBD_collate_wrapper,
     EvalDataset,
-    CBDDataBatch_eval,
     CBD_collate_wrapper_eval,
-    # CBDDataset2,
-    # CBD_collate_wrapper2,
 )
 
 # from utils.mesh_utils import Renderer #, calc_cent
@@ -38,13 +33,13 @@ from utils.remesh_utils import calc_norm_torch
 # from utils.exp_utils import Model_mk1, Model_mk3_1
 # from utils.remesh_utils import compute_MVC_vertexwise, apply_MVC_weights_batch, build_padded_neighbors, pca_normal_axis_vectorized
 
-from models.baseline import CageNet
-from models.NGBC import (
-#     NeuralGeneralizedBarycentricCoordinate, 
-    NeuralGeneralizedBarycentricCoordinate5,
-#     NeuralGeneralizedBarycentricCoordinate8,
-#     NeuralGeneralizedBarycentricCoordinate55
-)
+# from models.baseline import CageNet
+# from models.NGBC import (
+# #     NeuralGeneralizedBarycentricCoordinate, 
+#     NeuralGeneralizedBarycentricCoordinate5,
+# #     NeuralGeneralizedBarycentricCoordinate8,
+# #     NeuralGeneralizedBarycentricCoordinate55
+# )
 from utils.remesh_utils import ICT_face_model
 import torch.multiprocessing as mp
 
@@ -244,10 +239,17 @@ class Pipeline():
 #             print('no ckpt found, training from scratch!')
         
     def get_mesh(self, selection, dataset, SELECT_MESH):
-        if selection=='ict'or selection=='ict-cap':
+        if selection=='ict' or selection=='ict-cap':
             ict_face = ICT_face_model()
             id_vecs = torch.load(f'./ict_face_pt/ict_id_vecs_test.pt').numpy()
             id_disps = ict_face.get_id_disp(id_vecs[SELECT_MESH])
+            mesh_v = ict_face.neutral_verts.squeeze() + id_disps.squeeze()
+
+            return mesh_v, ict_face.faces, f'm{SELECT_MESH:02d}'
+        elif selection=='ict_face_only':
+            ict_face = ICT_face_model(face_only=True)
+            id_vecs = torch.load(f'./ict_face_pt/ict_id_vecs_test.pt').numpy()
+            id_disps = ict_face.get_id_disp(id_vecs[SELECT_MESH], region=1)
             mesh_v = ict_face.neutral_verts.squeeze() + id_disps.squeeze()
 
             return mesh_v, ict_face.faces, f'm{SELECT_MESH:02d}'
@@ -277,18 +279,24 @@ class Pipeline():
         
     def save_test_frames(self):
         src_tgt_set_list = [
-            [4, 12, 6, 9, 0],
-            [4, 12, 4, 12, 0],
-            [4, 12, 4, 0, 0],
-            [4, 12, 6, 0, 0],
-            [6, 0, 6, 0, 1],
-            [6, 0, 6, 3, 1],
-            [6, 0, 6, 9, 1],
-            [6, 2, 6, 2, 0],
-            [6, 2, 6, 0, 0],
-            [6, 2, 6, 5, 0],
-            [6, 0, 4, 12, 1],
-            [6, 2, 4, 12, 0],
+#             [4, 12, 6, 1, 0], # mf_ROM -> ict-cap
+#             [4, 12, 7, 1, 0], # mf_ROM -> ict_face_only
+#             [4, 12, 3, 6, 0], # mf_ROM -> coma
+            [4, 12, 1, 12, 0], # mf_ROM -> biwi
+#             [4, 12, 4, 12, 0],
+#             [4, 12, 4, 0, 0],
+#             [4, 12, 6, 0, 0],
+#             [6, 0, 6, 0, 1],
+#             [6, 0, 6, 3, 1],
+#             [6, 0, 6, 9, 1],
+#             [6, 0, 3, 6, 1],
+#             [6, 0, 3, 8, 1],
+#             [6, 0, 2, 12, 1],
+#             [6, 2, 6, 2, 0],
+#             [6, 2, 6, 0, 0],
+#             [6, 2, 6, 5, 0],
+#             [6, 0, 4, 12, 1],
+#             [6, 2, 4, 12, 0],
         ]
         for src_tgt_set in src_tgt_set_list:
             print('selection: ',*src_tgt_set)
@@ -313,7 +321,7 @@ class Pipeline():
         ##########################################################################################################
         
         
-        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict','ict-cap'] # 0 1 2 3 4 5 6
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict','ict-cap','ict_face_only'] # 0 1 2 3 4 5 6 7
         
         src_selection = data_name_list[SRC_SELECT_DATA]
         
@@ -430,7 +438,7 @@ class Pipeline():
         os.makedirs(self.opts.log_dir_vert, exist_ok=True)        
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
         
-        SELF_RETARGET = SRC_SELECT_MESH==TGT_SELECT_mesh
+        SELF_RETARGET = (SRC_SELECT_DATA == TGT_SELECT_DATA) and (SRC_SELECT_MESH == TGT_SELECT_mesh)
         if SELF_RETARGET and self.opts.save_gt:
             GT_file_name = f'GT-{src_selection}_test-to-{tgt_selection}_test_{EXP_NUM:02d}'
             GT_log_dir = './vis_CBD/'+ GT_file_name
@@ -495,7 +503,7 @@ class Pipeline():
             losses_val["MSE-out"] = 0.0
             
         #mesh_data = src_dataset.data_name
-        SELF_RETARGET = SRC_SELECT_MESH==TGT_SELECT_mesh
+        SELF_RETARGET = (SRC_SELECT_DATA == TGT_SELECT_DATA) and (SRC_SELECT_MESH == TGT_SELECT_mesh)
         
         if self.opts.version==0:
             if opts.NFR==False:
@@ -723,92 +731,92 @@ class Pipeline():
                             for b_idx in range(CurrBS):
                                 save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
                                 np.save(save_out_name, pred_outputs_np[b_idx])
-            else:
-                ## from NFR checkpoint
-                if SELF_RETARGET:
-                    print('self-retargeting! (src == tgt)')
+            # else:
+            #     ## from NFR checkpoint
+            #     if SELF_RETARGET:
+            #         print('self-retargeting! (src == tgt)')
 
-                    pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
-                    for index, batch in pbar:
-                        if index==0:
-                            src_verts = batch.template[0]
-                            src_faces = batch.faces[0]
-                            src_m = trimesh.Trimesh(
-                                vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
-                            )
+            #         pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+            #         for index, batch in pbar:
+            #             if index==0:
+            #                 src_verts = batch.template[0]
+            #                 src_faces = batch.faces[0]
+            #                 src_m = trimesh.Trimesh(
+            #                     vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+            #                 )
 
-                            src_img = self.model.renderer.render_img(src_m).float().to(device)
-                            src_img_feat = self.model.get_img_feat(src_img)[None]
-                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                            src_operators = self.model.get_mesh_operators(src_m)
-                        else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:            
-                                src_verts = batch.template[0]
-                                src_faces = batch.faces[0]
-                                src_m = trimesh.Trimesh(
-                                    vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
-                                )
+            #                 src_img = self.model.renderer.render_img(src_m).float().to(device)
+            #                 src_img_feat = self.model.get_img_feat(src_img)[None]
+            #                 src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+            #                 src_operators = self.model.get_mesh_operators(src_m)
+            #             else:
+            #                 if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:            
+            #                     src_verts = batch.template[0]
+            #                     src_faces = batch.faces[0]
+            #                     src_m = trimesh.Trimesh(
+            #                         vertices=src_verts.cpu().numpy(), faces=src_faces.cpu().numpy()
+            #                     )
 
-                                src_img = self.model.renderer.render_img(src_m).float().to(device)
-                                src_img_feat = self.model.get_img_feat(src_img)[None]
-                                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                                src_operators = self.model.get_mesh_operators(src_m)
+            #                     src_img = self.model.renderer.render_img(src_m).float().to(device)
+            #                     src_img_feat = self.model.get_img_feat(src_img)[None]
+            #                     src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+            #                     src_operators = self.model.get_mesh_operators(src_m)
 
-                        with torch.no_grad():
-                            inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
+            #             with torch.no_grad():
+            #                 inputs_v = self.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
 
-                            ## get expression
-                            self.model.model.update_precomputes(src_dfn_info)
-                            pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
-                            pred_outputs, _, _ = self.model.calc_new_mesh(
-                                src_verts, src_faces, pred_exp, src_operators, src_dfn_info, src_img
-                            )
-                            pred_outputs_np = pred_outputs.detach().cpu().numpy()
+            #                 ## get expression
+            #                 self.model.model.update_precomputes(src_dfn_info)
+            #                 pred_exp = self.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
+            #                 pred_outputs, _, _ = self.model.calc_new_mesh(
+            #                     src_verts, src_faces, pred_exp, src_operators, src_dfn_info, src_img
+            #                 )
+            #                 pred_outputs_np = pred_outputs.detach().cpu().numpy()
 
-                            CurrBS=pred_outputs_np.shape[0]
-                            for b_idx in range(CurrBS):
-                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
-                                np.save(save_out_name, pred_outputs_np[b_idx])
-                else:
-                    print('cross-retargeting!')
-                    tgt_m = trimesh.Trimesh(vertices=tgt_v, faces=tgt_f)
-                    tgt_dfn_info = nfr_utils.get_dfn_info(tgt_m, map_location=device)
-                    tgt_verts = tgt_v_th[0]
-                    tgt_faces = torch.from_numpy(tgt_m.faces).to(device)
-                    tgt_img = trainer.model.renderer.render_img(tgt_m).float().to(device)
-                    tgt_operators = trainer.model.get_mesh_operators(tgt_m)
+            #                 CurrBS=pred_outputs_np.shape[0]
+            #                 for b_idx in range(CurrBS):
+            #                     save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
+            #                     np.save(save_out_name, pred_outputs_np[b_idx])
+            #     else:
+            #         print('cross-retargeting!')
+            #         tgt_m = trimesh.Trimesh(vertices=tgt_v, faces=tgt_f)
+            #         tgt_dfn_info = nfr_utils.get_dfn_info(tgt_m, map_location=device)
+            #         tgt_verts = tgt_v_th[0]
+            #         tgt_faces = torch.from_numpy(tgt_m.faces).to(device)
+            #         tgt_img = trainer.model.renderer.render_img(tgt_m).float().to(device)
+            #         tgt_operators = trainer.model.get_mesh_operators(tgt_m)
                     
-                    pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
-                    for index, batch in pbar:
-                        if index==0:
-                            src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+            #         pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+            #         for index, batch in pbar:
+            #             if index==0:
+            #                 src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
 
-                            src_img = trainer.model.renderer.render_img(src_m).float().to(device)
-                            src_img_feat = trainer.model.get_img_feat(src_img)[None]
-                            src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
-                        else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
-                                src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
+            #                 src_img = trainer.model.renderer.render_img(src_m).float().to(device)
+            #                 src_img_feat = trainer.model.get_img_feat(src_img)[None]
+            #                 src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+            #             else:
+            #                 if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+            #                     src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
 
-                                src_img = trainer.model.renderer.render_img(src_m).float().to(device)
-                                src_img_feat = trainer.model.get_img_feat(src_img)[None]
-                                src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
+            #                     src_img = trainer.model.renderer.render_img(src_m).float().to(device)
+            #                     src_img_feat = trainer.model.get_img_feat(src_img)[None]
+            #                     src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
 
-                        with torch.no_grad():
-                            inputs_v = trainer.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
+            #             with torch.no_grad():
+            #                 inputs_v = trainer.model.get_inputs(batch.vertices, batch.faces[0])# [B, V, 3+3]
 
-                            ## get expression
-                            trainer.model.model.update_precomputes(src_dfn_info)
-                            pred_exp = trainer.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
-                            pred_outputs, _, _ = trainer.model.calc_new_mesh(
-                                tgt_verts, tgt_faces, pred_exp, tgt_operators, tgt_dfn_info, tgt_img
-                            )
-                            pred_outputs_np = pred_outputs.detach().cpu().numpy()
+            #                 ## get expression
+            #                 trainer.model.model.update_precomputes(src_dfn_info)
+            #                 pred_exp = trainer.model.model.encode(inputs_v, src_img.to(device), N_F=src_m.faces.shape[0])
+            #                 pred_outputs, _, _ = trainer.model.calc_new_mesh(
+            #                     tgt_verts, tgt_faces, pred_exp, tgt_operators, tgt_dfn_info, tgt_img
+            #                 )
+            #                 pred_outputs_np = pred_outputs.detach().cpu().numpy()
 
-                            CurrBS=pred_outputs_np.shape[0]
-                            for b_idx in range(CurrBS):
-                                save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
-                                np.save(save_out_name, pred_outputs_np[b_idx])
+            #                 CurrBS=pred_outputs_np.shape[0]
+            #                 for b_idx in range(CurrBS):
+            #                     save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
+            #                     np.save(save_out_name, pred_outputs_np[b_idx])
         elif self.opts.version == 1:
             if SELF_RETARGET:
                 print('self-retargeting! (src == tgt)')
@@ -963,7 +971,7 @@ if __name__ == "__main__":
     
     # load training configs from checkpoints (yaml)
     if opts.version==0:
-        opts.config='config/train.yml'
+        opts.config='config/train_NFS.yml'
         opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
     else:
         config = f'{opts.ckpt}/train_opts.yml'
