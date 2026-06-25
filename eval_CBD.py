@@ -95,6 +95,8 @@ def Options():
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
+    parser.add_argument("--use_data8",dest='use_data8', action='store_true')
+    parser.set_defaults(use_data8=False)
     parser.add_argument("--use_data9",dest='use_data9', action='store_true')
     parser.set_defaults(use_data9=False)
 
@@ -306,8 +308,9 @@ class Trainer():
             raise NotImplementedError('No matching model version')
         
         # load weight
-        if opts.version!=0:
-            self.load_weight()
+        # if opts.version!=0:
+        #     self.load_weight()
+        self.load_weight()
     
     def load_weight(self):
         if self.opts.ckpt:
@@ -342,7 +345,8 @@ class Trainer():
             [ True,  True,  True,  True,  True], # -1
         ]
         selection = selection[self.opts.data_selection]
-        
+        data_name_list = ['voca','biwi','mf_SEN','coma','mf_ROM','ict']
+        selection_name = data_name_list[self.opts.data_selection]
         
         self.dataset = CBDDataset(
             self.opts, n_components=1_000, is_train=False, is_valid=False,
@@ -382,7 +386,7 @@ class Trainer():
         # ckpt_path = self.opts.ckpt.split('ckpts_CBD')[-1][1:]
         # self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval-'+now)
         ckpt_path = self.opts.ckpt.split('/')[-1]
-        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection+'-pca_data')
+        self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path+'-eval',selection_name+'-pca_data')
         
         os.makedirs(self.opts.log_dir, exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
@@ -431,7 +435,9 @@ class Trainer():
             
             # model forward ----------------------------------------------------------------------------------
             with torch.no_grad():
-                pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
+                # pred_vertices, recon_vertices, recon_source, exp_z, pred_source, _ = self.model(
+                pred_vertices, recon_vertices, recon_source, exp_z, \
+                pred_source, hat_mask, key_weight, key_s, key_d= self.model(
                     batch.template, batch.vertices, 
                     batch.template_normal, batch.vertices_normal,
                     batch.mesh_data, epoch=0
@@ -447,7 +453,7 @@ class Trainer():
                 HB = batch.vertices.shape[0] // 2
                 
             if self.opts.use_t_mask:
-                inner_mask = plateau_hat_points(batch.template)
+                inner_mask = plateau_hat_points(batch.template,r0=1.0,r1=2.25)
                 outter_mask = 1 - inner_mask
                 
                 losses_val['MSE-in'] += F.mse_loss(
@@ -458,9 +464,12 @@ class Trainer():
                     batch.template*outter_mask, pred_vertices*outter_mask
                 ).item() * denom # for NGBC model
                 
-            losses_val['MSE'] += F.mse_loss(
+            loss_ = F.mse_loss(
                 batch.vertices, pred_vertices
             ).item() * denom # for NGBC model
+            
+            pbar.set_description(f'loss: {loss_:.5e}')
+            losses_val['MSE']+=loss_
             # ------------------------------------------------------------------------------------------------
         
             
@@ -805,7 +814,8 @@ class Trainer():
                         )
                     else:
                         # Ours
-                        pred_vertices, _, _, _, _, _, _ = self.model(
+                        pred_vertices, _, _, _, \
+                        _, _, _, _, _ = self.model(
                             batch.template, batch.vertices, 
                             batch.template_normal, batch.vertices_normal,
                             mesh_data=batch.mesh_data, epoch=0
@@ -813,7 +823,7 @@ class Trainer():
                 
                 # Metric
                 if self.opts.use_t_mask:
-                    inner_mask = plateau_hat_points(batch.template)
+                    inner_mask = plateau_hat_points(batch.template,r0=1.0,r1=2.25)
                     outter_mask = 1 - inner_mask
                     
                     losses_val['MSE-in'] += F.mse_loss(
@@ -825,8 +835,11 @@ class Trainer():
                     ).item() * denom # for NGBC model
                     
                     if self.opts.laplacian:
+                        # import pdb;pdb.set_trace()
                         losses_val["Lap"] += F.mse_loss(
-                            src_L @ batch.vertices*inner_mask, src_L @ pred_vertices*inner_mask
+                            # squeeze for RuntimeError: expand is unsupported for SparseCsc tensors
+                            src_L @ (batch.vertices*inner_mask).squeeze(0),
+                            src_L @ (pred_vertices*inner_mask).squeeze(0)
                         ).item() * denom # * mmm
                         
                 else:                    
@@ -835,11 +848,13 @@ class Trainer():
                             src_L @ batch.vertices, src_L @ pred_vertices
                         ).item() * denom
                         
-                losses_val['MSE'] += F.mse_loss(
+                loss_ = F.mse_loss(
                     batch.vertices,  pred_vertices
-                ).item() * denom # for NGBC model
+                ).item() # for NGBC model
                 
-                
+                pbar.set_description(f'loss: {loss_:.5e}')
+                losses_val['MSE'] += loss_ * denom
+
             # ------------------------------------------------------------------------------------------------
             if self.opts.save_gt:
                 save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
@@ -871,13 +886,13 @@ class Trainer():
                     
                     v_list = [
                         vertices[0],
-                        vertices[1],
-                        vertices[HB],
-                        vertices[-1],
+                        # vertices[1],
+                        # vertices[HB],
+                        # vertices[-1],
                         pred_vertices_[0],
-                        pred_vertices_[1],
-                        pred_vertices_[HB],
-                        pred_vertices_[-1],
+                        # pred_vertices_[1],
+                        # pred_vertices_[HB],
+                        # pred_vertices_[-1],
                     ]
                     len_v = len(v_list)
                     f_list=[faces[0]] * len_v
@@ -1098,7 +1113,7 @@ class Trainer():
                             )
                 # Metric
                 if self.opts.use_t_mask:
-                    inner_mask = plateau_hat_points(batch.template)
+                    inner_mask = plateau_hat_points(batch.template,r0=1.0,r1=2.25)
                     outter_mask = 1 - inner_mask
                     
                     losses_val['MSE-in'] += F.mse_loss(

@@ -238,7 +238,7 @@ class NFR_helper():
         input_target_all = torch.cat([input_target_v, img_feat.unsqueeze(1).expand(-1, input_target_v.shape[1], -1)], dim=-1)
 
         with torch.no_grad():
-            self.model.update_precomputes(dfn_info)
+            # self.model.update_precomputes(dfn_info)
             
             pred_jacob = torch.zeros(z.shape[0], faces.shape[0], 3, 3).to(self.device)
             pred_vertices = torch.zeros(z.shape[0], vertices.shape[0], 3).to(self.device)
@@ -274,27 +274,29 @@ class NFR_helper():
         """
         for _ in tqdm(range(1),desc='computing mesh operator'): # for checking time
             src_img = self.renderer.render_img(src_mesh).float().to(self.device)
-            src_img_feat = self.get_img_feat(src_img)[None]
 
             src_dfn_info = nfr_utils.get_dfn_info(src_mesh, map_location=self.device) # neurtral face
             tgt_dfn_info = nfr_utils.get_dfn_info(tgt_mesh, map_location=self.device)
 
-            src_vertices = vertices.to(self.device).float() # vertex with expression
+            src_vertices = vertices.float().to(self.device) # vertex with expression
             src_faces = torch.from_numpy(src_mesh.faces).to(self.device)
 
             tgt_verts = torch.from_numpy(tgt_mesh.vertices).to(self.device).float()
             tgt_faces = torch.from_numpy(tgt_mesh.faces).to(self.device)
             tgt_img = self.renderer.render_img(tgt_mesh).float().to(self.device)
             tgt_operators = self.get_mesh_operators(tgt_mesh)
-
+        
+        self.model.encoder.update_precomputes(src_dfn_info)
+        self.model.global_pn.update_precomputes(tgt_dfn_info)
+        
         pred_outputs=[]
         pbar = tqdm(src_vertices)
         for src_v in pbar:
             inputs_v = self.get_inputs(src_v[None], src_faces)# [1, V, 3+3]
 
             ## get expression
-            self.model.update_precomputes(src_dfn_info)
-            pred_exp = self.model.encode(inputs_v, src_img.to(self.device), N_F=src_mesh.faces.shape[0])
+            # self.model.update_precomputes(src_dfn_info)
+            pred_exp = self.model.encode(inputs_v, src_img, N_F=src_mesh.faces.shape[0])
 
             #pred_outputs, pred_jacobians, pred_id = self.calc_new_mesh(
             tmp, _, _ = self.calc_new_mesh(
