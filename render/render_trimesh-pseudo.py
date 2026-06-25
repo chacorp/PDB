@@ -1,24 +1,24 @@
 """
-Mitsuba 3 high-quality renderer for NeuralFacialAnimation.
-Features: path-traced soft shadows, reflections, skin material.
-Headless server compatible (no display required).
-
-SSS note: Mitsuba 3.6.1 principled BSDF approximates SSS via `flatness`
-          (Disney diffuse → flat diffuse transition, mimics forward-scattering).
+Pyrender pseudo-renderer for NeuralFacialAnimation.
+Approximates render_mitsuba.py with rasterization + 3-point lighting.
+Drop-in API replacement: RenderConfig, render_frame, render_figure,
+render_multiview, render_sequence_mi, get_mesh.
 
 Install:
-    pip install mitsuba
+    pip install pyrender pyopengl==3.1.4
+    apt install libosmesa6-dev
 
 Usage:
-    from render.render_mitsuba import render_frame, render_figure, PAPER_CFG
+    from render.render_trimesh_pseudo import render_frame, render_figure, PAPER_CFG
     render_figure([(src_v, f), (pred_v, f), (tgt_v, f)], PAPER_CFG, 'fig.png')
+
+    python render/render_trimesh-pseudo.py --mesh_type 'mf' --npy_dir './vis_CBD/2026-04-02-02-04-44-NGBCv5-dist/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00-masked/verts'
 """
 
 import os
 import sys
 import math
 import pickle
-import tempfile
 import argparse
 import subprocess
 from glob import glob
@@ -30,59 +30,8 @@ import numpy as np
 import trimesh
 from tqdm import tqdm
 
-# ── Mitsuba init ──────────────────────────────────────────────────────────────
-import mitsuba as mi
-
-def _init_mitsuba() -> str:
-    for variant in ['cuda_ad_rgb', 'llvm_ad_rgb']:
-        try:
-            mi.set_variant(variant)
-            # Actually test the variant by rendering a tiny scene
-            t = mi.ScalarTransform4f()
-            test_scene = mi.load_dict({
-                'type': 'scene',
-                'integrator': {'type': 'path', 'max_depth': 1},
-                'sensor': {
-                    'type': 'perspective', 'fov': 30,
-                    'to_world': t.look_at(
-                        mi.ScalarPoint3f(0, 0, 2),
-                        mi.ScalarPoint3f(0, 0, 0),
-                        mi.ScalarPoint3f(0, 1, 0),
-                    ),
-                    'film': {'type': 'hdrfilm', 'width': 4, 'height': 4},
-                    'sampler': {'type': 'independent', 'sample_count': 1},
-                },
-                'sphere': {'type': 'sphere', 'center': [0, 0, 0], 'radius': 0.5},
-                'env': {'type': 'constant'},
-            })
-            mi.render(test_scene, spp=1)
-            print(f"[Mitsuba] variant: {variant}")
-            return variant
-        except Exception:
-            continue
-    raise RuntimeError("No Mitsuba variant found. pip install mitsuba")
-
-VARIANT = _init_mitsuba()
-_T = mi.ScalarTransform4f()   # used as factory for transforms
-
-
-def _lookat(origin, target, up=(0, 1, 0)):
-    return _T.look_at(
-        mi.ScalarPoint3f(*origin),
-        mi.ScalarPoint3f(*target),
-        mi.ScalarPoint3f(*up),
-    )
-
-def _translate(v):
-    return _T.translate(mi.ScalarVector3f(*v))
-
-def _rotate(axis, angle_deg):
-    return _T.rotate(mi.ScalarVector3f(*axis), float(angle_deg))
-
-def _scale(s):
-    if isinstance(s, (int, float)):
-        return _T.scale(mi.ScalarVector3f(s, s, s))
-    return _T.scale(mi.ScalarVector3f(*s))
+os.environ.setdefault('PYOPENGL_PLATFORM', 'osmesa')
+import pyrender
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -91,10 +40,8 @@ class RenderConfig:
     # Image
     width:     int   = 1024
     height:    int   = 1024
-    spp:       int   = 256
-    max_depth: int   = 8
 
-    # Camera (spherical coords around origin)
+    # Camera (spherical coords, same convention as render_mitsuba)
     fov:           float = 20.0   # vertical FOV, degrees
     cam_distance:  float = 2.5
     cam_elevation: float = 8.0    # degrees above horizon
@@ -102,72 +49,74 @@ class RenderConfig:
     cam_target:    Tuple = (0.0, 0.0, 0.0)
 
     # Geometry
-    mesh_scale: float = 0.25      # 0.25 suits ICT/MF world-space coords
+    mesh_scale: float = 0.25
 
-    # Skin BSDF (Disney Principled)
+    # Skin material (MetallicRoughness approx of Principled BSDF)
     base_color:  Tuple = (0.80, 0.64, 0.52)
-    roughness:   float = 0.55
+    roughness:   float = 0.46   # subtle specular highlights on skin
     metallic:    float = 0.0
-    sheen:       float = 0.12
-    spec_tint:   float = 0.25
-    # SSS approximation via Disney flatness (0=standard diffuse, 1=flat/forward)
-    flatness:    float = 0.30
 
-    # 3-point lighting (sphere area lights, positioned outside camera FOV)
-    key_pos:        Tuple = (-1.4,  1.8,  0.8)
-    key_radius:     float = 0.40
-    key_intensity:  float = 30.0
+    # 3-point directional lights (frontal bias: large +Z keeps lights near camera axis)
+    key_pos:        Tuple = (-1.0,  1.6,  1.4)
+    key_intensity:  float = 3.5
     key_color:      Tuple = (1.00, 0.95, 0.88)   # warm
 
-    fill_pos:       Tuple = ( 1.6,  0.5,  0.8)
-    fill_radius:    float = 0.60
-    fill_intensity: float = 10.0
+    fill_pos:       Tuple = ( 1.2,  0.4,  1.4)
+    fill_intensity: float = 0.7
     fill_color:     Tuple = (0.82, 0.88, 1.00)   # cool
 
     rim_pos:        Tuple = ( 0.2,  2.2, -2.5)
-    rim_radius:     float = 0.30
-    rim_intensity:  float = 16.0
+    rim_intensity:  float = 2.0
     rim_color:      Tuple = (1.00, 1.00, 0.96)   # neutral
 
-    env_intensity:  float = 0.28   # constant ambient
+    env_intensity:  float = 0.07   # low ambient, shadow depth without harshness
 
     # Scene
-    bg_color:    Tuple = (1.0, 1.0, 1.0)   # white
-    ground_plane: bool  = True
-    ground_color: Tuple = (0.90, 0.90, 0.90)
+    bg_color:    Tuple = (0.72, 0.72, 0.72)
+    ground_plane: bool  = False
+    ground_color: Tuple = (0.72, 0.72, 0.72)   # matches bg_color by default
     ground_y:    float  = -0.45
 
-    # Video (overrides width/height/spp in render_sequence_mi)
+    # Supersampling: render at W*supersample × H*supersample then downsample
+    # 1 = off (fast, video), 2 = 2x (better AA, paper figures)
+    supersample: int = 1
+
+    # Video
     fps:          int = 30
-    video_spp:    int = 256
     video_width:  int = 800
     video_height: int = 800
 
 
 # ── Presets ───────────────────────────────────────────────────────────────────
 PAPER_CFG = RenderConfig(
-    width=1024, height=1024, spp=512, max_depth=10,
+    width=1024, height=1024,
+    supersample=2,   # 2048×2048 render → downsample to 1024×1024
 )
 
 TEASER_CFG = RenderConfig(
-    width=1200, height=900, spp=512, max_depth=10,
+    width=1200, height=900,
     bg_color=(0.08, 0.08, 0.10),
-    env_intensity=0.10,
-    ground_color=(0.10, 0.10, 0.13),
-    ground_y=-0.48,
-    key_intensity=52.0,
-    rim_intensity=32.0,
+    ground_color=(0.08, 0.08, 0.10),
+    key_pos=(-1.0, 1.6, 1.4),
+    fill_pos=(1.2, 0.4, 1.4),
+    env_intensity=0.03,
+    key_intensity=4.5,
+    fill_intensity=0.6,
+    rim_intensity=2.8,
+    roughness=0.44,
+    supersample=2,
 )
 
 VIDEO_CFG = RenderConfig(
-    width=800, height=800, spp=64, max_depth=6,
-    flatness=0.0,   # faster without SSS approximation
+    width=800, height=800,
+    supersample=1,   # no supersampling for speed
 )
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _cam_pos(dist: float, elev_deg: float, azim_deg: float) -> tuple:
-    el, az = math.radians(elev_deg), math.radians(azim_deg)
+    el = math.radians(elev_deg)
+    az = math.radians(azim_deg)
     return (
         dist * math.cos(el) * math.sin(az),
         dist * math.sin(el),
@@ -175,121 +124,50 @@ def _cam_pos(dist: float, elev_deg: float, azim_deg: float) -> tuple:
     )
 
 
-def _prepare_mesh(vertices: np.ndarray, faces: np.ndarray, scale: float) -> Tuple[np.ndarray, np.ndarray]:
-    verts = vertices * scale
-    return verts, faces
-
-
-def _export_obj(vertices: np.ndarray, faces: np.ndarray, path: str) -> None:
-    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
-    mesh.export(path)
-
-
-def _sphere_light(pos: tuple, radius: float, intensity: float, color: tuple) -> dict:
-    return {
-        'type': 'sphere',
-        'center': list(pos),
-        'radius': radius,
-        'emitter': {
-            'type': 'area',
-            'radiance': {'type': 'rgb', 'value': [intensity * c for c in color]},
-        },
-    }
-
-
-def _skin_bsdf(cfg: RenderConfig) -> dict:
-    return {
-        'type': 'twosided',
-        'material': {
-            'type': 'principled',
-            'base_color': {'type': 'rgb', 'value': list(cfg.base_color)},
-            'roughness':  cfg.roughness,
-            'metallic':   cfg.metallic,
-            'sheen':      cfg.sheen,
-            'spec_tint':  cfg.spec_tint,
-            'flatness':   cfg.flatness,
-        },
-    }
+def _look_at_pose(eye, target=(0, 0, 0), up=(0, 1, 0)) -> np.ndarray:
+    """4x4 camera-to-world pose matrix. Camera looks along its local -Z axis."""
+    eye    = np.array(eye,    dtype=np.float64)
+    target = np.array(target, dtype=np.float64)
+    up     = np.array(up,     dtype=np.float64)
+    z = eye - target;  z /= np.linalg.norm(z)   # backward (away from scene)
+    x = np.cross(up, z);  x /= np.linalg.norm(x)
+    y = np.cross(z, x)
+    pose = np.eye(4)
+    pose[:3, 0] = x
+    pose[:3, 1] = y
+    pose[:3, 2] = z
+    pose[:3, 3] = eye
+    return pose
 
 
 def _rotate_xz(pos: tuple, azim_deg: float) -> tuple:
-    """Rotate a point around the Y-axis by azim_deg (for camera-relative lights)."""
+    """Rotate a point around Y-axis so lights co-rotate with the camera."""
     a = math.radians(azim_deg)
     x, y, z = pos
     return (x * math.cos(a) + z * math.sin(a), y, -x * math.sin(a) + z * math.cos(a))
 
 
-def _build_scene(obj_path: str, cfg: RenderConfig, W: int, H: int, spp: int) -> dict:
-    cam_pos = _cam_pos(cfg.cam_distance, cfg.cam_elevation, cfg.cam_azimuth)
-    target  = cfg.cam_target
-    az      = cfg.cam_azimuth
-
-    # Lights rotate with the camera so they're never in frame
-    key_pos  = _rotate_xz(cfg.key_pos,  az)
-    fill_pos = _rotate_xz(cfg.fill_pos, az)
-    rim_pos  = _rotate_xz(cfg.rim_pos,  az)
-
-    # Ground: XY rect → rotate to horizontal → move to ground_y
-    ground_T = _translate([0, cfg.ground_y, 0]) @ _rotate([1, 0, 0], -90) @ _scale(8)
-
-    scene = {
-        'type': 'scene',
-        'integrator': {
-            'type': 'path',
-            'max_depth': cfg.max_depth,
-            'hide_emitters': False,
-        },
-        'sensor': {
-            'type': 'perspective',
-            'fov': cfg.fov,
-            'to_world': _lookat(cam_pos, target),
-            'film': {
-                'type': 'hdrfilm',
-                'width': W, 'height': H,
-                'pixel_filter': {'type': 'gaussian'},
-            },
-            'sampler': {'type': 'multijitter', 'sample_count': spp},
-        },
-        # Constant ambient + background color
-        'env': {
-            'type': 'constant',
-            'radiance': {
-                'type': 'rgb',
-                'value': [cfg.env_intensity * c for c in cfg.bg_color],
-            },
-        },
-        # Face mesh
-        'face': {
-            'type': 'obj',
-            'filename': obj_path,
-            'bsdf': _skin_bsdf(cfg),
-        },
-        # 3-point area lights — co-rotate with camera so always off-frame
-        'key_light':  _sphere_light(key_pos,  cfg.key_radius,  cfg.key_intensity,  cfg.key_color),
-        'fill_light': _sphere_light(fill_pos, cfg.fill_radius, cfg.fill_intensity, cfg.fill_color),
-        'rim_light':  _sphere_light(rim_pos,  cfg.rim_radius,  cfg.rim_intensity,  cfg.rim_color),
-    }
-
-    if cfg.ground_plane:
-        scene['ground'] = {
-            'type': 'rectangle',
-            'to_world': ground_T,
-            'bsdf': {
-                'type': 'diffuse',
-                'reflectance': {'type': 'rgb', 'value': list(cfg.ground_color)},
-            },
-        }
-
-    return scene
+def _skin_material(cfg: RenderConfig) -> pyrender.MetallicRoughnessMaterial:
+    return pyrender.MetallicRoughnessMaterial(
+        baseColorFactor=[*cfg.base_color, 1.0],
+        metallicFactor=cfg.metallic,
+        roughnessFactor=cfg.roughness,
+    )
 
 
-def _tonemap(image_np: np.ndarray) -> np.ndarray:
-    """Reinhard tonemap + gamma correction → uint8 RGB."""
-    img = np.clip(image_np[..., :3], 0, None)
-    img = img / (1.0 + img)                    # Reinhard
-    img = np.clip(img ** (1.0 / 2.2), 0, 1)
-    return (img * 255).astype(np.uint8)
-
+def _ground_mesh(cfg: RenderConfig) -> pyrender.Mesh:
+    s, y = 8.0, cfg.ground_y
+    verts = np.array([
+        [-s, y, -s], [s, y, -s], [s, y, s], [-s, y, s],
+    ], dtype=np.float32)
+    faces = np.array([[0, 2, 1], [0, 3, 2]], dtype=np.int32)
+    tm = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    mat = pyrender.MetallicRoughnessMaterial(
+        baseColorFactor=[*cfg.ground_color, 1.0],
+        metallicFactor=0.0,
+        roughnessFactor=1.0,
+    )
+    return pyrender.Mesh.from_trimesh(tm, material=mat, smooth=False)
 
 
 def _save_img(img: np.ndarray, path: str) -> None:
@@ -302,7 +180,54 @@ def _save_img(img: np.ndarray, path: str) -> None:
         Image.fromarray(img).save(path)
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Core rasterizer ───────────────────────────────────────────────────────────
+def _rasterize(vertices: np.ndarray, faces: np.ndarray, cfg: RenderConfig, W: int, H: int) -> np.ndarray:
+    """Single rasterization pass at exactly W×H."""
+    az = cfg.cam_azimuth
+    cam_origin = _cam_pos(cfg.cam_distance, cfg.cam_elevation, az)
+    cam_pose   = _look_at_pose(cam_origin, cfg.cam_target)
+
+    verts = vertices * cfg.mesh_scale
+    tm    = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    mesh  = pyrender.Mesh.from_trimesh(tm, material=_skin_material(cfg), smooth=True)
+
+    ambient = [cfg.env_intensity * c for c in cfg.bg_color]
+    bg      = [*cfg.bg_color, 1.0]
+    scene   = pyrender.Scene(ambient_light=ambient, bg_color=bg)
+    scene.add(mesh, pose=np.eye(4))
+
+    if cfg.ground_plane:
+        scene.add(_ground_mesh(cfg), pose=np.eye(4))
+
+    camera = pyrender.PerspectiveCamera(yfov=math.radians(cfg.fov), znear=0.001, zfar=20.0)
+    scene.add(camera, pose=cam_pose)
+
+    # 3-point directional lights co-rotate with camera
+    for pos, intensity, color in [
+        (_rotate_xz(cfg.key_pos,  az), cfg.key_intensity,  cfg.key_color),
+        (_rotate_xz(cfg.fill_pos, az), cfg.fill_intensity, cfg.fill_color),
+        (_rotate_xz(cfg.rim_pos,  az), cfg.rim_intensity,  cfg.rim_color),
+    ]:
+        light = pyrender.DirectionalLight(color=list(color), intensity=intensity)
+        scene.add(light, pose=_look_at_pose(pos))
+
+    r = pyrender.OffscreenRenderer(viewport_width=W, viewport_height=H)
+    color, _ = r.render(scene, flags=pyrender.RenderFlags.SKIP_CULL_FACES)
+    r.delete()
+    return color  # uint8 RGB
+
+
+def _render(vertices: np.ndarray, faces: np.ndarray, cfg: RenderConfig, W: int, H: int) -> np.ndarray:
+    """Render with optional supersampling (cfg.supersample > 1 → render at higher res then downsample)."""
+    ss = max(1, cfg.supersample)
+    img = _rasterize(vertices, faces, cfg, W * ss, H * ss)
+    if ss > 1:
+        import cv2 as _cv2
+        img = _cv2.resize(img, (W, H), interpolation=_cv2.INTER_AREA)
+    return img
+
+
+# ── Public API (mirrors render_mitsuba) ───────────────────────────────────────
 def render_frame(
     vertices:   np.ndarray,
     faces:      np.ndarray,
@@ -324,21 +249,10 @@ def render_frame(
         uint8 RGB numpy array or None
     """
     cfg = cfg or RenderConfig()
-    verts, faces_out = _prepare_mesh(vertices, faces, cfg.mesh_scale)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        obj_path = os.path.join(tmpdir, 'mesh.obj')
-        _export_obj(verts, faces_out, obj_path)
-        scene = mi.load_dict(
-            _build_scene(obj_path, cfg, cfg.width, cfg.height, cfg.spp)
-        )
-        image = mi.render(scene, spp=cfg.spp)
-
-    img_np = _tonemap(np.array(image))
-
+    img = _render(vertices, faces, cfg, cfg.width, cfg.height)
     if save_path:
-        _save_img(img_np, save_path)
-    return img_np if return_img else None
+        _save_img(img, save_path)
+    return img if return_img else None
 
 
 def render_figure(
@@ -416,7 +330,7 @@ def render_sequence_mi(
         faces:       template face indices (F, 3)
         output_path: directory to save video
         filename:    video name without .mp4; defaults to npy_dir basename
-        cfg:         uses cfg.video_spp / video_width / video_height
+        cfg:         RenderConfig; uses video_width / video_height
         fps:         overrides cfg.fps
         debug:       render only first 8 frames
 
@@ -425,7 +339,7 @@ def render_sequence_mi(
 
     Example:
         _, faces = get_mesh('ict')
-        render_sequence_mi('./eval_CBD/.../verts', faces, './video_mi/')
+        render_sequence_mi('./eval_CBD/.../verts', faces, './video_pseudo/')
     """
     cfg = cfg or VIDEO_CFG
     fps = fps or cfg.fps
@@ -437,12 +351,12 @@ def render_sequence_mi(
     if debug:
         frame_files = frame_files[:8]
 
-    filename  = filename or Path(npy_dir).parent.name
+    filename   = filename or Path(npy_dir).parent.name
     video_path = os.path.join(output_path, f'{filename}.mp4')
     frame_dir  = os.path.join(output_path, f'{filename}_frames')
     os.makedirs(frame_dir, exist_ok=True)
 
-    vcfg = replace(cfg, width=cfg.video_width, height=cfg.video_height, spp=cfg.video_spp)
+    vcfg = replace(cfg, width=cfg.video_width, height=cfg.video_height)
 
     for i, npy_path in enumerate(tqdm(frame_files, desc=filename)):
         verts = np.load(npy_path)
@@ -452,19 +366,20 @@ def render_sequence_mi(
             return_img=False,
         )
 
+    ffmpeg_bin = '/usr/bin/ffmpeg' if os.path.exists('/usr/bin/ffmpeg') else 'ffmpeg'
     subprocess.run([
-        'ffmpeg', '-y',
+        ffmpeg_bin, '-y',
         '-framerate', str(fps),
         '-i', os.path.join(frame_dir, '%06d.png'),
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
         video_path,
     ], check=True)
 
-    print(f"[Mitsuba] Saved: {video_path}")
+    print(f"[pyrender] Saved: {video_path}")
     return video_path
 
 
-# ── Mesh loaders ──────────────────────────────────────────────────────────────
+# ── Mesh loaders (same as render_mitsuba) ─────────────────────────────────────
 def get_mesh(selection: str, SELECT_MESH: int = 0) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load template (vertices, faces) for a given dataset.
@@ -508,14 +423,13 @@ def get_mesh(selection: str, SELECT_MESH: int = 0) -> Tuple[np.ndarray, np.ndarr
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Mitsuba 3 face renderer')
+    parser = argparse.ArgumentParser(description='Pyrender pseudo face renderer')
     parser.add_argument('--npy_dir',   type=str, required=True)
     parser.add_argument('--mesh_type', type=str, default='ict',
                         choices=['ict', 'ict-cap', 'voca', 'coma', 'biwi', 'mf', 'mf_ROM', 'mf_SEN'])
-    parser.add_argument('--output',    type=str, default='./video_mi/')
+    parser.add_argument('--output',    type=str, default='./video_pseudo/')
     parser.add_argument('--filename',  type=str, default=None)
     parser.add_argument('--fps',       type=int, default=30)
-    parser.add_argument('--spp',       type=int, default=64)
     parser.add_argument('--width',     type=int, default=800)
     parser.add_argument('--height',    type=int, default=800)
     parser.add_argument('--scale',     type=float, default=0.25)
@@ -534,7 +448,6 @@ if __name__ == '__main__':
         cfg = TEASER_CFG
     else:
         cfg = RenderConfig(
-            spp=args.spp, video_spp=args.spp,
             width=args.width, height=args.height,
             video_width=args.width, video_height=args.height,
             mesh_scale=args.scale,
@@ -547,8 +460,3 @@ if __name__ == '__main__':
         output_path=args.output, filename=args.filename,
         cfg=cfg, fps=args.fps, debug=args.debug,
     )
-    # render_sequence(
-    #     output_path = output_path,
-    #     npy_file = "./vis_CBD/2025-10-22-22-30-30-NGBCv5/ict-cap-ID_000_test-to-ict-cap-ID_000_test_01-masked/verts",
-    #     use_seg_color=use_seg_color, mesh_type='ict',
-    # )
