@@ -523,6 +523,7 @@ def plot_image_array(Vs,
                      bg_black = True,
                      logdir='.', 
                      name='000', 
+                     use_persp=False,
                      save=False,
                     ):
     """
@@ -565,10 +566,12 @@ def plot_image_array(Vs,
             
         ### MVP
         # model = translate(0, 0, -3) @ yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot)
-        # proj  = perspective(55, 1, 1, 100)
         model = (yrotate(yrot) @ xrotate(xrot) @ zrotate(zrot))[:3,:3]
         view = translate(0, 0, -5)
-        proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
+        if use_persp:
+            proj  = perspective(55, 1, 1, 100)
+        else:
+            proj  = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
         #MVP   = proj @ view @ model
         MVP   = proj @ view # view is identity
         V_mu = np.median(V, axis=0)
@@ -1627,7 +1630,7 @@ def plot_image_array_seg(Vs,
         #S = S.mode(-1).values.numpy()
         #S = S.max(-1).values.numpy()
         S = S.mean(-1)
-#         S = S.argmax(-1)
+#         S = S.max(-1)
         
         Sc = plt.get_cmap(c_map)(S/len_seg)
         Sc = Sc[...,:3]

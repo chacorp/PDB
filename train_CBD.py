@@ -93,6 +93,8 @@ def Options():
     parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
     parser.set_defaults(use_scheduler=False)
     
+    parser.add_argument("--use_dist_loss",dest='use_dist_loss', action='store_true')
+    parser.set_defaults(use_dist_loss=False)
     parser.add_argument("--use_segment_weight",dest='use_segment_weight', action='store_true')
     parser.set_defaults(use_segment_weight=False)
     parser.add_argument("--use_laplacian",dest='use_laplacian', action='store_true')
@@ -1207,6 +1209,11 @@ class Trainer():
             if self.opts.use_normal_loss:
                 running_losses['norm-def']=0.0
                 running_losses['norm-neu']=0.0
+            if self.opts.use_dist_loss:
+                running_losses['dist']=0.0
+            
+            # add total last for logging 
+            running_losses['total']=0.0
             
             self.model.train()
             train_counter = 0
@@ -1229,7 +1236,7 @@ class Trainer():
                     
                     ## random sampling and random permutation
                     N = batch.template.shape[1]
-                    use_perm = torch.rand(1) > 0.3
+                    use_perm = torch.rand(1) > 0.2
                     # use_perm= False
                     if use_perm:
                         N_range = N-torch.randint(100, N//6, (1,)).item()
@@ -1252,7 +1259,11 @@ class Trainer():
                 ## weight prediction: (B, Nv, Nc)
                 ## key_d prediction:  (B, Nc, 3+3) [deformed cage]
                 pred_vertices, recon_vertices, recon_source, exp_z, \
+<<<<<<< HEAD
                 pred_source, t_mask, pred_key_weight, pred_cage_s, pred_cage_d = self.model(
+=======
+                pred_source, t_mask, pred_key_weight = self.model(
+>>>>>>> 8173667bebf1061807dffd92b11243c91e68656c
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
@@ -1412,6 +1423,12 @@ class Trainer():
                         )
                 # ------------------------------------------------------------------------------------------------
 
+                if self.opts.use_dist_loss:
+                    loss_dict['dist'] = distance_loss(
+                        batch_template_v, pred_cage_s, pred_key_weight
+                    ) + distance_loss(
+                        batch_vertices_v, pred_cage_d, pred_key_weight
+                    )
                 
                 # get total loss (lambda weights are multiplied here!) -------------------------------------------
                 loss = 0

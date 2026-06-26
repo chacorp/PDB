@@ -17,8 +17,8 @@ einops==0.7.0
 protobuf==3.20.0 # for tensorboard
 libigl==2.5.1
 open3d==0.18.0
-vedo==2024.5.1 # optional
-h5py==3.11.0 # SIREN
+vedo==2024.5.1 # (optional)
+h5py==3.11.0 # SIREN (optional)
 easydict
 mitsuba==3.6.1 # rendering
 https://data.pyg.org/whl/torch-1.13.0%2Bcu117/torch_cluster-1.6.1%2Bpt113cu117-cp38-cp38-linux_x86_64.whl

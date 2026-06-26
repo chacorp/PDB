@@ -4,61 +4,45 @@ import torch.nn.functional as F
 import pickle
 import numpy as np
 
-# --- Loss Functions ---
-    
-def distance_loss3_(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+def weight_entropy_loss(
+    weights: torch.Tensor,
+    eps: float = 1e-8,
+    reduction: str = "mean",
+) -> torch.Tensor:
     """
-    Args:
-        mesh_vertices: (B, N, 3)
-        cage_vertices: (B, K, 3)
-        coordinate_weight: (B, N, K)
-    Returns:
-        loss
-    """
-    _,C,_=cage_vertices.shape
-    # import pdb;pdb.set_trace()
-    # _denom = coordinate_weight.sum(1, keepdim=True) # (B, 1, K)
-    # _denom[_denom<=0]=1
-    num_nonzero = torch.count_nonzero(coordinate_weight, dim=-1)
-    
-    _coordinate_weight = coordinate_weight / num_nonzero.unsqueeze(-1) # (B, N, K)
-    # _coordinate_weight = torch.nan_to_num(_coordinate_weight)
-    
-    # mean_v = torch.zeros_like(cage_vertices)
-    # for i in range(cage_vertices.shape[1]):        
-    K_mesh_vertices = _coordinate_weight.transpose(2,1) @ mesh_vertices
-    
-    return F.mse_loss(K_mesh_vertices, cage_vertices)
-    
-def distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
-    """
-    Args:
-        mesh_vertices: (B, N, 3)
-        cage_vertices: (B, K, 3)
-        coordinate_weight: (B, N, K)
-    Returns:
-        loss
-    """
-    B, C, _ = cage_vertices.shape
-    
-    sum_coordinate_weight = coordinate_weight.sum(-2, keepdim=True) # (B, 1, K)
-    coordinate_weight_  = coordinate_weight / (sum_coordinate_weight + 1e-12)
-    K_mesh_vertices = coordinate_weight_.transpose(2,1) @ mesh_vertices
+    Entropy regularization loss for normalized nonnegative weights.
 
-    ####################################################
-    # consider only Σw_i > 0, (i=cage vertex index)
-    mask = (sum_coordinate_weight > 0).all(-2)
-    
-    K_mesh_vertices = K_mesh_vertices[mask].reshape(B,-1,3)
-    cage_vertices = cage_vertices[mask].reshape(B,-1,3)
-    ####################################################
-    
-    # if torch.isnan(K_mesh_vertices).any():
-    loss = F.mse_loss(K_mesh_vertices.detach(), cage_vertices)
-    
-    # if torch.isnan(loss):
-    #     import pdb;pdb.set_trace()
-    return loss
+    Args:
+        weights: Tensor of shape (..., K), where the last dimension is the
+            weight dimension. Each row is expected to be nonnegative and
+            approximately sum to 1.
+        eps: Small constant for numerical stability.
+        reduction: One of {"mean", "sum", "none"}.
+
+    Returns:
+        Scalar tensor if reduction is "mean" or "sum".
+        Otherwise returns per-row entropy of shape weights.shape[:-1].
+
+    Notes:
+        Entropy is:
+            H(w) = -sum_i w_i log(w_i)
+
+        If you want to encourage *sparser* weights, minimize H(w).
+        This function returns positive entropy, so minimizing the returned
+        value pushes weights toward lower-entropy, more peaked distributions.
+    """
+    if reduction not in {"mean", "sum", "none"}:
+        raise ValueError(f"Invalid reduction: {reduction}")
+
+    # Clamp only for log stability; keep original weights in multiplication
+    log_w = torch.log(weights.clamp_min(eps))
+    entropy = -(weights * log_w).sum(dim=-1)
+
+    if reduction == "mean":
+        return entropy.mean()
+    if reduction == "sum":
+        return entropy.sum()
+    return entropy
 
 # def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02):
 #     dist = torch.sqrt(((mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]) ** 2).sum(dim=-1) + 1e-8)
@@ -89,11 +73,16 @@ def distance_loss(
     
     mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand).sum(dim=-1)
 
-    #w = torch.softmax((coordinate_weight / tau), dim=-1)
     w = coordinate_weight
     return (mesh_vertices_dist * w.unsqueeze(-1)).mean()
 
-def distance_loss2(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+def distance_loss2(
+        mesh_vertices,
+        cage_vertices,
+        coordinate_weight,
+        tau=0.02,
+        return_e=False
+    ):
     """
     Args:
         mesh_vertices: (B, N, 3)
@@ -111,15 +100,70 @@ def distance_loss2(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, re
     cage_vertices_expand = cage_vertices[:,None]
     
     mesh_vertices_dist = torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1)
-    # mesh_vertices_dist = torch.square(torch.linalg.norm(mesh_vertices_expand - cage_vertices_expand, dim=-1))
-    
-    # candidate_idx = torch.argmax(mesh_vertices_dist, dim=1)
     
     mesh_vertices_max = mesh_vertices_dist.max(-2).values.unsqueeze(1)    
     mesh_vertices_dist = 1 - (mesh_vertices_dist / mesh_vertices_max)
     
     return F.mse_loss(mesh_vertices_dist, coordinate_weight) 
 
+def distance_loss3(
+        mesh_vertices, 
+        cage_vertices,
+        coordinate_weight,
+        tau=0.02,
+        return_e=False
+    ):
+    """
+    Args:
+        mesh_vertices: (B, N, 3)
+        cage_vertices: (B, K, 3)
+        coordinate_weight: (B, N, K)
+    Returns:
+        loss
+    """
+    B, C, _ = cage_vertices.shape
+    
+    sum_coordinate_weight = coordinate_weight.sum(-2, keepdim=True) # (B, 1, K)
+    coordinate_weight_  = coordinate_weight / (sum_coordinate_weight + 1e-12)
+    K_mesh_vertices = coordinate_weight_.transpose(2,1) @ mesh_vertices
+
+    ####################################################
+    # consider only Σw_i > 0, (i=cage vertex index)
+    mask = (sum_coordinate_weight > 0).all(-2)
+    
+    K_mesh_vertices = K_mesh_vertices[mask].reshape(B,-1,3)
+    cage_vertices = cage_vertices[mask].reshape(B,-1,3)
+    ####################################################
+    
+    loss = F.mse_loss(K_mesh_vertices.detach(), cage_vertices)
+    
+    return loss
+    
+def distance_loss3_(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02, return_e=False):
+    """
+    # deprecated version
+    Args:
+        mesh_vertices: (B, N, 3)
+        cage_vertices: (B, K, 3)
+        coordinate_weight: (B, N, K)
+    Returns:
+        loss
+    """
+    _,C,_=cage_vertices.shape
+    # import pdb;pdb.set_trace()
+    # _denom = coordinate_weight.sum(1, keepdim=True) # (B, 1, K)
+    # _denom[_denom<=0]=1
+    num_nonzero = torch.count_nonzero(coordinate_weight, dim=-1)
+    
+    _coordinate_weight = coordinate_weight / num_nonzero.unsqueeze(-1) # (B, N, K)
+    # _coordinate_weight = torch.nan_to_num(_coordinate_weight)
+    
+    # mean_v = torch.zeros_like(cage_vertices)
+    # for i in range(cage_vertices.shape[1]):        
+    K_mesh_vertices = _coordinate_weight.transpose(2,1) @ mesh_vertices
+    
+    return F.mse_loss(K_mesh_vertices, cage_vertices)
+    
 class DistanceLoss():
     def __init__(self, device='cpu'):
         self.device=device
