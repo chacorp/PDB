@@ -99,7 +99,6 @@ class EvalDataset(data.Dataset):
             self.get_data = self.get_ict_cap
 
         if self.data_name=='ict_face_only':
-            from utils.remesh_utils import ICT_face_model
             self.iden_vecs = torch.load(f'{__abs_path__}/ict_face_pt/ict_id_vecs_test.pt').numpy()
             self.expression_vecs = np.load(f'{__abs_path__}/data/ICT_live_100/expression_vecs_test.npy')
             self.ict_face_model = ICT_face_model(face_only=True)
@@ -343,7 +342,33 @@ class EvalDataset(data.Dataset):
         vertices_normal = torch.tensor(vertices_normal).float()
         
         return vertices, template, vertices_normal, template_normal, faces, 'id_name'
-        
+
+    def get_ict_face_only(self, index):
+        id_index = index // self.ict_exp_len
+        index = index % self.ict_exp_len
+
+        id_name = f'{id_index:03d}'
+        id_coeff = self.iden_vecs[id_index]
+        exp_coeff = self.expression_vecs[index]
+        faces = self.ict_face_model.faces
+
+        vertices, template, _ = self.ict_face_model.apply_coeffs(
+            id_coeff, exp_coeff, return_all=True, region=1
+        )
+        vertices = vertices[0]
+        template = template[0]
+
+        template_normal = igl.per_vertex_normals(template, faces)
+        vertices_normal = igl.per_vertex_normals(vertices, faces)
+
+        template = torch.tensor(template).float()
+        vertices = torch.tensor(vertices).float()
+        faces = torch.tensor(faces).long()
+        template_normal = torch.tensor(template_normal).float()
+        vertices_normal = torch.tensor(vertices_normal).float()
+
+        return vertices, template, vertices_normal, template_normal, faces, id_name
+
     def get_voca(self, index):
         file_path=self.voca_datalist[index]
         id_name = file_path.split('/')[6]
@@ -660,10 +685,10 @@ class CBDDataset(data.Dataset):
             if self.use_laplacian:
                 self.ict_narrow_cotmatrix={}
                 ict_cotmatrix_path=f'{__abs_path__}/utils/ict/ict_narrow_cotmatrix.pkl'
-                
+
                 if os.path.exists(ict_cotmatrix_path):
                     with open(ict_cotmatrix_path,'rb') as f:
-                        self.ict_cotmatrix = pickle.load(f)
+                        self.ict_narrow_cotmatrix = pickle.load(f)
                 else:
                     for idx, id_coeff in enumerate(self.iden_vecs):
                         id_disps = self.ict_face_model_narrow.get_id_disp(
@@ -909,7 +934,7 @@ class CBDDataset(data.Dataset):
                     with open(mf_cotmatrix_path,'rb') as f:
                         self.mf_SEN_cotmatrix = pickle.load(f)
                 else:
-                    for id_name in mf_data_split[self.mode]:                
+                    for id_name in mf_data_split[self.mode]:
                         tmp_L = igl.cotmatrix(self.mf_ROM_mesh[id_name], self.mf_ROM_mesh['face'])
                         tmp_L = torch.tensor(tmp_L.todense()).float().to_sparse().to(self.device)
                         self.mf_ROM_cotmatrix[id_name] = tmp_L

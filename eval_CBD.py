@@ -18,6 +18,9 @@ import igl
 # if not __abs_path__ in sys.path:
 #     sys.path+=[__abs_path__]
 import pickle
+import datetime
+from easydict import EasyDict
+from utils.mesh_utils import calc_norm_torch
 
 import torch
 import torch.nn as nn
@@ -413,14 +416,10 @@ class Trainer():
         
         
         # eval loop ##############################################################################################
-        global_step = 0
-        BEST_LOSS = 100_000_000
-        
-        check_usage = False
-        
         len_data = len(self.dataloader)
         denom = 1 / len_data
-        
+        interv_val = round(len_data / 5)
+
         self.model.eval()
         
         losses_val = {
@@ -446,12 +445,6 @@ class Trainer():
             
             
             # Metric -----------------------------------------------------------------------------------------
-            with torch.no_grad():
-                mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
-                
-                HB = batch.vertices.shape[0] // 2
-                
             if self.opts.use_t_mask:
                 inner_mask = plateau_hat_points(batch.template,r0=1.0,r1=2.25)
                 outter_mask = 1 - inner_mask
@@ -474,22 +467,14 @@ class Trainer():
         
             
             # ------------------------------------------------------------------------------------------------
-            interv_val = round(len_data / 5)
             if index % interv_val == 0:
                 # for visualization
                 vertices = batch.vertices.cpu()
                 faces = batch.faces.cpu()
-                                
-                frame = HB
+
                 v_list = [
-                    vertices[0].cpu().detach(),
-                    # vertices[1].cpu().detach(),
-                    # vertices[HB].cpu().detach(),
-                    # vertices[BS-1].cpu().detach(),
+                    vertices[0].detach(),
                     pred_vertices[0].cpu().detach(),
-                    # pred_vertices[1].cpu().detach(),
-                    # pred_vertices[HB].cpu().detach(),
-                    # pred_vertices[BS-1].cpu().detach(),
                 ]
                 len_v = len(v_list)
                 f_list=[faces] * len_v
@@ -604,15 +589,11 @@ class Trainer():
         
         
         
-        # eval loop ##############################################################################################        
-        global_step = 0
-        BEST_LOSS = 100_000_000
-        
-        check_usage = False
-        
+        # eval loop ##############################################################################################
         len_data = len(self.dataloader)
         denom = 1 / len_data
-        
+        interv_val = round(len_data / 50)
+
         if self.opts.NFR:
             self.model.model.eval()
         else:
@@ -628,8 +609,13 @@ class Trainer():
         if self.opts.laplacian:
             losses_val["Lap"] = 0.0
             
-        mesh_data = self.dataset.data_name
-                
+        if self.opts.save_gt:
+            save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
+            os.makedirs(save_gt_logdir, exist_ok=True)
+        if self.opts.save_vert:
+            save_vert_logdir = f"{self.opts.log_dir}/verts"
+            os.makedirs(save_vert_logdir, exist_ok=True)
+
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, batch in pbar:
             # if index == 0:
@@ -963,16 +949,9 @@ class Trainer():
                 if self.opts.laplacian:
                     pbar_txt += f'\tLap: {MSE_lap:.5e}'
                 pbar.set_description(pbar_txt)
-                # for k_,v_, in losses_val.items()
-                    #losses_val[k_]=v_ 
-                
-                pbar.set_description(f'loss: {loss_:.5e}')
-                losses_val['MSE'] += loss_ * denom
 
             # ------------------------------------------------------------------------------------------------
             if self.opts.save_gt:
-                save_gt_logdir = f"{self.opts.log_dir}/../../GT_{selection}"
-                os.makedirs(save_gt_logdir, exist_ok=True)
                 curr_batch = batch.vertices.shape[0]
                 
                 for b_idx in range(curr_batch):
@@ -980,9 +959,6 @@ class Trainer():
                     np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
                 
             if self.opts.save_vert:
-                save_vert_logdir = f"{self.opts.log_dir}/verts"
-                # for pred_vert in pred_vertices:
-                os.makedirs(save_vert_logdir, exist_ok=True)
                 curr_batch = pred_vertices.shape[0]
                 
                 for b_idx in range(curr_batch):
@@ -991,37 +967,27 @@ class Trainer():
             
             # ------------------------------------------------------------------------------------------------
             # visualization for debugging
-            #if self.opts.batch_size > 1:
-            if True:
-                interv_val = round(len_data / 50)
-                if index % interv_val == 0:
-                    vertices = batch.vertices.cpu()
-                    faces = batch.faces.cpu()
-                    pred_vertices_ = pred_vertices.detach().cpu()
-                    
-                    v_list = [
-                        vertices[0],
-#                         vertices[1],
-#                         vertices[HB],
-#                         vertices[-1],
-                        pred_vertices_[0],
-#                         pred_vertices_[1],
-#                         pred_vertices_[HB],
-#                         pred_vertices_[-1],
-                    ]
-                    len_v = len(v_list)
-                    f_list=[faces[0]] * len_v
-                    save_logdir = f"{self.opts.log_dir}/img"
-                    save_img_name = f"{index:04d}"
-                    
-                    plot_image_array(
-                        v_list, f_list, 
-                        rot_list=[[0,0,0]]*len_v,
-                        size=1, bg_black=False, mode='shade', 
-                        logdir=save_logdir, 
-                        name=save_img_name, save=True
-                    )
-                    # 11649/(11649+6309) + 6309/(11649+6309)
+            if index % interv_val == 0:
+                vertices = batch.vertices.cpu()
+                faces = batch.faces.cpu()
+                pred_vertices_ = pred_vertices.detach().cpu()
+
+                v_list = [
+                    vertices[0],
+                    pred_vertices_[0],
+                ]
+                len_v = len(v_list)
+                f_list=[faces[0]] * len_v
+                save_logdir = f"{self.opts.log_dir}/img"
+                save_img_name = f"{index:04d}"
+
+                plot_image_array(
+                    v_list, f_list,
+                    rot_list=[[0,0,0]]*len_v,
+                    size=1, bg_black=False, mode='shade',
+                    logdir=save_logdir,
+                    name=save_img_name, save=True
+                )
         ##########################################################################################################
         
         # write log
@@ -1101,30 +1067,24 @@ class Trainer():
         
         
         # eval loop ##############################################################################################
-        
-        global_step = 0
-        BEST_LOSS = 100_000_000
-        
-        check_usage = False
-        
         len_data = len(self.dataloader)
         denom = 1 / len_data
-        
+        interv_val = round(len_data / 10)
+
         self.model.eval()
-        
+
         losses_val = {
             "MSE": 0.0
         }
-        
+
         if self.opts.use_t_mask:
             losses_val["MSE-in"] = 0.0
             losses_val["MSE-out"] = 0.0
-            
-        mesh_data = 'ict'
-        from easydict import EasyDict
-        from utils.mesh_utils import calc_norm_torch
-        
-        # import pdb;pdb.set_trace()
+
+        if self.opts.save_vert:
+            save_vert_logdir = f"{self.opts.log_dir}/verts"
+            os.makedirs(save_vert_logdir, exist_ok=True)
+
         recon_vDec = []
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
         for index, data in pbar:
@@ -1183,11 +1143,7 @@ class Trainer():
                                 
                                 pred_seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design=='new2' else None # [1, V, Seg]
 
-                    vert_feat_exp = []
-                    for gt_v in batch.vertices:
-                        _tmp_ = self.model.get_local_feature(gt_v[None], batch.faces[0], img_feat).float()
-                        vert_feat_exp.append(_tmp_)
-                    vert_feat_exp = torch.vstack(vert_feat_exp)
+                    vert_feat_exp = self.model.get_local_feature(batch.vertices, batch.faces[0], img_feat).float()
 
                     with torch.no_grad():
                         pred_exp_coeff = self.model.encode_exp(vert_feat_exp, dfn_info, batch_process=True, verbose=False)# [W, Rig]
@@ -1249,9 +1205,6 @@ class Trainer():
                 recon_vDec.append(loss_)
                 
                 if self.opts.save_vert:
-                    save_vert_logdir = f"{self.opts.log_dir}/verts"
-                    # for pred_vert in pred_vertices:
-                    os.makedirs(save_vert_logdir, exist_ok=True)
                     curr_batch = pred_vertices.shape[0]
                     
                     for b_idx in range(curr_batch):
@@ -1261,7 +1214,6 @@ class Trainer():
         
             
             # ------------------------------------------------------------------------------------------------
-            interv_val = round(len_data / 10)
             if index % interv_val == 0:
                 # for visualization
                 vertices = batch.vertices.cpu().detach()
