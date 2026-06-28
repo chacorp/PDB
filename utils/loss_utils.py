@@ -44,37 +44,51 @@ def weight_entropy_loss(
         return entropy.sum()
     return entropy
 
-# def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02):
-#     dist = torch.sqrt(((mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]) ** 2).sum(dim=-1) + 1e-8)
-#     penalty = torch.relu(dist - tau) ** 2
-#     loss = (coordinate_weight * penalty).sum(dim=-1).mean()
-#     return loss
-    
 def distance_loss(
-        mesh_vertices,
-        cage_vertices,
-        coordinate_weight,
-        tau=0.02,
-        return_e=False
+        mesh_vertices, 
+        cage_vertices, 
+        coordinate_weight, 
+        tau=0.01
     ):
-
     """
     Args:
         mesh_vertices: (B, N, 3)
         cage_vertices: (B, K, 3)
         coordinate_weight: (B, N, K)
+        tau: (scalar) threshold
     Returns:
         loss
     """
-    _,C,_=cage_vertices.shape
+    dist = torch.sqrt(((mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]) ** 2).sum(dim=-1) + 1e-8)
+    penalty = torch.relu(dist - tau) ** 2
+    loss = (coordinate_weight * penalty).sum(dim=-1).mean()
+    return loss
     
-    mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
-    cage_vertices_expand = cage_vertices[:,None]
-    
-    mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand).sum(dim=-1)
+# def distance_loss(
+#         mesh_vertices,
+#         cage_vertices,
+#         coordinate_weight,
+#         tau=0.02,
+#         return_e=False
+#     ):
 
-    w = coordinate_weight
-    return (mesh_vertices_dist * w.unsqueeze(-1)).mean()
+#     """
+#     Args:
+#         mesh_vertices: (B, N, 3)
+#         cage_vertices: (B, K, 3)
+#         coordinate_weight: (B, N, K)
+#     Returns:
+#         loss
+#     """
+#     _,C,_=cage_vertices.shape
+    
+#     mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
+#     cage_vertices_expand = cage_vertices[:,None]
+    
+#     mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand).sum(dim=-1)
+
+#     w = coordinate_weight
+#     return (mesh_vertices_dist * w.unsqueeze(-1)).mean()
 
 def distance_loss2(
         mesh_vertices,
