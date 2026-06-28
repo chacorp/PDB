@@ -11,7 +11,9 @@ data_capture
 
 video/
 vis_CBD/
+ckpts_CBD/
 eval_CBD/
+eval_cyc/
 
 *.pkl
 */*.pkl
@@ -60,6 +62,10 @@ results/
 ICT/*/
 *tmp*/
 _exp*/
+
+notebook/fig*/
+render/video*/
+vis*/
 
 _demo/
 _notebook/
