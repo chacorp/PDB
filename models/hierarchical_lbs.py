@@ -517,6 +517,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         nfs_concat: bool = False,
         adain_pos_norm: bool = False,
         nfs_proj_dim: int = 0,
+        use_corrective: int = 0,
         freeze_bind_pose: bool = False,
         use_gmm_hybrid: bool = False,
         init_log_sigma: float = -1.2,
@@ -712,6 +713,17 @@ class HierarchicalLBS_FullPred(nn.Module):
 
         # LayerNorm for seg features (normalize scale across topologies)
         self.nfs_layer_norm = nn.LayerNorm(_eff_nfs) if nfs_feat_dim > 0 else None
+        self.use_corrective = int(use_corrective)
+        if self.use_corrective > 0:
+            self.corr_N = self.use_corrective
+            _corr_in = (6 + _eff_nfs) if (nfs_feat_dim > 0 and self.nfs_concat) else _eff_nfs
+            self.corr_blend = LinearEncoder(
+                in_dim=_corr_in, out_dim=self.corr_N * 3, hid_dim=hid_dim,
+                num_layers=num_layers, out_type='vertices',
+            )
+            self.corr_coef = nn.Sequential(
+                nn.Linear(12, hid_dim), nn.ELU(), nn.Linear(hid_dim, self.corr_N))
+            print(f"[HLBS Corrective] enabled | N={self.corr_N} blend=LinearEncoder(in={_corr_in},hid={hid_dim},L={num_layers}) coef[R,t]->{self.corr_N}")
 
         if dfn_skin:
             from models.encoder import BaseDiffusionNetEncoder
@@ -1153,6 +1165,14 @@ class HierarchicalLBS_FullPred(nn.Module):
         v_h = torch.cat([source_vert, torch.ones(B, N, 1, device=device, dtype=source_vert.dtype)], dim=-1)
         v_per_joint = torch.einsum('bjkl,bnl->bnjk', G[:, :, :3, :], v_h)
         rigid_v     = torch.einsum('bnj,bnjk->bnk', W, v_per_joint)
+        if getattr(self, 'use_corrective', 0) > 0 and nfs_feat is not None:
+            _cn = self.corr_N
+            _csf, _ = self._prepare_feat(source_vert, source_normal, nfs_feat)
+            _cB = self.corr_blend(_csf).reshape(B, N, _cn, 3)
+            _cpose = torch.cat([local_R.reshape(B, J, 9), local_t.reshape(B, J, 3)], dim=-1)
+            _cA = self.corr_coef(_cpose).reshape(B, J, _cn)
+            _ccv = torch.einsum('bnj,bjk->bnk', W, _cA)
+            rigid_v = rigid_v + torch.einsum('bnk,bnkc->bnc', _ccv, _cB)
 
         if return_extras:
             extras = {
@@ -1261,6 +1281,14 @@ class HierarchicalLBS_FullPred(nn.Module):
         ], dim=-1)
         v_per_joint = torch.einsum('bjkl,bnl->bnjk', G[:, :, :3, :], v_h)
         rigid_v     = torch.einsum('bnj,bnjk->bnk', W_tgt, v_per_joint)
+        if getattr(self, 'use_corrective', 0) > 0 and tgt_nfs_feat is not None:
+            _cn = self.corr_N
+            _csf, _ = self._prepare_feat(tgt_neu_vert, tgt_neu_norm, tgt_nfs_feat)
+            _cB = self.corr_blend(_csf).reshape(B, N_t, _cn, 3)
+            _cpose = torch.cat([local_R.reshape(B, J, 9), local_t.reshape(B, J, 3)], dim=-1)
+            _cA = self.corr_coef(_cpose).reshape(B, J, _cn)
+            _ccv = torch.einsum('bnj,bjk->bnk', W_tgt, _cA)
+            rigid_v = rigid_v + torch.einsum('bnk,bnkc->bnc', _ccv, _cB)
 
         if return_joints:
             return rigid_v, tgt_joint_pos, T_world

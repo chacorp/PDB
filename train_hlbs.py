@@ -365,6 +365,8 @@ def Options():
     parser.add_argument("--nfs_concat", dest='nfs_concat', action='store_true',
                         help='Concat seg feat with pos+norm as input [262], 4 layers.')
     parser.set_defaults(nfs_concat=False)
+    parser.add_argument("--use_corrective", type=int, default=0,
+                        help="N corrective blend shapes (NBS-style baseline, single-stage); 0=off")
     parser.add_argument("--nfs_on_cpu", dest='nfs_on_cpu', action='store_true',
                         help='Keep NFS features on CPU and transfer to GPU per-batch (saves VRAM).')
     parser.set_defaults(nfs_on_cpu=False)
@@ -1632,6 +1634,7 @@ class HLBSTrainer:
             nfs_concat=opts.nfs_concat if hasattr(opts, 'nfs_concat') else False,
             adain_pos_norm=opts.adain_pos_norm if hasattr(opts, 'adain_pos_norm') else False,
             nfs_proj_dim=getattr(opts, 'nfs_proj_dim', 0),
+            use_corrective=getattr(opts, 'use_corrective', 0),
             freeze_bind_pose=opts.freeze_bind_pose if hasattr(opts, 'freeze_bind_pose') else False,
             use_gmm_hybrid=opts.use_gmm_hybrid if hasattr(opts, 'use_gmm_hybrid') else False,
             init_log_sigma=opts.init_log_sigma if hasattr(opts, 'init_log_sigma') else -1.2,
