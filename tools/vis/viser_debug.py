@@ -147,6 +147,7 @@ def _build_model(ckpt_dir: Path, device: torch.device):
         dfn_exp=getattr(opts, "dfn_exp", False),
         nfs_feat_dim=int(getattr(opts, "nfs_feat_dim", 256)) if getattr(opts, "nfs_feat_dir", None) else 0,
         nfs_proj_dim=int(getattr(opts, "nfs_proj_dim", 0)),
+        use_corrective=int(getattr(opts, "use_corrective", 0) or 0),
         nfs_concat=getattr(opts, "nfs_concat", False),
         adain_pos_norm=getattr(opts, "adain_pos_norm", False),
         freeze_bind_pose=getattr(opts, "freeze_bind_pose", False),
@@ -440,7 +441,53 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
         print(f"[ict_real] {len(real_ids)} ids (source-capable: {len(id_coeff_map)}) "
               f"<- {_real_dir}")
 
+    # ── Stylized test meshes (piers, malcolm, mary, morphy, girl, ...) ──
+    # Each is its OWN topology (unique V / faces) -> one TopoData per mesh.
+    # Target-only: retargeted FROM an anim source (mf/ict). Our model runs
+    # given Diff3F nfs_feat ({slug}_nfs_feat.npy in <test-mesh>/diff3f); NFR/NFS
+    # baselines run via on-the-fly precompute (topo key absent from
+    # _PRECOMPUTE_SUBDIRS -> auto on-the-fly). Built only if found on this host.
+    import glob as _gsty
+    _sty_dir = None
+    for _r in ("/data/sihun", "/data/inyup", "/data2/inyup"):
+        _d = os.path.join(_r, "NFR_data/test-mesh")
+        if os.path.isdir(_d) and _gsty.glob(os.path.join(_d, "*-align.obj")):
+            _sty_dir = _d
+            break
+    if _sty_dir is not None:
+        import trimesh as _tmsty
+        _sty_feat_dir = os.path.join(_sty_dir, "diff3f")
+        # curated stylized character set (skip FLAME/biwi/coma generic refs)
+        _STY_WANT = ["piers", "malcolm", "mary", "morphy", "morphy-bald",
+                     "girl", "bonnie-bald"]
+        _n_sty = 0
+        for _slug in _STY_WANT:
+            _objp = os.path.join(_sty_dir, f"{_slug}-align.obj")
+            if not os.path.exists(_objp):
+                continue
+            try:
+                _m = _tmsty.load(_objp, process=False, maintain_order=True)
+            except Exception as _e:
+                print(f"[stylized] {_slug} load failed: {_e}")
+                continue
+            _vv = np.asarray(_m.vertices, dtype=np.float32)
+            _ff = np.asarray(_m.faces, dtype=np.uint32)
+            _name = "sty_" + _slug.replace("-", "_")
+            _has_feat = os.path.exists(os.path.join(_sty_feat_dir,
+                                                    f"{_slug}_nfs_feat.npy"))
+            topos[_name] = TopoData(
+                name=_name, topo=_name, id_names=[_slug], faces=_ff,
+                nfs_dir=_sty_feat_dir, geo_dist=None,
+                supports_anim=False, exp_driver="none",
+                _verts_provider=(lambda nm, _v=_vv: _v),
+            )
+            _n_sty += 1
+            print(f"[stylized] {_name}: V={len(_vv)} F={len(_ff)} "
+                  f"diff3f={'yes' if _has_feat else 'MISSING'}")
+        print(f"[stylized] {_n_sty} meshes <- {_sty_dir} (feat dir {_sty_feat_dir})")
+
     return topos
+
 
 
 _REAL_DATA_BASEDIRS: list[str] = []   # filled from CLI in main()
@@ -1454,6 +1501,31 @@ def main():
     J = len(rig.joint_names)
     parent_idx = rig.parent_idx.cpu().numpy()
     helper_set = set(helper_idx or [])
+    # Helper text labels: "<parent>#<n>" (replaces cryptic joint name in 3D view).
+    helper_label_map = {}
+    try:
+        import json as _hjson
+        _hjp = getattr(opts, "helper_joints_json", None)
+        if _hjp and not os.path.isabs(_hjp):
+            _hjp = str(_REPO / _hjp)
+        if _hjp and os.path.exists(_hjp):
+            _hj = _hjson.load(open(_hjp))
+            _hlist = _hj.get("helpers", [])
+            _hidx = helper_idx or []
+            _pc = {}
+            for _i, _hh in enumerate(_hlist):
+                if _i >= len(_hidx):
+                    break
+                _pn = _hh.get("parent", "?")
+                _pc[_pn] = _pc.get(_pn, 0) + 1
+                helper_label_map[_hidx[_i]] = f"{_pn}#{_pc[_pn]}"
+    except Exception as _e:
+        print(f"[helper labels] json skipped: {_e}")
+    for _j in (helper_idx or []):
+        if _j not in helper_label_map:
+            _p = int(parent_idx[_j]) if 0 <= _j < len(parent_idx) else -1
+            _pn = rig.joint_names[_p] if 0 <= _p < len(rig.joint_names) else "root"
+            helper_label_map[_j] = f"{_pn}#{_j}"
 
     topos = _build_topos(ict, nfs_dir, geo_per_topo)
     if not topos:
@@ -1793,6 +1865,15 @@ def main():
                 "/joints/pred", points=pred, colors=cols_pred, point_size=0.012
             )
             nodes.append(h)
+            if g_show_helpers.value:
+                for _hj in helper_set:
+                    if 0 <= _hj < J and _hj in helper_label_map:
+                        try:
+                            nodes.append(server.scene.add_label(
+                                f"/joints/hlbl/{_hj}", text=helper_label_map[_hj],
+                                position=tuple(float(_x) for _x in pred[_hj])))
+                        except Exception:
+                            pass
             if g_bind_bones.value:
                 _bsegs = [[pred[int(parent_idx[j])], pred[j]] for j in range(J) if int(parent_idx[j]) >= 0]
                 if _bsegs:
