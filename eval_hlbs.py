@@ -154,7 +154,7 @@ def Options():
         # Model args: fill from yml only if not explicitly set via CLI
         model_keys = ['rig_path', 'topo_key', 'num_identities', 'hid_dim',
                       'num_layers', 'freeze_adapt', 'use_joint_trans', 'full_prediction',
-                      'nfs_feat_dir', 'init_log_sigma',
+                      'nfs_feat_dir', 'nfs_feat_dim', 'nfs_proj_dim', 'init_log_sigma',
                       'bind_pose_base_residual']
         for key in model_keys:
             if key in train_opts and getattr(opts, key, None) is None:
@@ -358,7 +358,8 @@ class HLBSEvaluator:
                 dfn_skin=opts.dfn_skin,
                 dfn_bind=opts.dfn_bind,
                 dfn_exp=opts.dfn_exp,
-                nfs_feat_dim=256 if opts.nfs_feat_dir else 0,
+                nfs_feat_dim=(int(getattr(opts,'nfs_feat_dim',256) or 256) if opts.nfs_feat_dir else 0),
+                nfs_proj_dim=int(getattr(opts,'nfs_proj_dim',0) or 0),
                 nfs_concat=getattr(opts, 'nfs_concat', False),
                 adain_pos_norm=getattr(opts, 'adain_pos_norm', False),
                 freeze_bind_pose=getattr(opts, 'freeze_bind_pose', False),
