@@ -205,7 +205,7 @@ class deformation_gradient(torch.autograd.Function):
         b = spmm(idxs, vals, m=shape[0], n=shape[1], matrix=input)
         b = cupy.from_dlpack(to_dlpack(b))
         cupy_output = ctx.solver.solve(b)
-        output = from_dlpack(cupy_output.toDlpack())
+        output = torch.from_dlpack(cupy_output)
         output = output.reshape(-1, batch_size, 3)
         output = output.transpose(0, 1)
         # print(f'forward time: {time.time() - t:.4f}s')
@@ -219,7 +219,7 @@ class deformation_gradient(torch.autograd.Function):
 
     
         grad_output = grad_output.permute(1, 0, 2).reshape(grad_output.shape[1], -1)
-        grad = from_dlpack(ctx.solver.solve(cupy.from_dlpack(to_dlpack(grad_output))).toDlpack())
+        grad = torch.from_dlpack(ctx.solver.solve(cupy.from_dlpack(to_dlpack(grad_output))))
         if grad.isnan().any():
             print(grad)
             raise ValueError('Nan found after solving for gradient!')

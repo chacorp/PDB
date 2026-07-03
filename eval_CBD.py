@@ -520,28 +520,28 @@ class Trainer():
         
         self.mf_precompute_path = '/data/sihun/multiface_align/precomputes'
         self.ict_precompute_path = '/data/sihun/ICT-audio2face/precompute-synth-fullhead'
-#         if 'mf' in selection:
-#             src_dfn_info  = pickle.load(open(os.path.join(
-#                 self.mf_precompute_path, f"{src_mesh_id}_dfn_info.pkl"
-#             ), 'rb'))
+        # if 'mf' in selection:
+        #     src_dfn_info  = pickle.load(open(os.path.join(
+        #         self.mf_precompute_path, f"{src_mesh_id}_dfn_info.pkl"
+        #     ), 'rb'))
             
-#             # tmp=EasyDict({'vertices':src_v.squeeze(), 'faces':src_f.squeeze()})
-#             # src_operators = get_mesh_operators(tmp)
-#             src_operators = pickle.load(open(os.path.join(
-#                 self.mf_precompute_path, f"{src_mesh_id}_operators.pkl"
-#             ), mode='rb'))
-#             src_img = np.load(os.path.join(self.mf_precompute_path, f"{src_mesh_id}_img.npy"))
-#             src_img = torch.from_numpy(src_img)[0]
+        #     # tmp=EasyDict({'vertices':src_v.squeeze(), 'faces':src_f.squeeze()})
+        #     # src_operators = get_mesh_operators(tmp)
+        #     src_operators = pickle.load(open(os.path.join(
+        #         self.mf_precompute_path, f"{src_mesh_id}_operators.pkl"
+        #     ), mode='rb'))
+        #     src_img = np.load(os.path.join(self.mf_precompute_path, f"{src_mesh_id}_img.npy"))
+        #     src_img = torch.from_numpy(src_img)[0]
             
-#         if 'ict'in selection:
-#             src_dfn_info = pickle.load(open(os.path.join(
-#                 self.ict_precompute_path, f"{src_mesh_id}_dfn_info.pkl"
-#             ), 'rb'))
-#             src_operators = pickle.load(open(os.path.join(
-#                 self.ict_precompute_path, f"{src_mesh_id}_operators.pkl"
-#             ), mode='rb'))
-#             src_img = np.load(os.path.join(self.ict_precompute_path, f"{src_mesh_id}_img.npy"))
-#             src_img = torch.from_numpy(src_img)[0]
+        # if 'ict'in selection:
+        #     src_dfn_info = pickle.load(open(os.path.join(
+        #         self.ict_precompute_path, f"{src_mesh_id}_dfn_info.pkl"
+        #     ), 'rb'))
+        #     src_operators = pickle.load(open(os.path.join(
+        #         self.ict_precompute_path, f"{src_mesh_id}_operators.pkl"
+        #     ), mode='rb'))
+        #     src_img = np.load(os.path.join(self.ict_precompute_path, f"{src_mesh_id}_img.npy"))
+        #     src_img = torch.from_numpy(src_img)[0]
             
         self.dataset = EvalDataset(data_name=selection, toggle=False) # if eve-s01
         # self.dataset = EvalDataset(data_name=selection, toggle=True) # if char-s02
@@ -669,12 +669,10 @@ class Trainer():
                                 src_operators = self.get_mesh_operators(src_mesh)
                                 src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                                 
-#                             src_dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
-#                             src_operators = self.get_mesh_operators(src_mesh)
-#                             src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
-                                
+                            # src_dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                            # src_operators = self.get_mesh_operators(src_mesh)
+                            # src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                             
-                        
                             img_feat = self.model.get_img_feat(src_img)
                             vert_feat = self.model.get_local_feature(
                                 batch.template[0][None], batch.faces[0], img_feat, at='verts'
@@ -701,9 +699,9 @@ class Trainer():
                                 )
                                 
                                 ## common routine
-#                                 src_dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
-#                                 src_operators = self.get_mesh_operators(src_mesh)
-#                                 src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
+                                # src_dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                                # src_operators = self.get_mesh_operators(src_mesh)
+                                # src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                                 img_feat = self.model.get_img_feat(src_img)
                                 vert_feat = self.model.get_local_feature(
                                     batch.template[0][None], batch.faces[0], img_feat, at='verts'
@@ -752,11 +750,11 @@ class Trainer():
                                     tmp_L.shape
                                 )
 
-#                             src_img = self.model.renderer.render_img(src_m).float().to(device)
-#                             src_img_feat = self.model.get_img_feat(src_img)[None]
-#                             src_dfn_info = self.get_dfn_info(src_m, map_location=device)
-#                             src_operators = self.get_mesh_operators(src_m)
-## common routine
+                            # src_img = self.model.renderer.render_img(src_m).float().to(device)
+                            # src_img_feat = self.model.get_img_feat(src_img)[None]
+                            # src_dfn_info = self.get_dfn_info(src_m, map_location=device)
+                            # src_operators = self.get_mesh_operators(src_m)
+                            ## common routine
                             if batch.mesh_data in [2, 4, 5]:
                             # if False:
                                 if batch.mesh_data == 2 or batch.mesh_data == 4:
@@ -796,12 +794,13 @@ class Trainer():
                                     tmp_L.shape
                                 )
 
-#                                 src_img = self.model.renderer.render_img(src_m).float().to(device)
-#                                 src_img_feat = self.model.get_img_feat(src_img)[None]
-#                                 src_dfn_info = self.get_dfn_info(src_m, map_location=device)
-#                                 src_operators = self.get_mesh_operators(src_m)
+                                # src_img = self.model.renderer.render_img(src_m).float().to(device)
+                                # src_img_feat = self.model.get_img_feat(src_img)[None]
+                                # src_dfn_info = self.get_dfn_info(src_m, map_location=device)
+                                # src_operators = self.get_mesh_operators(src_m)
                                 
-                                    ## common routine
+                                ## common routine
+
                                 if batch.mesh_data in [2, 4, 5]:
                                 # if False:
                                     if batch.mesh_data == 2 or batch.mesh_data == 4:
@@ -910,32 +909,31 @@ class Trainer():
                         pred_vertices*inner_mask
                     ).item() #* denom # for NGBC model
                     losses_val['MSE-in'] += MSE_in
-                    
+
                     MSE_out = F.mse_loss(
-                        batch.template*outter_mask, 
+                        batch.template*outter_mask,
                         pred_vertices*outter_mask
                     ).item() #* denom # for NGBC model
                     losses_val['MSE-out'] += MSE_out
                     
                     if self.opts.laplacian:
-#                         import pdb;pdb.set_trace()
                         MSE_lap = (tmp_L @ pred_vertices.squeeze().detach().cpu().numpy())*inner_mask.cpu().numpy()
                         MSE_lap = MSE_lap.mean()
                         
-#                         MSE_lap = F.mse_loss(
-#                             (src_L @ batch.vertices.squeeze())*inner_mask, 
-#                             (src_L @ pred_vertices.squeeze())*inner_mask
-#                         ).item() #* denom # * mmm
+                        # MSE_lap = F.mse_loss(
+                        #     (src_L @ batch.vertices.squeeze())*inner_mask, 
+                        #     (src_L @ pred_vertices.squeeze())*inner_mask
+                        # ).item() #* denom # * mmm
                         losses_val["Lap"] += MSE_lap
                 else:                    
                     if self.opts.laplacian:
                         MSE_lap = tmp_L @ pred_vertices.squeeze().detach().cpu().numpy()
                         MSE_lap = MSE_lap.mean()
                         
-#                         MSE_lap = F.mse_loss(
-#                             src_L @ batch.vertices.squeeze(), 
-#                             src_L @ pred_vertices.squeeze(),
-#                         ).item() #* denom
+                        # MSE_lap = F.mse_loss(
+                        #     src_L @ batch.vertices.squeeze(), 
+                        #     src_L @ pred_vertices.squeeze(),
+                        # ).item() #* denom
                         losses_val["Lap"] += MSE_lap
                         
                 MSE = F.mse_loss(
