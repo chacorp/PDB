@@ -20,9 +20,9 @@ for __util_path__ in [__abs_path__, __mesh_util_path__]:
 
 # from pytorch3d.structures import Meshes
 
-from utils.nfr_utils import Normalizer, get_dfn_info, calc_cent
+from utils.nfr_utils import Normalizer, get_dfn_info
 from utils.remesh_utils import ICT_face_model, load_obj_mesh, calc_norm_torch
-from utils.mesh_utils import Renderer, get_mesh_operators, get_jacobian_matrix
+from utils.mesh_utils import Renderer, get_mesh_operators, get_jacobian_matrix, calc_cent
 # import utils.nfr_utils as nfr_utils
 # from utils import (
 #     ICT_face_model, 
@@ -84,21 +84,20 @@ class NFS(nn.Module):
             # self.img_encoder = mesh_ae.img_encoder
             # self.img_fc = mesh_ae.img_fc
             self.img_encoder = TextureEncoder()
-            img_feat=32
-            self.img_fc = nn.Linear(128, img_feat)
-            self.id_encoder = BaseDiffusionNetEncoder(
+            self.img_fc = nn.Linear(128, self.img_feat_dim)
+            self.mesh_id_encoder = BaseDiffusionNetEncoder(
                 in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
                 pre_computes=mesh_dfn_info,
                 out_shape=self.id_dim,
             )
-            self.exp_encoder = BaseDiffusionNetEncoder(
+            self.mesh_exp_encoder = BaseDiffusionNetEncoder(
                 in_shape=in_shape_dict[self.in_key]+self.img_feat_dim,
                 pre_computes = mesh_dfn_info,
                 out_shape=self.rig_dim,
             )
-            self.decoder = BaseDecoder(
+            self.mesh_decoder = BaseDecoder(
                 #in_shape=3+3+128+100+53, ### NFR original setting
-                in_dim=in_shape_dict[self.in_key]+self.img_feat_dim+self.rig_dim+self.id_dim, 
+                in_dim=in_shape_dict[self.in_key]+self.img_feat_dim+self.rig_dim+self.id_dim,
                 out_shape=out_shape_dict[self.out_key]
             )
             
@@ -169,7 +168,7 @@ class NFS(nn.Module):
 #         # self.ict_vert_segment_fo = self.ict_vert_segment[:self.ict_face_model_fo.v_num]
         
         if self.is_train:
-            self.set_neutral_ict(ict_basedir="/data/sihun/ICT-audio2face")
+            self.set_neutral_ict(basedir="/data/sihun/ICT-audio2face")
         #---------------------------------------------------------------------------------
         
         
@@ -178,7 +177,9 @@ class NFS(nn.Module):
         if self.opts.dec_type=='jacob':
             from utils.nfr_utils import reconstruct_jacobians
             from utils.deformation_transfer import deformation_gradient
-            
+
+            self.reconstruct_jacobians = reconstruct_jacobians
+
             self.normalizer = Normalizer(f"{__abs_path__}/{self.opts.std_file}", self.device)
             self.myfunc = deformation_gradient.apply
         #---------------------------------------------------------------------------------
@@ -223,12 +224,13 @@ class NFS(nn.Module):
         if self.opts.design=='nfr' or self.opts.design=='new2':
             log_txt+=f"[img_encoder]: \t{self.count_parameters(self.img_encoder)}\n"
             log_txt+=f"[img_fc]: \t{self.count_parameters(self.img_fc)}\n"
+
         log_txt+=f"[mesh_id_encoder]: \t{self.count_parameters(self.mesh_id_encoder)}\n"
         log_txt+=f"[mesh_exp_encoder]: \t{self.count_parameters(self.mesh_exp_encoder)}\n"
-                
+
         if 'new2' in self.opts.design:
             log_txt+=f"[mesh_seg_encoder]: \t{self.count_parameters(self.mesh_seg_encoder)}\n"
-            
+
         log_txt+=f"[mesh_decoder]: \t{self.count_parameters(self.mesh_decoder)}\n"
         log_txt+="-------------------------------\n"
         log_txt+=f"[total]: \t{self.count_parameters(self)}\n"
@@ -440,7 +442,7 @@ class NFS(nn.Module):
             return local_feat
         else:
             verts_pos = vertices # [1, V, 3]
-            tri_centr = self.calc_cent(verts_pos.squeeze(0), faces, mode='torch').unsqueeze(0)
+            tri_centr = verts_pos.squeeze(0)[faces].mean(-2).unsqueeze(0)
             tri_norms = self.calc_norm_torch(verts_pos, faces)
             if 'new1' in self.opts.design:
                 local_feat = torch.cat([tri_centr, tri_norms], dim=-1) # [1, V, 3+3+128]
@@ -768,7 +770,7 @@ class NFS(nn.Module):
             
         if self.opts.dec_type=='jacob':
             pred_jacobians = self.normalizer.inv_normalize(pred_outputs)
-            pred_jacobians = reconstruct_jacobians(pred_jacobians, repr='matrix')
+            pred_jacobians = self.reconstruct_jacobians(pred_jacobians, repr='matrix')
             
             pred_outputs = self.calc_vert(pred_jacobians, self.myfunc, operators)
         else:
@@ -881,7 +883,7 @@ class NFS(nn.Module):
                 operators = self.get_mesh_operators(tgt_mesh)
             
             pred_jacobians = self.normalizer.inv_normalize(pred_outputs)
-            pred_jacobians = reconstruct_jacobians(pred_jacobians, repr='matrix')
+            pred_jacobians = self.reconstruct_jacobians(pred_jacobians, repr='matrix')
             
             with torch.no_grad():
                 pred_outputs = self.calc_vert(pred_jacobians, self.myfunc, operators)
@@ -1468,24 +1470,11 @@ class NFS(nn.Module):
         else:
             bs_coeff = bs_coeff.to(self.device)
             
-        style_emb = None # depricated 
+        style_emb = None # depricated
         inputs = (local_feat, pred_exp_coeff, pred_id_coeff, pred_seg_coeff, style_emb, tgt_verts, tgt_faces, tgt_operators)
-            
-                    tmp_vertices = self.mesh_decoder(
-                        local_feat.repeat(pred_rig.shape[0], 1, 1),
-                        pred_rig.repeat(1, V, 1), #--------------- [WS, V, Rig]
-                        pred_id_coeff.repeat(pred_rig.shape[0], V, 1),
-                        pred_seg_coeff.repeat(pred_rig.shape[0], 1, 1),
-                    ) # [B, num vertices, out_dim]
-                    pred_outputs.append(tmp_vertices)
-                    
-                if verbose:
-                    print(f"[Infer] Inference time: {time.time() - st} sec")
-                    
-                pred_outputs = torch.vstack(pred_outputs) #-------------------- [W, V, 3]
-                
-            if self.opts.dec_type=='disp':
-                pred_outputs = tgt_verts + pred_outputs
+
+        if self.opts.dec_type=='disp':
+            pred_outputs = tgt_verts + pred_outputs
                 
         return pred_outputs
     
