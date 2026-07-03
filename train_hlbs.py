@@ -141,6 +141,19 @@ def Options():
     parser.add_argument("--helper_joints_json", type=str,
                         default='maya_rig/hybrid/helper_joints_v1.json',
                         help='Path to helper_joints config (used for mirror_pairs).')
+    parser.add_argument("--lambda_w_mirror", type=float, default=0.0,
+                        help='Bilateral symmetry PRIOR on skinning weights W. '
+                             'L_w_mirror = mean|W[v,j] - W[mir(v), swap(j)]|, where mir = per-topology '
+                             'L/R vertex mirror map (nearest to x-flipped position) and swap = joint '
+                             'L/R swap (Left<->Right, midline->self). Penalizes network non-equivariance '
+                             '(asymmetric W under symmetric input). Full-mesh batches only.')
+    parser.add_argument("--w_mirror_mode", type=str, default='vertex',
+                        choices=['vertex', 'moment'],
+                        help="L_w_mirror mechanism. 'vertex': per-vertex W[v]~W[mir(v),swap] "
+                             "(needs vertex mirror map; strongest, directly targets A_W). "
+                             "'moment': match each joint's weight-field moments (mass/centroid/"
+                             "covariance) to its mirror joint (map-free, needs only joint swap; "
+                             "robust when topology is not vertex-symmetric, e.g. mf).")
 
     # regional weight constraint
     parser.add_argument("--lambda_rwc", type=float, default=0.0,
@@ -1626,6 +1639,36 @@ class HLBSTrainer:
             else:
                 self._mirror_pair_idx = None
 
+        # ── Joint L/R swap map for L_w_mirror (skinning-weight symmetry prior) ──
+        self._joint_swap_idx = None
+        self._wmirror_map_by_N = {}
+        self._wmirror_ref_by_N = {}          # N -> symmetric reference verts (mean mesh)
+        if getattr(opts, 'lambda_w_mirror', 0) > 0:
+            _n2i = {n: i for i, n in enumerate(rig.joint_names)}
+            def _swap_name(n):
+                for a, b in (('Left', 'Right'), ('_L_', '_R_')):
+                    if a in n:
+                        return n.replace(a, b)
+                    if b in n:
+                        return n.replace(b, a)
+                return n
+            _sw = [_n2i.get(_swap_name(n), i) for i, n in enumerate(rig.joint_names)]
+            self._joint_swap_idx = torch.tensor(_sw, dtype=torch.long, device=self.device)
+            _nlat = int((self._joint_swap_idx != torch.arange(len(_sw), device=self.device)).sum())
+            print(f"[L_w_mirror] joint swap map: {_nlat}/{len(_sw)} lateral joints "
+                  f"(lambda_w_mirror={opts.lambda_w_mirror})")
+            # Symmetric reference meshes -> clean per-vertex mirror map (index
+            # correspondence is a TOPOLOGY property, identity-independent). ict_mean
+            # is exactly symmetric (~1e-6); mf topology is not vertex-symmetric so its
+            # map stays ~0.025-approximate regardless (best available).
+            import trimesh as _tm
+            for _rp in ('third_party/coupe.computational-caricaturization/inputs/ict_mean.obj',
+                        'third_party/coupe.computational-caricaturization/inputs/mf_mean.obj'):
+                if os.path.exists(_rp):
+                    _rv = np.asarray(_tm.load(_rp, process=False).vertices)
+                    self._wmirror_ref_by_N[int(_rv.shape[0])] = _rv
+                    print(f"[L_w_mirror] symmetric ref {os.path.basename(_rp)} N={_rv.shape[0]}")
+
         self.model = HierarchicalLBS_FullPred(
             rig=rig,
             topology=opts.topo_key,
@@ -1905,7 +1948,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_ortho": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_w_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_ortho": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -2323,6 +2366,62 @@ class HLBSTrainer:
                             _W, src_v, batch.faces).items():
                         loss_dict[k] = v
 
+                # ── L/R skinning-weight symmetry prior (network equivariance) ──
+                # W is identity-level skinning; for a bilaterally-symmetric face
+                # topology it should be L/R symmetric (genuine asymmetry lives in
+                # the per-frame joint transforms, not W). Full-mesh batches only.
+                # Two modes (see --w_mirror_mode): 'vertex' = per-vertex mirror,
+                # 'moment' = map-free per-joint moment matching.
+                if (getattr(opts, 'lambda_w_mirror', 0) > 0 and not is_permed
+                        and _W is not None and self._joint_swap_idx is not None):
+                    _wmode = getattr(opts, 'w_mirror_mode', 'vertex')
+                    if _wmode == 'moment':
+                        # map-free: match each joint's weight-field moments to its
+                        # mirror joint (mass/centroid/covariance over vertex positions).
+                        _swp = self._joint_swap_idx
+                        _eps = 1e-6
+                        _p = src_v                                       # [B,N,3]
+                        _m = _W.sum(dim=1)                               # [B,J] 0th (mass)
+                        _wp = torch.einsum('bnj,bnd->bjd', _W, _p)       # [B,J,3] 1st
+                        _c = _wp / (_m.unsqueeze(-1) + _eps)             # centroid
+                        _pp = _p.unsqueeze(-1) * _p.unsqueeze(-2)        # [B,N,3,3]
+                        _S = torch.einsum('bnj,bnde->bjde', _W, _pp) / (_m[..., None, None] + _eps)
+                        _cov = _S - _c.unsqueeze(-1) * _c.unsqueeze(-2)  # [B,J,3,3] 2nd central
+                        _flip = torch.tensor([-1., 1., 1.], device=_W.device)
+                        _c_s = _c.index_select(1, _swp) * _flip          # flip_x(centroid_swap)
+                        _cov_s = _cov.index_select(1, _swp).clone()      # M·cov·Mᵀ, M=diag(-1,1,1)
+                        _cov_s[..., 0, 1] *= -1; _cov_s[..., 1, 0] *= -1
+                        _cov_s[..., 0, 2] *= -1; _cov_s[..., 2, 0] *= -1
+                        _m_s = _m.index_select(1, _swp)
+                        _per_j = ((_m - _m_s).abs()
+                                  + (_c - _c_s).norm(dim=-1)
+                                  + (_cov - _cov_s).flatten(start_dim=-2).norm(dim=-1))  # [B,J]
+                        if self._face_joint_idx:
+                            _fj = torch.tensor(self._face_joint_idx, dtype=torch.long, device=_W.device)
+                            _per_j = _per_j.index_select(1, _fj)
+                        loss_dict['L_w_mirror'] = _per_j.mean()
+                    else:
+                        # per-vertex: W[v,:] ~ W[mir(v), swap(:)] (needs vertex map).
+                        _Ncur = src_v.shape[1]
+                        if _Ncur not in self._wmirror_map_by_N:
+                            from scipy.spatial import cKDTree
+                            # Prefer symmetric mean-mesh ref (identity-independent map);
+                            # fall back to the batch's own neutral otherwise.
+                            if _Ncur in self._wmirror_ref_by_N:
+                                _Vref = self._wmirror_ref_by_N[_Ncur]; _rtag = 'mean-mesh'
+                            else:
+                                _Vref = src_v[0].detach().cpu().numpy(); _rtag = 'batch-mesh'
+                            _Vc = _Vref - _Vref.mean(0)
+                            _Vm = _Vc.copy(); _Vm[:, 0] *= -1
+                            _d, _mir = cKDTree(_Vc).query(_Vm)
+                            self._wmirror_map_by_N[_Ncur] = torch.tensor(
+                                _mir, dtype=torch.long, device=src_v.device)
+                            print(f"[L_w_mirror] built vertex mirror map N={_Ncur} "
+                                  f"src={_rtag} (mean pair dist {float(_d.mean()):.2e})")
+                        _mirT = self._wmirror_map_by_N[_Ncur]
+                        _Wm = _W.index_select(1, _mirT).index_select(2, self._joint_swap_idx)
+                        loss_dict['L_w_mirror'] = (_W - _Wm).abs().sum(dim=-1).mean()
+
                 # ── #3 reference-weight prior (Mesh2Animation L_id) ──────
                 # MSE to closest-bone one-hot; needs predicted joint_pos.
                 if (getattr(opts, 'lambda_wref', 0) > 0
@@ -2539,6 +2638,7 @@ class HLBSTrainer:
                     "L_helper_residual": getattr(opts, 'lambda_helper_residual', 0.0),
                     "L_bind_residual": getattr(opts, 'lambda_bind_residual', 0.0),
                     "L_mirror": getattr(opts, 'lambda_mirror', 0.0),
+                    "L_w_mirror": getattr(opts, 'lambda_w_mirror', 0.0),
                     "L_rwc_init": opts.lambda_rwc,
                     "L_rwc_min": opts.lambda_rwc,
                     "L_hier": opts.lambda_hier,
