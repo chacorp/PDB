@@ -477,6 +477,12 @@ def Options():
                         help='Stage-2: initialize model weights from this checkpoint FILE '
                              '(strict=False). Unlike --continue_ckpt, starts a FRESH run dir, '
                              'optimizer, and epoch counter.')
+    parser.add_argument("--use_helper_stage2", action='store_true',
+                        help='Stage-2 helper branch: frozen base rig + trainable helper-only '
+                             'heads (helper_logit_net / helper_pose_head / helper_bind_head). '
+                             'Use with --init_ckpt (base-only stage-1 ckpt) + --freeze_base_rig '
+                             '+ --use_helpers 1 + manual active_joints_json.')
+    parser.set_defaults(use_helper_stage2=False)
     parser.add_argument("--freeze_base_rig", action='store_true',
                         help='Stage-2: freeze ALL stage-1 rig params (skinning/bind/exp/pose nets); '
                              'train ONLY the corrective branch (corr_blend/corr_coef). '
@@ -1687,6 +1693,7 @@ class HLBSTrainer:
             adain_pos_norm=opts.adain_pos_norm if hasattr(opts, 'adain_pos_norm') else False,
             nfs_proj_dim=getattr(opts, 'nfs_proj_dim', 0),
             use_corrective=getattr(opts, 'use_corrective', 0),
+            use_helper_stage2=getattr(opts, 'use_helper_stage2', False),
             freeze_bind_pose=opts.freeze_bind_pose if hasattr(opts, 'freeze_bind_pose') else False,
             use_gmm_hybrid=opts.use_gmm_hybrid if hasattr(opts, 'use_gmm_hybrid') else False,
             init_log_sigma=opts.init_log_sigma if hasattr(opts, 'init_log_sigma') else -1.2,
@@ -1771,23 +1778,33 @@ class HLBSTrainer:
 
         # ── Stage-2: initialize from stage-1 ckpt (fresh run dir/optimizer/epoch) ──
         if getattr(opts, 'init_ckpt', '') and not (opts.ckpt and opts.continue_ckpt):
-            _msg = self.model.load_state_dict(
-                torch.load(opts.init_ckpt, map_location=self.device), strict=False)
+            _sd = torch.load(opts.init_ckpt, map_location=self.device)
+            _own = self.model.state_dict()
+            # Drop shape-mismatched entries (e.g. face_joint_idx 34 -> 55 when a
+            # base-only ckpt initializes a helper-enabled model): strict=False
+            # skips missing/unexpected KEYS but still errors on size mismatch.
+            _drop = [k for k, v in _sd.items() if k in _own and _own[k].shape != v.shape]
+            for k in _drop:
+                _sd.pop(k)
+            if _drop:
+                print(f"[Stage2] dropped shape-mismatched keys: {_drop}")
+            _msg = self.model.load_state_dict(_sd, strict=False)
             print(f"[Stage2] init from: {opts.init_ckpt} "
                   f"(missing={len(_msg.missing_keys)} unexpected={len(_msg.unexpected_keys)})")
             if _msg.missing_keys:
                 print(f"[Stage2] fresh-init modules: {sorted(set(k.split('.')[0] for k in _msg.missing_keys))}")
 
-        # ── Stage-2: freeze base rig, train corrective branch only ──
+        # ── Stage-2: freeze base rig, train helper/corrective branch only ──
         if getattr(opts, 'freeze_base_rig', False):
+            _S2_TRAINABLE = ('corr_', 'helper_logit_net', 'helper_pose_head', 'helper_bind_head')
             _n_frz = 0; _n_trn = 0
             for _pn, _pp in self.model.named_parameters():
-                if _pn.startswith('corr_'):
+                if _pn.startswith(_S2_TRAINABLE):
                     _pp.requires_grad = True;  _n_trn += _pp.numel()
                 else:
                     _pp.requires_grad = False; _n_frz += _pp.numel()
             print(f"[Stage2] base rig FROZEN ({_n_frz/1e6:.2f}M params) | "
-                  f"trainable corrective: {_n_trn/1e3:.1f}K params")
+                  f"trainable branch: {_n_trn/1e3:.1f}K params")
 
         self.optimizer = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],

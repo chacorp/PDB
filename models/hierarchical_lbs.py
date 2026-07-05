@@ -518,6 +518,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         adain_pos_norm: bool = False,
         nfs_proj_dim: int = 0,
         use_corrective: int = 0,
+        use_helper_stage2: bool = False,
         freeze_bind_pose: bool = False,
         use_gmm_hybrid: bool = False,
         init_log_sigma: float = -1.2,
@@ -725,6 +726,54 @@ class HierarchicalLBS_FullPred(nn.Module):
                 nn.Linear(12, hid_dim), nn.ELU(), nn.Linear(hid_dim, self.corr_N))
             print(f"[HLBS Corrective] enabled | N={self.corr_N} blend=LinearEncoder(in={_corr_in},hid={hid_dim},L={num_layers}) coef[R,t]->{self.corr_N}")
 
+        # ── Stage-2 helper branch (frozen base rig + trainable helper heads) ──
+        # Base nets stay frozen (trainer's --freeze_base_rig); helpers get their
+        # OWN heads whose outputs are injected into the helper rows/columns:
+        #   helper_logit_net : skin_input -> helper logit columns (REPLACE, not add —
+        #     the frozen columns were face-masked out of the stage-1 softmax and
+        #     never trained). layer_out zero-W + bias=-4 => initial softmax share
+        #     ~0 (ControlNet-style no-op start; exact -inf would kill the
+        #     softmax gradient α(1-α)).
+        #   helper_pose_head : z_exp -> helper LOCAL rot6d(+t). Identity-init;
+        #     FK (_chain_hierarchy) then makes helpers move exactly with their
+        #     parent, so weight takeover INHERITS base motion instead of
+        #     diluting it. The head learns only the deviation.
+        #   helper_bind_head : skin_input -> helper bind-pos delta (zero-init)
+        #     on top of the frozen base+residual prediction.
+        self.use_helper_stage2 = bool(use_helper_stage2)
+        if self.use_helper_stage2:
+            assert helper_joint_idx, "use_helper_stage2 requires helper_joint_idx"
+            _H = len(helper_joint_idx)
+            _hs_in = (6 + _eff_nfs) if (nfs_feat_dim > 0 and self.nfs_concat) \
+                     else (_eff_nfs if nfs_feat_dim > 0 else 6)
+            _hs_adain = 6 if adain_pos_norm else None
+            self.helper_logit_net = LinearEncoder(
+                in_dim=_hs_in, out_dim=_H, hid_dim=hid_dim,
+                num_layers=num_layers, out_type='vertices',
+                adain_in_dim=_hs_adain,
+            )
+            nn.init.zeros_(self.helper_logit_net.layer_out.weight)
+            nn.init.constant_(self.helper_logit_net.layer_out.bias, -4.0)
+            _hs_pose_out = _H * 9 if use_joint_trans else _H * 6
+            self.helper_pose_head = LinearEncoder(
+                in_dim=hid_dim, out_dim=_hs_pose_out, hid_dim=hid_dim,
+                out_type='global',
+            )
+            nn.init.zeros_(self.helper_pose_head.layer_out.weight)
+            with torch.no_grad():
+                _hs_bias = torch.zeros(_hs_pose_out)
+                _hs_bias[:_H * 6] = torch.tensor([1., 0., 0., 0., 1., 0.]).repeat(_H)
+                self.helper_pose_head.layer_out.bias.copy_(_hs_bias)
+            self.helper_bind_head = LinearEncoder(
+                in_dim=_hs_in, out_dim=_H * 3, hid_dim=hid_dim,
+                out_type='global', adain_in_dim=_hs_adain,
+            )
+            nn.init.zeros_(self.helper_bind_head.layer_out.weight)
+            nn.init.zeros_(self.helper_bind_head.layer_out.bias)
+            print(f"[HLBS HelperStage2] enabled | {_H} helpers | "
+                  f"logit(in={_hs_in}->{_H}, bias=-4) pose(z{hid_dim}->{_hs_pose_out}, identity-init) "
+                  f"bind({_H}x3, zero-init)")
+
         if dfn_skin:
             from models.encoder import BaseDiffusionNetEncoder
             self.skin_weight_net = BaseDiffusionNetEncoder(
@@ -901,6 +950,12 @@ class HierarchicalLBS_FullPred(nn.Module):
             logit_net = self.skin_weight_net(source_feat)  # [B, N, J]
         else:
             logit_net = self.skin_weight_net(source_feat, adain_input=adain_input)  # [B, N, J]
+        # Stage-2 helper branch: REPLACE helper logit columns (frozen ones were
+        # face-masked out of stage-1 softmax — untrained values).
+        if getattr(self, 'use_helper_stage2', False):
+            _hl = self.helper_logit_net(source_feat, adain_input=adain_input)  # [B, N, H]
+            logit_net = logit_net.clone()
+            logit_net[..., self.helper_joint_idx_buf] = _hl
         logit_net = self._smooth_logit_W(logit_net)
         # Cache raw smoothed logit_net for net_center_loss / diagnostic access via extras
         self._last_logit_net = logit_net
@@ -1007,6 +1062,13 @@ class HierarchicalLBS_FullPred(nn.Module):
         if self._bind_pose_base_residual:
             joint_pos = self.bind_pos_base.unsqueeze(0) + raw            # [B, J, 3]
             self._last_bind_pose_residual = raw                          # all joints
+            # Stage-2 helper branch: zero-init delta on frozen helper bind pos
+            if getattr(self, 'use_helper_stage2', False):
+                _hb = self.helper_bind_head(source_feat, adain_input=adain_input)
+                _hb = _hb.squeeze(1).reshape(B, -1, 3)                   # [B, H, 3]
+                _hidx = self.helper_joint_idx_buf
+                joint_pos = joint_pos.clone()
+                joint_pos[:, _hidx] = joint_pos[:, _hidx] + _hb
         elif self._helper_joint_set:
             joint_pos = raw.clone()
             for j in self._helper_joint_set:
@@ -1094,6 +1156,26 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Forward ──────────────────────────────────────────────────────────
 
+    def _helper_stage2_pose(self, z_flat, local_R, local_t):
+        """Stage-2 helper branch: replace helper LOCAL transforms with the
+        trainable head. Identity-init means helpers initially move rigidly with
+        their parent via FK (_chain_hierarchy) — no-op start, deviation learned."""
+        B = z_flat.shape[0]
+        _hidx = self.helper_joint_idx_buf
+        H = int(_hidx.numel())
+        out = self.helper_pose_head(z_flat.unsqueeze(1)).squeeze(1)      # [B, H*9 | H*6]
+        if self.use_joint_trans:
+            _r6 = out[:, :H * 6].reshape(B * H, 6)
+            _ht = out[:, H * 6:].reshape(B, H, 3, 1)
+        else:
+            _r6 = out.reshape(B * H, 6)
+            _ht = torch.zeros(B, H, 3, 1, device=out.device, dtype=out.dtype)
+        _hR = self._rot6d(_r6).reshape(B, H, 3, 3)
+        local_R = local_R.clone(); local_t = local_t.clone()
+        local_R[:, _hidx] = _hR
+        local_t[:, _hidx] = _ht
+        return local_R, local_t
+
     def forward(self, source_vert, deform_in, source_normal=None, return_z_exp=False, z_exp_override=None, nfs_feat=None, return_extras=False, bind_pos_cache=None, dist_sq_geo=None, reuse_identity=False):
         B, N, _ = source_vert.shape
         J = self.num_joints
@@ -1150,6 +1232,8 @@ class HierarchicalLBS_FullPred(nn.Module):
             local_t = torch.zeros(B, J, 3, 1, device=device, dtype=source_vert.dtype)
 
         local_R   = self._rot6d(rot6d).reshape(B, J, 3, 3)
+        if getattr(self, 'use_helper_stage2', False):
+            local_R, local_t = self._helper_stage2_pose(z_exp_flat, local_R, local_t)
         zeros_row = torch.zeros(B, J, 1, 3, device=device, dtype=source_vert.dtype)
         ones_val  = torch.ones( B, J, 1, 1, device=device, dtype=source_vert.dtype)
         top       = torch.cat([local_R, local_t], dim=-1)
@@ -1242,6 +1326,8 @@ class HierarchicalLBS_FullPred(nn.Module):
             local_t = torch.zeros(B, J, 3, 1, device=device, dtype=src_def_vert.dtype)
 
         local_R   = self._rot6d(rot6d).reshape(B, J, 3, 3)
+        if getattr(self, 'use_helper_stage2', False):
+            local_R, local_t = self._helper_stage2_pose(z_exp_flat, local_R, local_t)
         zeros_row = torch.zeros(B, J, 1, 3, device=device, dtype=src_def_vert.dtype)
         ones_val  = torch.ones( B, J, 1, 1, device=device, dtype=src_def_vert.dtype)
         top       = torch.cat([local_R, local_t], dim=-1)
