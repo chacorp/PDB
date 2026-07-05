@@ -477,6 +477,13 @@ def Options():
                         help='Stage-2: initialize model weights from this checkpoint FILE '
                              '(strict=False). Unlike --continue_ckpt, starts a FRESH run dir, '
                              'optimizer, and epoch counter.')
+    parser.add_argument("--helper_stage2_mode", type=str, default='heads',
+                        choices=['heads', 'rows'],
+                        help="Stage-2 helper mechanism. 'heads': new helper-only modules "
+                             "(use with --use_helper_stage2). 'rows': NO new modules — train "
+                             "only the helper ROWS of the three frozen final layers "
+                             "(skin/pose/bind layer_out); per-joint rows are independent so "
+                             "base outputs stay bit-exact (~35K effective params).")
     parser.add_argument("--use_helper_stage2", action='store_true',
                         help='Stage-2 helper branch: frozen base rig + trainable helper-only '
                              'heads (helper_logit_net / helper_pose_head / helper_bind_head). '
@@ -1795,20 +1802,81 @@ class HLBSTrainer:
                 print(f"[Stage2] fresh-init modules: {sorted(set(k.split('.')[0] for k in _msg.missing_keys))}")
 
         # ── Stage-2: freeze base rig, train helper/corrective branch only ──
+        _s2_rows_mode = False
         if getattr(opts, 'freeze_base_rig', False):
-            _S2_TRAINABLE = ('corr_', 'helper_logit_net', 'helper_pose_head', 'helper_bind_head')
-            _n_frz = 0; _n_trn = 0
-            for _pn, _pp in self.model.named_parameters():
-                if _pn.startswith(_S2_TRAINABLE):
-                    _pp.requires_grad = True;  _n_trn += _pp.numel()
-                else:
-                    _pp.requires_grad = False; _n_frz += _pp.numel()
-            print(f"[Stage2] base rig FROZEN ({_n_frz/1e6:.2f}M params) | "
-                  f"trainable branch: {_n_trn/1e3:.1f}K params")
+            if (getattr(opts, 'helper_stage2_mode', 'heads') == 'rows'
+                    and not getattr(opts, 'use_helper_stage2', False)):
+                # ── rows mode: NO new modules. Freeze everything, then train ONLY
+                # the helper ROWS of the three final layers. Each output unit has
+                # its own row (out_j = w_j·h + b_j), rows are independent, so base
+                # outputs stay bit-exact. Grad hooks zero non-helper rows; one
+                # UNION mask per tensor (multiple hooks would multiply/intersect).
+                _s2_rows_mode = True
+                for _pp in self.model.parameters():
+                    _pp.requires_grad = False
+                _hidx = self.model.helper_joint_idx_buf.tolist()
+                _J = self.model.num_joints
 
+                def _enable_rows(layer, rows):
+                    _mw = torch.zeros_like(layer.weight); _mw[rows] = 1.0
+                    _mb = torch.zeros_like(layer.bias);   _mb[rows] = 1.0
+                    layer.weight.requires_grad = True
+                    layer.bias.requires_grad = True
+                    layer.weight.register_hook(lambda g, m=_mw: g * m)
+                    layer.bias.register_hook(lambda g, m=_mb: g * m)
+
+                # 1) skin logits: helper rows, re-init W=0 / bias=-4 (stage-1
+                #    values were face-masked out of softmax => untrained garbage;
+                #    -4 => near-zero initial softmax share, grad still alive)
+                _lo = self.model.skin_weight_net.layer_out
+                with torch.no_grad():
+                    _lo.weight[_hidx] = 0.0
+                    _lo.bias[_hidx] = -4.0
+                _enable_rows(_lo, _hidx)
+
+                # 2) pose rows: layout [J*6 rot6d | J*3 t]. Identity rot6d bias
+                #    => helpers initially move rigidly with parent via FK.
+                _po = self.model.lbs_pose_model.layer_out
+                _rot_rows = [6 * h + k for h in _hidx for k in range(6)]
+                _t_rows = ([_J * 6 + 3 * h + k for h in _hidx for k in range(3)]
+                           if opts.use_joint_trans else [])
+                _pose_rows = _rot_rows + _t_rows
+                with torch.no_grad():
+                    _po.weight[_pose_rows] = 0.0
+                    _po.bias[_rot_rows] = torch.tensor(
+                        [1., 0., 0., 0., 1., 0.], device=_po.bias.device).repeat(len(_hidx))
+                    if _t_rows:
+                        _po.bias[_t_rows] = 0.0
+                _enable_rows(_po, _pose_rows)
+
+                # 3) bind rows: keep stage-1 values (weak L_bind_reg supervised —
+                #    plausible positions), just make them trainable.
+                _bo = self.model.bind_pose_net.layer_out
+                _bind_rows = [3 * h + k for h in _hidx for k in range(3)]
+                _enable_rows(_bo, _bind_rows)
+
+                _eff = ((len(_hidx) + len(_pose_rows) + len(_bind_rows))
+                        * (_lo.weight.shape[1] + 1))
+                print(f"[Stage2-rows] base rig frozen (bit-exact) | trainable helper rows: "
+                      f"skin {len(_hidx)} pose {len(_pose_rows)} bind {len(_bind_rows)} "
+                      f"(~{_eff/1e3:.1f}K effective params)")
+            else:
+                _S2_TRAINABLE = ('corr_', 'helper_logit_net', 'helper_pose_head', 'helper_bind_head')
+                _n_frz = 0; _n_trn = 0
+                for _pn, _pp in self.model.named_parameters():
+                    if _pn.startswith(_S2_TRAINABLE):
+                        _pp.requires_grad = True;  _n_trn += _pp.numel()
+                    else:
+                        _pp.requires_grad = False; _n_frz += _pp.numel()
+                print(f"[Stage2] base rig FROZEN ({_n_frz/1e6:.2f}M params) | "
+                      f"trainable branch: {_n_trn/1e3:.1f}K params")
+
+        # rows mode: weight_decay must be 0 — AdamW's decoupled decay shrinks the
+        # WHOLE tensor (incl. frozen base rows with zero grads) every step.
         self.optimizer = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
-            lr=opts.lr, betas=(0.9, 0.999))
+            lr=opts.lr, betas=(0.9, 0.999),
+            weight_decay=(0.0 if _s2_rows_mode else 1e-2))
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=opts.sc_step, gamma=opts.sc_gamma)
 
