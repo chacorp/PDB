@@ -78,6 +78,7 @@ class EvalDataset(data.Dataset):
             self.ict_len = len(self.iden_vecs)
             self.ict_exp_len = len(self.expression_vecs)
             self.len = self.ict_len * self.ict_exp_len
+            self._ict_template_cache = {}
             self.get_data = self.get_ict
 
         if self.data_name=='ict-cap':
