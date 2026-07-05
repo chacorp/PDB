@@ -460,6 +460,15 @@ def Options():
     parser.add_argument("--start_epoch", type=int, default=0)
     parser.add_argument("--continue_ckpt", dest='continue_ckpt', action='store_true')
     parser.set_defaults(continue_ckpt=False)
+    parser.add_argument("--init_ckpt", type=str, default='',
+                        help='Stage-2: initialize model weights from this checkpoint FILE '
+                             '(strict=False). Unlike --continue_ckpt, starts a FRESH run dir, '
+                             'optimizer, and epoch counter.')
+    parser.add_argument("--freeze_base_rig", action='store_true',
+                        help='Stage-2: freeze ALL stage-1 rig params (skinning/bind/exp/pose nets); '
+                             'train ONLY the corrective branch (corr_blend/corr_coef). '
+                             'Use with --init_ckpt + --use_corrective.')
+    parser.set_defaults(freeze_base_rig=False)
 
     # data path
     parser.add_argument("--data_basedir", type=str, default="/data/sihun",
@@ -1716,6 +1725,26 @@ class HLBSTrainer:
                     print(f"[FullPred resume] missing={len(_msg.missing_keys)} "
                           f"unexpected={len(_msg.unexpected_keys)}")
                 print(f"[FullPred] Resumed from: {ckpt_path}")
+
+        # ── Stage-2: initialize from stage-1 ckpt (fresh run dir/optimizer/epoch) ──
+        if getattr(opts, 'init_ckpt', '') and not (opts.ckpt and opts.continue_ckpt):
+            _msg = self.model.load_state_dict(
+                torch.load(opts.init_ckpt, map_location=self.device), strict=False)
+            print(f"[Stage2] init from: {opts.init_ckpt} "
+                  f"(missing={len(_msg.missing_keys)} unexpected={len(_msg.unexpected_keys)})")
+            if _msg.missing_keys:
+                print(f"[Stage2] fresh-init modules: {sorted(set(k.split('.')[0] for k in _msg.missing_keys))}")
+
+        # ── Stage-2: freeze base rig, train corrective branch only ──
+        if getattr(opts, 'freeze_base_rig', False):
+            _n_frz = 0; _n_trn = 0
+            for _pn, _pp in self.model.named_parameters():
+                if _pn.startswith('corr_'):
+                    _pp.requires_grad = True;  _n_trn += _pp.numel()
+                else:
+                    _pp.requires_grad = False; _n_frz += _pp.numel()
+            print(f"[Stage2] base rig FROZEN ({_n_frz/1e6:.2f}M params) | "
+                  f"trainable corrective: {_n_trn/1e3:.1f}K params")
 
         self.optimizer = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
