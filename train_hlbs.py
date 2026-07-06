@@ -477,6 +477,11 @@ def Options():
                         help='Stage-2: initialize model weights from this checkpoint FILE '
                              '(strict=False). Unlike --continue_ckpt, starts a FRESH run dir, '
                              'optimizer, and epoch counter.')
+    parser.add_argument("--cross_pair_mf_prob", type=float, default=0.0,
+                        help='Probability of drawing the cross-retarget batch from the MF '
+                             'cross-id pair dataset (per-id PCA expression sampling + delta '
+                             'transfer pseudo-GT) instead of the ICT pair dataset. 0=ICT only. '
+                             'Requires --lambda_cross_retarget > 0.')
     parser.add_argument("--helper_stage2_mode", type=str, default='heads',
                         choices=['heads', 'rows'],
                         help="Stage-2 helper mechanism. 'heads': new helper-only modules "
@@ -1618,6 +1623,28 @@ class HLBSTrainer:
                       f"Disabling cross-retarget supervision.")
                 self._cross_pair_loader = None
 
+        # ── MF cross-id pair loader (delta-transfer pseudo-GT) ──────────
+        self._cross_pair_mf_loader = None
+        if (getattr(opts, 'lambda_cross_retarget', 0) > 0
+                and getattr(opts, 'cross_pair_mf_prob', 0) > 0):
+            try:
+                from dataloader_cross_pair import CrossPairMFDataset, cross_pair_collate
+                _mf_ds = CrossPairMFDataset(data_basedir=opts.data_basedir, mode='train')
+                _mf_nw = opts.num_workers
+                self._cross_pair_mf_loader = torch.utils.data.DataLoader(
+                    _mf_ds, batch_size=opts.batch_size, num_workers=_mf_nw,
+                    persistent_workers=(_mf_nw > 0),
+                    pin_memory=torch.cuda.is_available(),
+                    shuffle=True, collate_fn=partial(cross_pair_collate, device='cpu'))
+                self._cross_pair_mf_iter = iter(self._cross_pair_mf_loader)
+                print(f"[cross-pair-mf] CrossPairMFDataset: {len(_mf_ds._ids)} ids, "
+                      f"{len(_mf_ds._holders)} PCA holders -> {len(_mf_ds)} pairs/epoch "
+                      f"(prob={opts.cross_pair_mf_prob})")
+            except Exception as _e:
+                print(f"[cross-pair-mf] WARNING: failed to build CrossPairMFDataset: {_e}. "
+                      f"ICT-only cross pairs.")
+                self._cross_pair_mf_loader = None
+
         # ── Per-topo landmark vertex indices (for subsample anchor pinning) ──
         self._landmark_vidx_per_topo = {}
         if getattr(opts, 'subsample_ratio', 0) > 0:
@@ -2572,11 +2599,22 @@ class HLBSTrainer:
                 # ── Cross-id retarget loss (Track B) ─────────────────────
                 if (getattr(opts, 'lambda_cross_retarget', 0) > 0
                         and self._cross_pair_loader is not None):
-                    try:
-                        cb = next(self._cross_pair_iter)
-                    except StopIteration:
-                        self._cross_pair_iter = iter(self._cross_pair_loader)
-                        cb = next(self._cross_pair_iter)
+                    # Draw from MF pair loader with prob cross_pair_mf_prob
+                    # (delta-transfer pseudo-GT), else from the ICT pair loader.
+                    _cp_is_mf = (getattr(self, '_cross_pair_mf_loader', None) is not None
+                                 and np.random.random() < getattr(opts, 'cross_pair_mf_prob', 0))
+                    if _cp_is_mf:
+                        try:
+                            cb = next(self._cross_pair_mf_iter)
+                        except StopIteration:
+                            self._cross_pair_mf_iter = iter(self._cross_pair_mf_loader)
+                            cb = next(self._cross_pair_mf_iter)
+                    else:
+                        try:
+                            cb = next(self._cross_pair_iter)
+                        except StopIteration:
+                            self._cross_pair_iter = iter(self._cross_pair_loader)
+                            cb = next(self._cross_pair_iter)
                     cb = cb.to(self.device)
                     B_c, V_c, _ = cb.tgt_template.shape
 
@@ -2611,10 +2649,11 @@ class HLBSTrainer:
                     if _bp_items is not None and len(_bp_items) == B_c:
                         _tgt_bp = torch.stack(_bp_items, dim=0).detach()
 
-                    # geo_dist² for tgt (cross-pair is always ICT)
+                    # geo_dist² for tgt (topology follows the drawn pair loader)
+                    _cp_topo = 'mf' if _cp_is_mf else 'ict'
                     _tgt_geo = None
-                    if 'ict' in self._geo_dist_per_topo:
-                        _gd = self._geo_dist_per_topo['ict'].t()         # [V, J]
+                    if _cp_topo in self._geo_dist_per_topo:
+                        _gd = self._geo_dist_per_topo[_cp_topo].t()      # [V, J]
                         if _gd.shape[0] >= V_c:
                             _gd = _gd[:V_c]
                             _tgt_geo = (_gd.unsqueeze(0).expand(B_c, -1, -1)) ** 2

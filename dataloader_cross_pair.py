@@ -171,3 +171,79 @@ if __name__ == '__main__':
     print(f'batch.tgt_vertices: {batch.tgt_vertices.shape}')
     print(f'batch.exp_coeff:    {batch.exp_coeff.shape}')
     print('OK')
+
+
+class CrossPairMFDataset(data.Dataset):
+    """MF cross-id pair dataset via per-id PCA expression sampling + delta transfer.
+
+    MF has no parametric cross-identity GT (per-id PCA bases are independent),
+    but the topology is registered, so an expression DELTA transfers:
+        frame_A = PCA_A.reconstruct(z)            (train-time PCA augmentation,
+                                                   same as get_multiface_SEN/ROM)
+        delta   = frame_A - template_A
+        tgt_def = template_B + delta              <- pseudo-GT on identity B
+    This is the same first-order assumption the caricature augmentation already
+    relies on (aug_template + delta). Tuple/collate interface identical to
+    CrossPairICTDataset (exp_coeff slot is a zero placeholder).
+    """
+    def __init__(self, data_basedir='/data/sihun', mode='train', scale=1.0,
+                 length=None, seed=None):
+        import glob as _glob
+        import pickle as _pickle
+        from utils.exp_utils import PCA_holder
+        self.scale = scale
+        with open(f"{data_basedir}/multiface_align/mf_templates.pkl", 'rb') as f:
+            self._templates = _pickle.load(f)
+        self.faces = np.asarray(self._templates['face'], dtype=np.int32)
+
+        # id list = ids with a per-id PCA npz in this mode (SEN + ROM corpora)
+        self._holders = []          # list of (id_name, PCA_holder)
+        for corpus in ('SEN', 'ROM'):
+            for p in sorted(_glob.glob(
+                    f"{data_basedir}/multiface_align/{corpus}/{mode}/vertices_npy/*_pca.npz")):
+                idn = os.path.basename(p).replace('_pca.npz', '')
+                if 'smooth' in idn or idn not in self._templates:
+                    continue
+                self._holders.append((idn, PCA_holder(p)))
+        self._ids = sorted(set(idn for idn, _ in self._holders))
+        assert len(self._ids) >= 2, f"need >=2 mf ids, got {self._ids}"
+        self.length = length if length is not None else max(1, len(self._holders) * 53)
+        self._rng = np.random.RandomState(seed) if seed is not None else np.random
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, index):
+        hi = self._rng.randint(len(self._holders))
+        id_a, holder = self._holders[hi]
+        id_b = id_a
+        while id_b == id_a:
+            id_b = self._ids[self._rng.randint(len(self._ids))]
+
+        t_a = np.asarray(self._templates[id_a], dtype=np.float32)
+        t_b = np.asarray(self._templates[id_b], dtype=np.float32)
+        z = holder.sample_z(scale=self.scale)
+        frame_a = holder.reconstruct(z).astype(np.float32)          # src deformed
+        delta = frame_a - t_a
+        tgt_def = (t_b + delta).astype(np.float32)                  # pseudo-GT
+
+        faces = self.faces
+        src_neu_n = igl.per_vertex_normals(t_a, faces).astype(np.float32)
+        src_def_n = igl.per_vertex_normals(frame_a, faces).astype(np.float32)
+        tgt_neu_n = igl.per_vertex_normals(t_b, faces).astype(np.float32)
+        tgt_def_n = igl.per_vertex_normals(tgt_def, faces).astype(np.float32)
+
+        return (
+            torch.from_numpy(t_a),
+            torch.from_numpy(frame_a),
+            torch.from_numpy(t_b),
+            torch.from_numpy(tgt_def),
+            torch.from_numpy(faces).long(),
+            torch.from_numpy(src_neu_n),
+            torch.from_numpy(src_def_n),
+            torch.from_numpy(tgt_neu_n),
+            torch.from_numpy(tgt_def_n),
+            torch.zeros(53, dtype=torch.float32),   # exp_coeff placeholder
+            id_a,
+            id_b,
+        )
