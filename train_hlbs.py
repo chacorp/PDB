@@ -477,6 +477,15 @@ def Options():
                         help='Stage-2: initialize model weights from this checkpoint FILE '
                              '(strict=False). Unlike --continue_ckpt, starts a FRESH run dir, '
                              'optimizer, and epoch counter.')
+    parser.add_argument("--caricat_ict_off", action='store_true',
+                        help='Disable caricaturization aug for ICT samples (111 ids already give '
+                             'ample identity diversity; caricat budget goes to MF instead).')
+    parser.set_defaults(caricat_ict_off=False)
+    parser.add_argument("--caricat_mf_off", action='store_true',
+                        help='Disable the (PCA-path) MF caricaturization aug. NOTE: before '
+                             '2026-07-08 the train-time MF getters had NO caricat at all — '
+                             'historical runs were effectively ICT-caricat-only.')
+    parser.set_defaults(caricat_mf_off=False)
     parser.add_argument("--bind_reg_exclude_extra", action='store_true',
                         help='With use_helpers=0 + a manual active_joints_json: exclude the '
                              'listed helper_joint_idx from bind-pose GT supervision (L_bind_reg) '

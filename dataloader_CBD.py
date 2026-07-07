@@ -291,7 +291,9 @@ class EvalDataset(data.Dataset):
         # → caricaturized identity in the same expression. Falls back to non-aug
         # silently if the per-id aug file is missing.
         use_aug = False
-        if getattr(self, "_caricat_prob", 0) > 0 and np.random.random() < self._caricat_prob:
+        if (getattr(self, "_caricat_prob", 0) > 0
+                and not getattr(self.opts, "caricat_ict_off", False)
+                and np.random.random() < self._caricat_prob):
             _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
             if os.path.isfile(_aug_path):
                 use_aug = True
@@ -1310,6 +1312,25 @@ class CBDDataset(data.Dataset):
 
         template = self.mf_SEN_mesh[id_name]
         faces = self.mf_SEN_mesh["face"]
+        # ── Caricaturization aug (train, PCA path): swap identity template to
+        # its caricatured variant; the expression delta (PCA recon − template)
+        # is re-applied on the aug template (same delta-transfer assumption as
+        # the datalist-path caricat and CrossPairMFDataset).
+        if (getattr(self, "_caricat_prob", 0) > 0
+                and not getattr(self.opts, "caricat_mf_off", False)
+                and np.random.random() < self._caricat_prob):
+            _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
+            if os.path.isfile(_aug_path):
+                _ck = id_name + "_aug_np"
+                _aug_t = self._caricat_template_cache_mf.get(_ck)
+                if _aug_t is None:
+                    _aug_t = np.load(_aug_path).astype(np.float32)
+                    self._caricat_template_cache_mf[_ck] = _aug_t
+                deformed = _aug_t + (deformed - template)
+                smooth_deformed = _aug_t + (smooth_deformed - template)
+                template = _aug_t
+                id_name = f"{id_name}_aug"
+
 
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
@@ -1338,6 +1359,25 @@ class CBDDataset(data.Dataset):
 
         template = self.mf_ROM_mesh[id_name]
         faces = self.mf_ROM_mesh["face"]
+        # ── Caricaturization aug (train, PCA path): swap identity template to
+        # its caricatured variant; the expression delta (PCA recon − template)
+        # is re-applied on the aug template (same delta-transfer assumption as
+        # the datalist-path caricat and CrossPairMFDataset).
+        if (getattr(self, "_caricat_prob", 0) > 0
+                and not getattr(self.opts, "caricat_mf_off", False)
+                and np.random.random() < self._caricat_prob):
+            _aug_path = os.path.join(self._caricat_aug_dir, f"{id_name}_aug.npy")
+            if os.path.isfile(_aug_path):
+                _ck = id_name + "_aug_np"
+                _aug_t = self._caricat_template_cache_mf.get(_ck)
+                if _aug_t is None:
+                    _aug_t = np.load(_aug_path).astype(np.float32)
+                    self._caricat_template_cache_mf[_ck] = _aug_t
+                deformed = _aug_t + (deformed - template)
+                smooth_deformed = _aug_t + (smooth_deformed - template)
+                template = _aug_t
+                id_name = f"{id_name}_aug"
+
 
         template_normal = igl.per_vertex_normals(template, faces)
         deformed_normal = igl.per_vertex_normals(deformed, faces)
