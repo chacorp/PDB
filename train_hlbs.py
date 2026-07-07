@@ -477,6 +477,13 @@ def Options():
                         help='Stage-2: initialize model weights from this checkpoint FILE '
                              '(strict=False). Unlike --continue_ckpt, starts a FRESH run dir, '
                              'optimizer, and epoch counter.')
+    parser.add_argument("--mf_idpca_prob", type=float, default=0.0,
+                        help='Per-sample prob of swapping the MF identity template to a pseudo-id '
+                             'sampled from the mf identity-PCA space (delta-transfer, like caricat). '
+                             'Requires mfpca_XX.npy in --mf_idpca_dir + matching bind GT '
+                             '(nfs_features_seg/mfpca_XX_bind_pos_landmark.npy) and Diff3F feat '
+                             '(diff3f_feat_raw/mfpca_XX_nfs_feat.npy).')
+    parser.add_argument("--mf_idpca_dir", type=str, default='mf_idpca_aug')
     parser.add_argument("--caricat_ict_off", action='store_true',
                         help='Disable caricaturization aug for ICT samples (111 ids already give '
                              'ample identity diversity; caricat budget goes to MF instead).')

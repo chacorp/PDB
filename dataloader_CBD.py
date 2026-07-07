@@ -1312,6 +1312,29 @@ class CBDDataset(data.Dataset):
 
         template = self.mf_SEN_mesh[id_name]
         faces = self.mf_SEN_mesh["face"]
+        # ── MF identity-PCA aug (train): swap identity to a sampled pseudo-id
+        # drawn from the mf identity-PCA space (mf_idpca_aug/mfpca_XX.npy).
+        # Same delta-transfer as caricat; id_name switches to mfpca_XX so the
+        # trainer looks up its own bind GT / Diff3F feat. If this fires, the
+        # caricat block below self-skips ({mfpca_XX}_aug.npy never exists).
+        if (getattr(self.opts, "mf_idpca_prob", 0) > 0
+                and np.random.random() < float(self.opts.mf_idpca_prob)):
+            if not hasattr(self, "_idpca_files"):
+                self._idpca_files = sorted(glob.glob(os.path.join(
+                    getattr(self.opts, "mf_idpca_dir", "mf_idpca_aug"), "mfpca_*.npy")))
+                self._idpca_cache = {}
+            if self._idpca_files:
+                _fp = self._idpca_files[np.random.randint(len(self._idpca_files))]
+                _idn = os.path.basename(_fp)[:-4]
+                _t = self._idpca_cache.get(_idn)
+                if _t is None:
+                    _t = np.load(_fp).astype(np.float32)
+                    self._idpca_cache[_idn] = _t
+                deformed = _t + (deformed - template)
+                smooth_deformed = _t + (smooth_deformed - template)
+                template = _t
+                id_name = _idn
+
         # ── Caricaturization aug (train, PCA path): swap identity template to
         # its caricatured variant; the expression delta (PCA recon − template)
         # is re-applied on the aug template (same delta-transfer assumption as
@@ -1359,6 +1382,29 @@ class CBDDataset(data.Dataset):
 
         template = self.mf_ROM_mesh[id_name]
         faces = self.mf_ROM_mesh["face"]
+        # ── MF identity-PCA aug (train): swap identity to a sampled pseudo-id
+        # drawn from the mf identity-PCA space (mf_idpca_aug/mfpca_XX.npy).
+        # Same delta-transfer as caricat; id_name switches to mfpca_XX so the
+        # trainer looks up its own bind GT / Diff3F feat. If this fires, the
+        # caricat block below self-skips ({mfpca_XX}_aug.npy never exists).
+        if (getattr(self.opts, "mf_idpca_prob", 0) > 0
+                and np.random.random() < float(self.opts.mf_idpca_prob)):
+            if not hasattr(self, "_idpca_files"):
+                self._idpca_files = sorted(glob.glob(os.path.join(
+                    getattr(self.opts, "mf_idpca_dir", "mf_idpca_aug"), "mfpca_*.npy")))
+                self._idpca_cache = {}
+            if self._idpca_files:
+                _fp = self._idpca_files[np.random.randint(len(self._idpca_files))]
+                _idn = os.path.basename(_fp)[:-4]
+                _t = self._idpca_cache.get(_idn)
+                if _t is None:
+                    _t = np.load(_fp).astype(np.float32)
+                    self._idpca_cache[_idn] = _t
+                deformed = _t + (deformed - template)
+                smooth_deformed = _t + (smooth_deformed - template)
+                template = _t
+                id_name = _idn
+
         # ── Caricaturization aug (train, PCA path): swap identity template to
         # its caricatured variant; the expression delta (PCA recon − template)
         # is re-applied on the aug template (same delta-transfer assumption as
