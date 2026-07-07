@@ -477,6 +477,13 @@ def Options():
                         help='Stage-2: initialize model weights from this checkpoint FILE '
                              '(strict=False). Unlike --continue_ckpt, starts a FRESH run dir, '
                              'optimizer, and epoch counter.')
+    parser.add_argument("--bind_reg_exclude_extra", action='store_true',
+                        help='With use_helpers=0 + a manual active_joints_json: exclude the '
+                             'listed helper_joint_idx from bind-pose GT supervision (L_bind_reg) '
+                             'WITHOUT enabling helper reparam/mirror. For equal-budget controls: '
+                             'extra joints must learn placement freely — their template positions '
+                             'are untrusted parked slots and must never be GT-anchored.')
+    parser.set_defaults(bind_reg_exclude_extra=False)
     parser.add_argument("--cross_pair_mf_prob", type=float, default=0.0,
                         help='Probability of drawing the cross-retarget batch from the MF '
                              'cross-id pair dataset (per-id PCA expression sampling + delta '
@@ -1479,7 +1486,15 @@ class HLBSTrainer:
             self._base_joint_idx = _aj['base_joint_idx']
             _helper_list = _aj.get('helper_joint_idx', [])
             # use_helpers=0 → don't apply helper-aware logic (helpers learned as regular joints).
-            self._helper_joint_idx = list(_helper_list) if self._use_helpers else []
+            # bind_reg_exclude_extra: even with use_helpers=0 (no reparam/mirror),
+            # keep the helper idx list at TRAINER level so L_bind_reg excludes
+            # those joints from bind-pose GT supervision — their template
+            # positions are untrusted parked slots; placement must be learned.
+            # (model ctor stays gated by _use_helpers → no HelperReparam.)
+            self._helper_joint_idx = (
+                list(_helper_list)
+                if (self._use_helpers or getattr(opts, 'bind_reg_exclude_extra', False))
+                else [])
             print(f"[Option A] Loaded {len(self._face_joint_idx)} face joints, "
                   f"base={_aj['base_joint_name']} (idx={self._base_joint_idx}), "
                   f"helpers={len(_helper_list)} "
