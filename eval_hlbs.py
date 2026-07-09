@@ -448,8 +448,8 @@ class HLBSEvaluator:
             for fp in feat_files:
                 fname = os.path.basename(fp).replace('_nfs_feat.npy', '')
                 self._nfs_feat_cache[fname] = torch.tensor(
-                    np.load(fp), dtype=torch.float32).to(self.device)
-            print(f"[eval] NFS feat loaded: {len(self._nfs_feat_cache)} identities on GPU")
+                    np.load(fp), dtype=torch.float32)  # keep on CPU; moved to GPU per-use
+            print(f"[eval] NFS feat loaded: {len(self._nfs_feat_cache)} identities on CPU")
 
         # ── Output dir ──────────────────────────────────────────────────
         # eval_hlbs/{ckpt_basename}-eval/e050-self/mf_ROM/
@@ -667,7 +667,7 @@ class HLBSEvaluator:
     def _get_nfs_feat(self, id_name, verts_np=None, faces_np=None):
         """Get NFS seg feature: from cache if available, otherwise extract online."""
         if id_name in self._nfs_feat_cache:
-            return self._nfs_feat_cache[id_name]
+            return self._nfs_feat_cache[id_name].to(self.device)
 
         # Online extraction for unseen identity
         if verts_np is not None and faces_np is not None and self.opts.nfs_feat_dir:

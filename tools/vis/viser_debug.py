@@ -922,9 +922,9 @@ def _ensure_baseline_env():
         return (_BASELINE_ENV_MSG == "OK"), _BASELINE_ENV_MSG
     import sys, os, subprocess
     import torch
-    _BASELINE_ENV_CHECKED = True
     if not torch.cuda.is_available():
         _BASELINE_ENV_MSG = "no GPU on this node -> NFR/NFS disabled (cupy operators are CUDA). Use a GPU viser node."
+        _BASELINE_ENV_CHECKED = True
         print(f"[baseline env] {_BASELINE_ENV_MSG}")
         return False, _BASELINE_ENV_MSG
     try:
@@ -932,10 +932,17 @@ def _ensure_baseline_env():
     except Exception:
         print("[baseline env] cupy missing -> installing cupy-cuda12x (one-time)...")
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "cupy-cuda12x"], check=False)
+        import importlib
+        for _m in [k for k in list(sys.modules)
+                   if k == "cupy" or k.startswith("cupy.") or k == "cupyx" or k.startswith("cupyx.")]:
+            del sys.modules[_m]
+        importlib.invalidate_caches()
         try:
             import cupy, cupyx  # noqa: F401
         except Exception as e:
-            _BASELINE_ENV_MSG = f"cupy install failed ({e}) -> NFR/NFS operators unavailable."
+            _BASELINE_ENV_MSG = ("cupy is installed but could not load in this running viser "
+                                 f"-> RESTART viser to enable NFR/NFS (import error: {e}).")
+            _BASELINE_ENV_CHECKED = True
             print(f"[baseline env] {_BASELINE_ENV_MSG}")
             return False, _BASELINE_ENV_MSG
 
@@ -971,10 +978,12 @@ def _ensure_baseline_env():
                        check=False, env=env)
         _BASELINE_ENV_MSG = ("pytorch3d rebuilt to GPU -> RESTART viser to use it "
                              "(this process still has the CPU build loaded).")
+        _BASELINE_ENV_CHECKED = True
         print(f"[baseline env] {_BASELINE_ENV_MSG}")
         return False, _BASELINE_ENV_MSG
 
     _BASELINE_ENV_MSG = "OK"
+    _BASELINE_ENV_CHECKED = True
     print("[baseline env] GPU + cupy + pytorch3d(GPU) ready.")
     return True, _BASELINE_ENV_MSG
 
