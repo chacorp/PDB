@@ -449,7 +449,7 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
     # _PRECOMPUTE_SUBDIRS -> auto on-the-fly). Built only if found on this host.
     import glob as _gsty
     _sty_dir = None
-    for _r in ("/data/sihun", "/data/inyup", "/data2/inyup"):
+    for _r in ("/data/sihun", "/data/inyup", "/data2/inyup", "/source/inyup"):
         _d = os.path.join(_r, "NFR_data/test-mesh")
         if os.path.isdir(_d) and _gsty.glob(os.path.join(_d, "*-align.obj")):
             _sty_dir = _d
@@ -2212,6 +2212,16 @@ def main():
                 rgb = _tile(g_src_color.value, out["src_def_v"].shape[0])
                 h = _add_per_vertex_color_mesh(
                     server, "/cross/src_def", out["src_def_v"], src_td.faces, rgb,
+                    opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
+                nodes.append(h)
+            # ... and the target neutral, so a feat-less target (e.g. stylized
+            # mesh without Diff3F cache) still shows up when clicked.
+            if out["tgt_neu_v"] is not None and g_show_tgt_neu.value:
+                _sw = float(out["src_def_v"][:, 0].max() - out["src_def_v"][:, 0].min()) if out["src_def_v"] is not None else 0.0
+                _tv = out["tgt_neu_v"].copy(); _tv[:, 0] += _sw * 1.2
+                rgb = _tile(g_tgt_color.value, _tv.shape[0])
+                h = _add_per_vertex_color_mesh(
+                    server, "/cross/tgt_neu", _tv, tgt_td.faces, rgb,
                     opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
                 nodes.append(h)
             return
