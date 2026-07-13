@@ -1548,6 +1548,94 @@ def main():
           f"anim_seqs={avail_seqs} model_needs_nfs={model_needs_nfs}")
 
     cache = IdentityCache(model, rig, device, model_needs_nfs=model_needs_nfs)
+
+    # ── TTA rig injection ──────────────────────────────────────────────
+    # Loads per-target optimized rigs (W logits->softmax'd W, bind pose, and
+    # per-joint transform scales) produced by tta_selfrecon_v2/v3 into
+    # <repo>/tta_proto*/{kind}_{id}/optimized.npz. A GUI dropdown swaps them
+    # in at inference time; networks themselves are untouched.
+    import glob as _tta_glob
+    from pytorch3d.transforms import matrix_to_axis_angle as _tta_m2aa, \
+        axis_angle_to_matrix as _tta_aa2m
+    _tta_data = {}
+    _tta = {"active": None, "scales_on": False}
+    for _p in sorted(_tta_glob.glob(str(_REPO / "tta_proto*" / "*" / "optimized.npz"))):
+        _nm = Path(_p).parent.name
+        try:
+            _kind, _idn = _nm.split("_", 1)
+        except ValueError:
+            continue
+        _ver = "v3" if "tta_proto_v3" in _p else "v2"
+        _z = np.load(_p)
+        _J = model.num_joints
+        _tta_data[f"{_ver}:{_nm}"] = {
+            "ds": _kind, "id": _idn, "V": int(_z["W"].shape[1]),
+            "W": torch.tensor(np.asarray(_z["W"]), dtype=torch.float32, device=device),
+            "bind": torch.tensor(np.asarray(_z["bind"]), dtype=torch.float32, device=device),
+            "s_rot": (torch.tensor(np.asarray(_z["s_rot"]), dtype=torch.float32, device=device)
+                      if "s_rot" in _z else torch.ones(_J, device=device)),
+            "s_trn": (torch.tensor(np.asarray(_z["s_trn"]), dtype=torch.float32, device=device)
+                      if "s_trn" in _z else torch.ones(_J, device=device)),
+        }
+    if _tta_data:
+        print(f"[TTA] {len(_tta_data)} optimized rigs: {sorted(_tta_data.keys())}")
+        _tta_orig_gsw = model._get_skinning_weights
+        _tta_orig_gbp = model._get_bind_pose
+        _tta_orig_rot6d = model._rot6d
+        _tta_orig_pose = model.lbs_pose_model
+        _tta_orig_ret = model.retarget
+
+        def _tta_gsw(*a, **k):
+            W, dW = _tta_orig_gsw(*a, **k)
+            d = _tta_data.get(_tta["active"])
+            if d is not None and W.shape[1] == d["V"]:
+                W = d["W"]
+            return W, dW
+
+        def _tta_gbp(*a, **k):
+            Bi, jp = _tta_orig_gbp(*a, **k)
+            d = _tta_data.get(_tta["active"])
+            if d is not None and a and getattr(a[0], "ndim", 0) >= 2 and a[0].shape[1] == d["V"]:
+                jp = d["bind"]
+                Bi = model._build_B_inv(jp)
+            return Bi, jp
+
+        def _tta_rot6d(x):
+            Rm = _tta_orig_rot6d(x)
+            d = _tta_data.get(_tta["active"])
+            if d is None or not _tta["scales_on"]:
+                return Rm
+            _J = model.num_joints
+            aa = _tta_m2aa(Rm).reshape(-1, _J, 3) * d["s_rot"][None, :, None]
+            return _tta_aa2m(aa.reshape(-1, 3))
+
+        class _TTAPose(torch.nn.Module):
+            def __init__(self, orig):
+                super().__init__(); self.orig = orig
+            def forward(self, z, **kw):
+                out = self.orig(z, **kw)
+                d = _tta_data.get(_tta["active"])
+                if d is None or not _tta["scales_on"]:
+                    return out
+                _J = model.num_joints; B_ = out.shape[0]
+                rot = out[..., :_J * 6]
+                trn = out[..., _J * 6:].reshape(B_, 1, _J, 3) * d["s_trn"][None, None, :, None]
+                return torch.cat([rot, trn.reshape(B_, 1, _J * 3)], dim=-1)
+
+        def _tta_ret(*a, **k):
+            # transform scales are target-rig calibration: engage only inside
+            # retarget so other topologies' self-recon renders stay untouched.
+            _tta["scales_on"] = True
+            try:
+                return _tta_orig_ret(*a, **k)
+            finally:
+                _tta["scales_on"] = False
+
+        model._get_skinning_weights = _tta_gsw
+        model._get_bind_pose = _tta_gbp
+        model._rot6d = _tta_rot6d
+        model.lbs_pose_model = _TTAPose(_tta_orig_pose)
+        model.retarget = _tta_ret
     baseline = BaselineRunner(device, _REPO)
     init_ds = "ict_train" if "ict_train" in topos else avail_ds[0]
     cache.set_active(topos[init_ds])
@@ -1757,6 +1845,10 @@ def main():
             "method",
             options=["hlbs (ours)", "nfr", "nfs"],
             initial_value="hlbs (ours)",
+        )
+        _tta_opts = ["off"] + sorted(_tta_data.keys())
+        g_tta = server.gui.add_dropdown(
+            "TTA rig (optimized)", options=_tta_opts, initial_value="off",
         )
         # Optional datasets that depend on per-server data (precompute / meshes).
         # Shown so it's clear when one is unavailable on the current host.
@@ -2914,6 +3006,20 @@ def main():
     g_anim_seq.on_update(_on_seq_change)
     g_src_ds.on_update(_on_src_ds_change)
     g_tgt_ds.on_update(_on_tgt_ds_change)
+
+    def _on_tta_change(_e):
+        sel = g_tta.value
+        _tta["active"] = None if sel == "off" else sel
+        d = _tta_data.get(sel)
+        if d is not None and d["ds"] in topos:
+            g_tgt_ds.value = d["ds"]
+            g_tgt_id.max = len(topos[d["ds"]].id_names) - 1
+            try:
+                g_tgt_id.value = topos[d["ds"]].id_names.index(d["id"])
+            except ValueError:
+                pass
+        render()
+    g_tta.on_update(_on_tta_change)
 
     # bind primary controls — render on any change.
     g_mode.on_update(_on_mode_change)
