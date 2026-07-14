@@ -654,6 +654,39 @@ def _load_gt_bind_pos(nfs_dir: str, id_idx: int) -> np.ndarray | None:
     return np.load(p).astype(np.float32)
 
 
+_FEAT_CACHE: dict = {}
+
+def _feat_raw(td, id_idx: int):
+    """Raw per-vertex Diff3F feature [V, 2048] for topo/id (cached)."""
+    id_name = td.id_names[id_idx]
+    key = (td.name, id_name)
+    if key in _FEAT_CACHE:
+        return _FEAT_CACHE[key]
+    f = None
+    if td.nfs_dir is not None:
+        p = Path(td.nfs_dir) / f"{id_name}_nfs_feat.npy"
+        if p.exists():
+            f = np.load(p).astype(np.float32)
+    _FEAT_CACHE[key] = f
+    return f
+
+
+def _feat_pca_rgb(feats: list) -> list:
+    """Joint 3-PC PCA -> RGB in a SHARED color space across the given meshes
+    (same semantic region -> same color across topologies)."""
+    rs = np.random.RandomState(0)
+    X = np.concatenate(feats, 0)
+    sub = X[rs.choice(X.shape[0], min(8000, X.shape[0]), replace=False)]
+    mu = sub.mean(0)
+    _, _, Vt = np.linalg.svd(sub - mu, full_matrices=False)
+    P = Vt[:3].T
+    Ys = [(F - mu) @ P for F in feats]
+    Yall = np.concatenate(Ys, 0)
+    lo = np.percentile(Yall, 2, axis=0); hi = np.percentile(Yall, 98, axis=0)
+    return [(np.clip((Y - lo) / np.maximum(hi - lo, 1e-8), 0, 1) * 255).astype(np.uint8)
+            for Y in Ys]
+
+
 # ───────────────────────── color helpers ────────────────────────────────────
 
 
@@ -1648,7 +1681,7 @@ def main():
 
     # ───── GUI ──────────────────────────────────────────────────────────
     g_mode = server.gui.add_dropdown(
-        "Mode", options=["bind_pose", "weight", "anim", "cross"], initial_value="bind_pose"
+        "Mode", options=["bind_pose", "weight", "anim", "cross", "feat"], initial_value="bind_pose"
     )
     def _list_epoch_tags(_ckpt_dir):
         """List of selectable epoch tags: 'best' + each numbered epoch desc."""
@@ -1795,6 +1828,9 @@ def main():
             options=["YlOrRd", "OrRd", "Reds", "hot", "afmhot", "inferno", "magma", "viridis"],
             initial_value="YlOrRd",
         )
+        g_nrm_vis = server.gui.add_dropdown(
+            "normal vis (pred)", options=["off", "rgb", "needles"], initial_value="off",
+        )
         # Joint position source. Each option lives in a different coord frame:
         # - T_world (animated): rig reference frame (Maya rig positions), where
         #   pred_v actually ends up after skinning. Aligned with pred mesh but
@@ -1840,6 +1876,9 @@ def main():
         g_show_src = server.gui.add_checkbox("show source meshes (neu+def)", True)
         g_show_tgt_neu = server.gui.add_checkbox("show target neutral", True)
         g_cross_err = server.gui.add_checkbox("self-retarget error overlay", True)
+        g_cross_nrm = server.gui.add_dropdown(
+            "normal vis (tgt pred)", options=["off", "rgb", "needles"], initial_value="off",
+        )
         g_cross_joints = server.gui.add_dropdown("cross joints", options=["off", "bind (neutrals)", "posed (tgt anim)"], initial_value="off")
         g_compare_method = server.gui.add_dropdown(
             "method",
@@ -1856,6 +1895,23 @@ def main():
             f"{_nm}: {'있음' if _nm in topos else '없음(이 서버)'}"
             for _nm in ("ict_real",))
         server.gui.add_text("optional datasets", _opt_avail, disabled=True)
+
+    with server.gui.add_folder("Feature (Diff3F)"):
+        g_feat_mode = server.gui.add_dropdown(
+            "feat mode", options=["pca-rgb", "correspondence"], initial_value="pca-rgb",
+        )
+        _feat_ds0 = "mf" if "mf" in topos else list(topos.keys())[0]
+        g_feat_tgt_ds = server.gui.add_dropdown(
+            "feat tgt dataset", options=list(topos.keys()), initial_value=_feat_ds0,
+        )
+        g_feat_tgt_id = server.gui.add_slider(
+            "feat tgt id", min=0, max=max(len(topos[_feat_ds0].id_names) - 1, 1),
+            step=1, initial_value=0,
+        )
+        g_feat_shared = server.gui.add_checkbox("shared PCA (src+tgt)", True)
+        g_anchor = server.gui.add_slider(
+            "anchor vertex (src, corr mode)", min=0, max=20000, step=1, initial_value=0,
+        )
 
     with server.gui.add_folder("Sequence stats"):
         g_seq_stats_md = server.gui.add_markdown(
@@ -2169,11 +2225,25 @@ def main():
             rgb_pred = _tile(g_mesh_color.value, pred_v.shape[0])
             err_mm = float("nan")
 
+        if g_nrm_vis.value == "rgb":
+            _prn = _per_vertex_normal(pred_v, cache.faces.astype(np.int64))
+            rgb_pred = ((_prn + 1.0) * 0.5 * 255).astype(np.uint8)
+
         # Layout: pred at origin, GT shifted +X by mesh width.
         x_off = float(pred_v[:, 0].max() - pred_v[:, 0].min()) * 1.15
 
         h = _add_per_vertex_color_mesh(server, "/anim/pred", pred_v, cache.faces, rgb_pred, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
         nodes.append(h)
+        if g_nrm_vis.value == "needles":
+            _prn = _per_vertex_normal(pred_v, cache.faces.astype(np.int64))
+            _w0 = float(pred_v[:, 0].max() - pred_v[:, 0].min())
+            _st = max(1, pred_v.shape[0] // 4000)
+            _p0 = pred_v[::_st]; _p1 = _p0 + _prn[::_st] * (_w0 * 0.02)
+            _pts = np.stack([_p0, _p1], axis=1).astype(np.float32)
+            _cols = np.broadcast_to(np.array([255, 200, 60], dtype=np.uint8),
+                                    (_pts.shape[0], 2, 3)).copy()
+            nodes.append(server.scene.add_line_segments(
+                "/anim/normals", points=_pts, colors=_cols, line_width=1.0))
         if g_show_gt_anim.value:
             shifted = gt_v.copy()
             shifted[:, 0] += x_off
@@ -2365,7 +2435,20 @@ def main():
             rgb_pred = np.clip((1 - a) * base + a * heat, 0, 255).astype(np.uint8)
         else:
             rgb_pred = _tile(tgt_c, out["tgt_pred_v"].shape[0])
+        if g_cross_nrm.value == "rgb":
+            _tn = _per_vertex_normal(out["tgt_pred_v"], tgt_td.faces.astype(np.int64))
+            rgb_pred = ((_tn + 1.0) * 0.5 * 255).astype(np.uint8)
         _put("tgt_pred", out["tgt_pred_v"], tgt_td.faces, rgb_pred)
+        if g_cross_nrm.value == "needles":
+            _tn = _per_vertex_normal(out["tgt_pred_v"], tgt_td.faces.astype(np.int64))
+            _tv2 = out["tgt_pred_v"].copy(); _tv2[:, 0] += positions["tgt_pred"]
+            _st = max(1, _tv2.shape[0] // 4000)
+            _p0 = _tv2[::_st]; _p1 = _p0 + _tn[::_st] * (tgt_w * 0.02)
+            _pts = np.stack([_p0, _p1], axis=1).astype(np.float32)
+            _cols = np.broadcast_to(np.array([255, 200, 60], dtype=np.uint8),
+                                    (_pts.shape[0], 2, 3)).copy()
+            nodes.append(server.scene.add_line_segments(
+                "/cross/normals", points=_pts, colors=_cols, line_width=1.0))
 
         # ── optional joint overlays (#5) ──────────────────────────────
         _cj = g_cross_joints.value
@@ -2414,6 +2497,71 @@ def main():
                 f"tgt={tgt_td.name}[{tgt_idx}] f={frame:03d} | no GT"
             )
 
+    def _mesh_kw():
+        return dict(opacity=float(g_mesh_opacity.value), shading=g_shading.value,
+                    double_sided=g_double_sided.value, sat=float(g_global_sat.value))
+
+    def _render_feat():
+        td = cache.active
+        src_idx = min(int(g_id.value), len(td.id_names) - 1)
+        src_v = cache.get(src_idx)["neu_v"]
+        Fs = _feat_raw(td, src_idx)
+        if Fs is None or Fs.shape[0] != src_v.shape[0]:
+            rgb = _tile(g_mesh_color.value, src_v.shape[0])
+            nodes.append(_add_per_vertex_color_mesh(server, "/feat/src", src_v, td.faces, rgb, **_mesh_kw()))
+            g_status.value = (f"feat: Diff3F cache missing/mismatch for {td.name}[{src_idx}]"
+                              f" (feat={None if Fs is None else Fs.shape})")
+            return
+        tgt_td = topos[g_feat_tgt_ds.value]
+        tgt_idx = min(int(g_feat_tgt_id.value), len(tgt_td.id_names) - 1)
+        same = (tgt_td.name == td.name and tgt_idx == src_idx)
+        slot = float(src_v[:, 0].max() - src_v[:, 0].min()) * 1.2
+
+        if g_feat_mode.value == "pca-rgb":
+            if g_feat_shared.value and not same:
+                Ft = _feat_raw(tgt_td, tgt_idx)
+                tgt_v = cache.get(tgt_idx, tgt_td)["neu_v"]
+                if Ft is not None and Ft.shape[0] == tgt_v.shape[0]:
+                    rgb_s, rgb_t = _feat_pca_rgb([Fs, Ft])
+                    nodes.append(_add_per_vertex_color_mesh(server, "/feat/src", src_v, td.faces, rgb_s, **_mesh_kw()))
+                    tv = tgt_v.copy(); tv[:, 0] += slot
+                    nodes.append(_add_per_vertex_color_mesh(server, "/feat/tgt", tv, tgt_td.faces, rgb_t, **_mesh_kw()))
+                    g_status.value = (f"feat pca-rgb SHARED: {td.name}[{src_idx}] <-> "
+                                      f"{tgt_td.name}[{tgt_idx}] (same color = same semantic region)")
+                    return
+            rgb_s = _feat_pca_rgb([Fs])[0]
+            nodes.append(_add_per_vertex_color_mesh(server, "/feat/src", src_v, td.faces, rgb_s, **_mesh_kw()))
+            g_status.value = f"feat pca-rgb: {td.name}[{src_idx}] solo"
+            return
+
+        # correspondence: anchor-vertex cossim heatmap (src self-sim + tgt sim)
+        Ft = _feat_raw(tgt_td, tgt_idx)
+        tgt_v = cache.get(tgt_idx, tgt_td)["neu_v"]
+        if Ft is None or Ft.shape[0] != tgt_v.shape[0]:
+            g_status.value = f"feat corr: tgt Diff3F cache missing for {tgt_td.name}[{tgt_idx}]"
+            return
+        a = int(g_anchor.value) % Fs.shape[0]
+        fs = Fs / np.clip(np.linalg.norm(Fs, axis=1, keepdims=True), 1e-8, None)
+        ft = Ft / np.clip(np.linalg.norm(Ft, axis=1, keepdims=True), 1e-8, None)
+        sim_s = fs @ fs[a]; sim_t = ft @ fs[a]
+        def _n01(x):
+            lo, hi = float(x.min()), float(x.max())
+            return (x - lo) / max(hi - lo, 1e-8)
+        nodes.append(_add_per_vertex_color_mesh(server, "/feat/src", src_v, td.faces,
+                                                _viridis_rgb(_n01(sim_s)), **_mesh_kw()))
+        tv = tgt_v.copy(); tv[:, 0] += slot
+        nodes.append(_add_per_vertex_color_mesh(server, "/feat/tgt", tv, tgt_td.faces,
+                                                _viridis_rgb(_n01(sim_t)), **_mesh_kw()))
+        bi = int(np.argmax(sim_t))
+        nodes.append(server.scene.add_icosphere(
+            "/feat/anchor", radius=slot * 0.012, color=(255, 40, 40),
+            position=tuple(float(x) for x in src_v[a])))
+        nodes.append(server.scene.add_icosphere(
+            "/feat/best", radius=slot * 0.012, color=(40, 255, 60),
+            position=tuple(float(x) for x in tv[bi])))
+        g_status.value = (f"corr: {td.name}[{src_idx}] v{a} -> {tgt_td.name}[{tgt_idx}] "
+                          f"best v{bi} sim {sim_t[bi]:.3f} (mean {sim_t.mean():.3f}, min {sim_t.min():.3f})")
+
     # ── render orchestration + locking ─────────────────────────────────
     import threading, time, traceback
     render_lock = threading.Lock()
@@ -2429,6 +2577,8 @@ def main():
                     _render_weight()
                 elif mode == "anim":
                     _render_anim()
+                elif mode == "feat":
+                    _render_feat()
                 else:  # cross
                     _render_cross()
             except Exception:
@@ -2999,6 +3149,19 @@ def main():
     g_src_color.on_update(lambda _e: render())
     g_tgt_color.on_update(lambda _e: render())
     g_global_sat.on_update(lambda _e: render())
+    g_nrm_vis.on_update(lambda _e: render())
+    g_cross_nrm.on_update(lambda _e: render())
+    g_feat_mode.on_update(lambda _e: render())
+    g_feat_shared.on_update(lambda _e: render())
+    g_anchor.on_update(lambda _e: render())
+    g_feat_tgt_id.on_update(lambda _e: render())
+    def _on_feat_tgt_ds(_e=None):
+        _td = topos.get(g_feat_tgt_ds.value)
+        if _td is not None:
+            g_feat_tgt_id.max = max(len(_td.id_names) - 1, 1)
+            g_feat_tgt_id.value = min(int(g_feat_tgt_id.value), g_feat_tgt_id.max)
+        render()
+    g_feat_tgt_ds.on_update(_on_feat_tgt_ds)
     g_env_intensity.on_update(_apply_lighting)
     g_env_map.on_update(_apply_lighting)
     g_lighting.on_update(_apply_lighting)
