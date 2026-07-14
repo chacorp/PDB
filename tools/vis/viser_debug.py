@@ -654,6 +654,51 @@ def _load_gt_bind_pos(nfs_dir: str, id_idx: int) -> np.ndarray | None:
     return np.load(p).astype(np.float32)
 
 
+def _fancy_skel_mesh(jp, parent, helper_set=None, bone_col=(180, 190, 205),
+                     joint_col=(255, 170, 60), helper_col=(255, 80, 200),
+                     ball_r=0.0035, waist_frac=0.12, waist_cap=0.010):
+    """Maya-style skeleton as ONE merged mesh: octahedral bones (4-sided
+    bipyramid, waist near the parent) + small icosphere joint balls."""
+    import trimesh as _tm
+    jp = np.asarray(jp, dtype=np.float32)
+    Jn = jp.shape[0]
+    Vs, Fs, Cs = [], [], []
+    off = 0
+    for j in range(Jn):
+        p = int(parent[j])
+        if p < 0:
+            continue
+        a, b = jp[p], jp[j]
+        d = b - a
+        L = float(np.linalg.norm(d))
+        if L < 1e-9:
+            continue
+        z = d / L
+        up = np.array([0.0, 1.0, 0.0]) if abs(z[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+        x = np.cross(up, z); x /= max(np.linalg.norm(x), 1e-9)
+        y = np.cross(z, x)
+        r = min(L * waist_frac, waist_cap)
+        w = a + d * 0.2
+        ring = [w + x * r, w + y * r, w - x * r, w - y * r]
+        verts = np.array([a, *ring, b], dtype=np.float32)
+        faces = np.array([[0, 2, 1], [0, 3, 2], [0, 4, 3], [0, 1, 4],
+                          [5, 1, 2], [5, 2, 3], [5, 3, 4], [5, 4, 1]])
+        Vs.append(verts); Fs.append(faces + off); off += 6
+        Cs.append(np.tile(bone_col, (6, 1)))
+    ico = _tm.creation.icosphere(subdivisions=1, radius=1.0)
+    iv = np.asarray(ico.vertices, dtype=np.float32)
+    ifc = np.asarray(ico.faces)
+    for j in range(Jn):
+        Vs.append(iv * ball_r + jp[j])
+        Fs.append(ifc + off); off += iv.shape[0]
+        col = helper_col if (helper_set and j in helper_set) else joint_col
+        Cs.append(np.tile(col, (iv.shape[0], 1)))
+    V = np.concatenate(Vs, 0)
+    F = np.concatenate(Fs, 0).astype(np.int64)
+    C = np.concatenate(Cs, 0).astype(np.uint8)
+    return V, F, C
+
+
 _FEAT_CACHE: dict = {}
 
 def _feat_raw(td, id_idx: int):
@@ -1755,6 +1800,10 @@ def main():
     # Color pickers — used wherever the renderer needs a single tint
     # (bind_pose mesh, anim neutral, mesh-only fallbacks, cross side meshes).
     # Per-vertex modes (weight heatmap / anim error map) ignore these.
+    g_skel_style = server.gui.add_dropdown(
+        "skeleton style", options=["classic (lines)", "fancy (maya)"],
+        initial_value="classic (lines)",
+    )
     g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
     g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
     g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
@@ -1777,6 +1826,8 @@ def main():
             options=["single", "argmax", "soft", "entropy"],
             initial_value="soft",
         )
+        g_w_show_joints = server.gui.add_checkbox("show skeleton (bind-pose style)", False)
+        g_w_mark_joint = server.gui.add_checkbox("mark selected joint (single mode)", False)
         g_joint = server.gui.add_dropdown(
             "joint (single mode)",
             options=[f"{j:02d} {n}" for j, n in enumerate(rig.joint_names)],
@@ -2090,6 +2141,12 @@ def main():
                 f"id={id_idx} j={j}({rig.joint_names[j]}) | "
                 f"W max={W[:, j].max():.3f} mean={W[:, j].mean():.3f}"
             )
+            if g_w_mark_joint.value and c["joint_pos_pred"] is not None:
+                _jp1 = c["joint_pos_pred"][j]
+                _mw = float(verts[:, 0].max() - verts[:, 0].min())
+                nodes.append(server.scene.add_icosphere(
+                    "/joints/selected", radius=_mw * 0.012, color=(255, 40, 40),
+                    position=tuple(float(x) for x in _jp1)))
         elif mode in ("argmax", "soft"):
             # Build evenly-sampled palette across J joints. Wide-spectrum cmaps
             # (nipy_spectral / turbo / gist_rainbow) give maximal contrast for
@@ -2138,12 +2195,33 @@ def main():
 
         h = _add_per_vertex_color_mesh(server, "/mesh", verts, cache.faces, rgb, opacity=float(g_mesh_opacity.value), shading=g_shading.value, double_sided=g_double_sided.value, sat=float(g_global_sat.value))
         nodes.append(h)
-        # joints as small ref dots
-        h2 = server.scene.add_point_cloud(
-            "/joints/pred", points=c["joint_pos_pred"],
-            colors=np.full((J, 3), 30, dtype=np.uint8), point_size=0.006,
-        )
-        nodes.append(h2)
+        # Skeleton overlay: hidden by default; toggle renders it bind-pose
+        # style (pred joints orange, helpers pink, teal bones) or fancy (maya).
+        if g_w_show_joints.value and c["joint_pos_pred"] is not None:
+            _jp = c["joint_pos_pred"]
+            if g_skel_style.value.startswith("fancy"):
+                _fv, _ff, _fc = _fancy_skel_mesh(_jp, parent_idx, helper_set)
+                nodes.append(_add_per_vertex_color_mesh(
+                    server, "/joints/weight_fancy", _fv, _ff, _fc,
+                    opacity=1.0, shading=g_shading.value, double_sided=False, sat=1.0))
+            else:
+                _cols = np.tile(np.array([[255, 140, 0]], dtype=np.uint8), (J, 1))
+                for _j2 in helper_set:
+                    if 0 <= _j2 < J:
+                        _cols[_j2] = [255, 80, 200]
+                nodes.append(server.scene.add_point_cloud(
+                    "/joints/pred", points=_jp, colors=_cols, point_size=0.010))
+                _bs = []
+                for _j2 in range(J):
+                    _p2 = int(parent_idx[_j2])
+                    if _p2 >= 0:
+                        _bs.append([_jp[_p2], _jp[_j2]])
+                if _bs:
+                    _bp = np.array(_bs, dtype=np.float32)
+                    _bc = np.broadcast_to(np.array([80, 220, 180], dtype=np.uint8),
+                                          (_bp.shape[0], 2, 3)).copy()
+                    nodes.append(server.scene.add_line_segments(
+                        "/joints/pred_bones", points=_bp, colors=_bc, line_width=2.0))
 
     def _build_exp(td, id_idx, frame):
         """Build exp_coeff per driver. Returns (exp, n_frames_for_this_clip) or
@@ -2252,7 +2330,13 @@ def main():
             nodes.append(h2)
 
         # Skeleton on pred side: joint points + bones
-        if g_show_joints.value:
+        _fancy = g_skel_style.value.startswith("fancy")
+        if _fancy and (g_show_joints.value or g_show_bones.value) and jp is not None:
+            _fv, _ff, _fc = _fancy_skel_mesh(jp, parent_idx, helper_set)
+            nodes.append(_add_per_vertex_color_mesh(
+                server, "/anim/skel_fancy", _fv, _ff, _fc,
+                opacity=1.0, shading=g_shading.value, double_sided=False, sat=1.0))
+        if (not _fancy) and g_show_joints.value:
             h3 = server.scene.add_point_cloud(
                 "/anim/joints",
                 points=jp,
@@ -2261,7 +2345,7 @@ def main():
             )
             nodes.append(h3)
 
-        if g_show_bones.value:
+        if (not _fancy) and g_show_bones.value:
             segs = []
             for j in range(J):
                 p = int(parent_idx[j])
@@ -3185,6 +3269,9 @@ def main():
             g_feat_tgt_id.value = min(int(g_feat_tgt_id.value), g_feat_tgt_id.max)
         render()
     g_feat_tgt_ds.on_update(_on_feat_tgt_ds)
+    g_skel_style.on_update(lambda _e: render())
+    g_w_show_joints.on_update(lambda _e: render())
+    g_w_mark_joint.on_update(lambda _e: render())
     g_env_intensity.on_update(_apply_lighting)
     g_env_map.on_update(_apply_lighting)
     g_lighting.on_update(_apply_lighting)
