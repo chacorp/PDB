@@ -173,6 +173,11 @@ def Options():
                         help='Margin for hierarchy loss (leaf must exceed others by this much)')
 
     # distance-based weight locality loss
+    parser.add_argument("--dist_cur_pos", type=str, default="off",
+                        choices=["off", "helpers", "all"],
+                        help="L_dist locality coupling: replace frozen geodesic rows with "
+                             "Euclidean dist^2 to CURRENT predicted joint positions for "
+                             "helpers only / all joints. Fixes stale birthplace anchor.")
     parser.add_argument("--lambda_dist", type=float, default=0.0,
                         help='Distance-based weight locality: W should be high for close joints')
     # Mesh2Animation-inspired skin-weight regularizers / metric
@@ -2497,8 +2502,16 @@ class HLBSTrainer:
 
                 # ── Distance-based weight locality (uses pre-computed W) ─
                 if opts.lambda_dist > 0:
-                    dist_losses = self.model.distance_weight_loss(_W, src_v,
-                                                                  dist_sq_override=_dist_sq_geo)
+                    _cp = getattr(opts, "dist_cur_pos", "off")
+                    _cp_idx = None
+                    if _cp == "helpers":
+                        _cp_idx = list(self._helper_joint_idx or [])
+                    elif _cp == "all":
+                        _cp_idx = list(range(_W.shape[-1]))
+                    dist_losses = self.model.distance_weight_loss(
+                        _W, src_v, dist_sq_override=_dist_sq_geo,
+                        joint_pos=(_joint_pos if (_cp != "off" and _cp_idx) else None),
+                        cur_pos_idx=_cp_idx)
                     for k, v in dist_losses.items():
                         loss_dict[k] = v
 

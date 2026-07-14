@@ -1692,7 +1692,8 @@ class HierarchicalLBS_FullPred(nn.Module):
 
     # ── Distance-based weight locality loss ──────────────────────────────
 
-    def distance_weight_loss(self, W, source_vert, dist_sq_override=None):
+    def distance_weight_loss(self, W, source_vert, dist_sq_override=None,
+                             joint_pos=None, cur_pos_idx=None):
         """
         Encourage weight to be high for joints close to the vertex.
 
@@ -1708,6 +1709,17 @@ class HierarchicalLBS_FullPred(nn.Module):
         """
         if dist_sq_override is not None:
             dist_sq = dist_sq_override
+            # Locality coupling: for the given joints, replace the frozen
+            # geodesic rows with Euclidean dist^2 to the CURRENT predicted
+            # joint positions. sum_v W*d^2 == mutual pull between each
+            # joint's weight centroid and its position (both get grads).
+            if joint_pos is not None and cur_pos_idx:
+                _idx = torch.as_tensor(cur_pos_idx, dtype=torch.long,
+                                       device=W.device)
+                _p = joint_pos.index_select(1, _idx)               # [B,H,3]
+                _d = source_vert.unsqueeze(2) - _p.unsqueeze(1)    # [B,N,H,3]
+                dist_sq = dist_sq.clone()
+                dist_sq[:, :, _idx] = (_d ** 2).sum(-1)
         else:
             p = self.bind_pos_target                          # [J, 3]
             diff = source_vert.unsqueeze(2) - p.view(1, 1, -1, 3)  # [B, N, J, 3]
