@@ -1749,7 +1749,7 @@ def main():
     )
     g_lighting = server.gui.add_dropdown(
         "lighting mode",
-        options=["hdri", "front only", "6-axis studio", "flat (no shadows)"],
+        options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "flat (no shadows)"],
         initial_value="hdri",
     )
     # Color pickers — used wherever the renderer needs a single tint
@@ -2713,12 +2713,35 @@ def main():
                     )
                     _light_state["front"].position = (0.0, 0.5, 3.0)
                 _light_state["front"].visible = True
+                _light_state["front"].intensity = 2.0
                 if _light_state["ambient"] is None:
                     _light_state["ambient"] = server.scene.add_light_ambient(
                         "/lights/ambient", color=(255, 255, 255), intensity=0.6,
                     )
                 _light_state["ambient"].visible = True
                 _light_state["ambient"].intensity = 0.6
+            elif mode == "matplotlib (mild flat)":
+                # Mimic utils/matplotlib_rnd.py shading: shade = 0.7*max(N.L,0)+0.2
+                # with L = +Z headlight. One soft frontal directional (no shadow)
+                # + ambient floor at the matplotlib 0.2/0.7 ratio -> mild, even,
+                # never blown out, back side still readable.
+                server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
+                server.scene.configure_default_lights(enabled=False, cast_shadow=False)
+                _hide_axis6()
+                if _light_state["front"] is None:
+                    _light_state["front"] = server.scene.add_light_directional(
+                        "/lights/front", color=(255, 255, 255), intensity=2.0,
+                        cast_shadow=False,
+                    )
+                    _light_state["front"].position = (0.0, 0.5, 3.0)
+                _light_state["front"].visible = True
+                _light_state["front"].intensity = 1.15   # ~0.7 diffuse
+                if _light_state["ambient"] is None:
+                    _light_state["ambient"] = server.scene.add_light_ambient(
+                        "/lights/ambient", color=(255, 255, 255), intensity=0.35,
+                    )
+                _light_state["ambient"].visible = True
+                _light_state["ambient"].intensity = 0.35  # ~0.2 ambient floor
             elif mode == "6-axis studio":
                 # Soft surround: 6 directional lights (±X, ±Y, ±Z), each lower
                 # intensity so combined ≈ ambient but with shape cues from each
