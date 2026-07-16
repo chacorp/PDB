@@ -417,6 +417,9 @@ def Options():
     parser.add_argument("--sc_step", type=int, default=1000000)
     parser.add_argument("--sc_gamma", type=float, default=0.5)
     parser.add_argument("--lambda_vert", type=float, default=1.0)
+    parser.add_argument("--motion_weight", type=float, default=0.0,
+                        help="per-vertex motion-weighted recon: w=clamp(1+mw*disp/p95,1,4), "
+                             "mean-normalized (loss scale unchanged). 0=off.")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--profile", action='store_true',
                         help='Print per-section timing (data/fwd/bwd/opt) every 50 batches.')
@@ -2096,7 +2099,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_w_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_ortho": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_w_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_ortho": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "metric-himot": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -2294,16 +2297,39 @@ class HLBSTrainer:
                                           dist_sq_geo=_dist_sq_geo)
 
                 # ── Recon loss ───────────────────────────────────────────
+                # Optional per-vertex motion weighting (TTA-validated energy):
+                # the frame's own GT displacement decides where recon gradient
+                # concentrates — no region machinery, weight map == motion map.
+                # w = clamp(1 + mw*disp/p95_frame, 1, 4), mean-normalized so loss
+                # scale (lambda balance) is unchanged. metric-himot additionally
+                # tracks UNWEIGHTED mse over the top-20% movers (the val-MSE
+                # blind spot this targets).
+                _mw_w = None
+                if getattr(opts, 'motion_weight', 0) > 0:
+                    with torch.no_grad():
+                        _disp = (target_v - src_v).norm(dim=-1, keepdim=True)          # [B,N,1]
+                        _p95 = torch.quantile(_disp, 0.95, dim=1, keepdim=True).clamp_min(1e-8)
+                        _mw_w = (1.0 + opts.motion_weight * _disp / _p95).clamp(1.0, 4.0)
+                        _mw_w = _mw_w / _mw_w.mean(dim=(1, 2), keepdim=True)
+                        _hi = _disp >= torch.quantile(_disp, 0.8, dim=1, keepdim=True)
+                        running["metric-himot"] += float(
+                            (((target_v - pred_lbs) ** 2).sum(-1, keepdim=True)[_hi]).mean())
+
+                def _wmse(a, b):
+                    if _mw_w is None:
+                        return F.mse_loss(a, b)
+                    return (_mw_w * (a - b) ** 2).mean()
+
                 if opts.no_t_mask:
-                    loss_dict = {"recon-lbs": F.mse_loss(target_v, pred_lbs)}
+                    loss_dict = {"recon-lbs": _wmse(target_v, pred_lbs)}
                 else:
                     from utils.exp_utils import plateau_hat_points
                     t_mask   = plateau_hat_points(src_v)
                     inv_mask = 1.0 - t_mask
                     loss_dict = {
                         "recon-lbs": (
-                            F.mse_loss(target_v * t_mask,  pred_lbs * t_mask)
-                            + F.mse_loss(src_v * inv_mask, pred_lbs * inv_mask)
+                            _wmse(target_v * t_mask,  pred_lbs * t_mask)
+                            + _wmse(src_v * inv_mask, pred_lbs * inv_mask)
                         )
                     }
 
@@ -2965,7 +2991,7 @@ class HLBSTrainer:
                 continue
 
             self.model.eval()
-            running_val = {"recon-lbs": 0.0, "recon-neu": 0.0,
+            running_val = {"metric-himot": 0.0, "recon-lbs": 0.0, "recon-neu": 0.0,
                            "recon-normal": 0.0, "L_bind_reg": 0.0,
                            "L_sigma": 0.0, "L_net_center": 0.0,
                            "total": 0.0}
@@ -3064,6 +3090,14 @@ class HLBSTrainer:
                     val_loss = F.mse_loss(target_v_val, pred_lbs).item() * opts.lambda_vert
                     running_val["recon-lbs"] += val_loss
                     running_val["total"]     += val_loss
+
+                    # high-motion metric (top-20% movers, unweighted; logged
+                    # unconditionally so runs are comparable w/ or w/o the flag)
+                    with torch.no_grad():
+                        _dv = (target_v_val - src_v).norm(dim=-1, keepdim=True)
+                        _hm = _dv >= torch.quantile(_dv, 0.8, dim=1, keepdim=True)
+                        running_val["metric-himot"] += float(
+                            (((target_v_val - pred_lbs) ** 2).sum(-1, keepdim=True)[_hm]).mean())
 
                     if opts.lambda_neu > 0:
                         delta_zero = torch.zeros_like(src_v)
