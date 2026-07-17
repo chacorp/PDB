@@ -2812,16 +2812,33 @@ class HLBSTrainer:
                             # back-hop target = A; per-vertex feats aligned to
                             # the (possibly permed) cb tensors via _cperm gather
                             _a_nfs = None
+                            _xc_ok = True
                             if opts.nfs_feat_dir and self._nfs_feat_cache:
-                                _fl = []
+                                _ref_len = None
                                 for b in range(B_c):
-                                    _f = self._nfs_feat_cache.get(cb.src_id_name[b])
-                                    if _f is None:
-                                        _fl = None; break
-                                    if self._nfs_on_cpu:
-                                        _f = _f.to(self.device, non_blocking=True)
-                                    _fl.append(_f)
-                                if _fl is not None:
+                                    _f0 = self._nfs_feat_cache.get(cb.src_id_name[b])
+                                    if _f0 is not None:
+                                        _ref_len = _f0.shape[0]; break
+                                if _ref_len is None:
+                                    if not getattr(self, '_xc_warned', False):
+                                        self._xc_warned = True
+                                        print(f"[xcycle] no src feats resolvable "
+                                              f"(e.g. {cb.src_id_name[:2]}) — hop skipped", flush=True)
+                                    _xc_ok = False
+                                else:
+                                    _fl = []
+                                    for b in range(B_c):
+                                        _f = self._nfs_feat_cache.get(cb.src_id_name[b])
+                                        if _f is None:
+                                            if not getattr(self, '_xc_warned', False):
+                                                self._xc_warned = True
+                                                print(f"[xcycle] feat miss for src id "
+                                                      f"{cb.src_id_name[b]!r} — zeros fallback", flush=True)
+                                            _f = torch.zeros(_ref_len, self._nfs_feat_dim,
+                                                             device=self.device)
+                                        elif self._nfs_on_cpu:
+                                            _f = _f.to(self.device, non_blocking=True)
+                                        _fl.append(_f)
                                     _a_nfs = torch.stack(_fl, 0)
                                     if _cb_permed:
                                         _a_nfs = torch.gather(
@@ -2844,15 +2861,16 @@ class HLBSTrainer:
                             if _bpl is not None and len(_bpl) == B_c:
                                 _a_bp = torch.stack(_bpl, 0).detach()
 
-                            _pred_cycle = self.model.retarget(
-                                _hB(_h_tpl), _hB(_h_nrm),
-                                _pred_hub, _hB(_h_nrm),   # def-normal proxy: hub template normals
-                                cb.src_template, cb.src_template_normal,
-                                tgt_nfs_feat=_a_nfs,
-                                tgt_bind_pos_cache=_a_bp,
-                                tgt_dist_sq_geo=_tgt_geo,
-                            )
-                            loss_dict["L_xcycle"] = F.mse_loss(_pred_cycle, cb.src_vertices)
+                            if _xc_ok:
+                                _pred_cycle = self.model.retarget(
+                                    _hB(_h_tpl), _hB(_h_nrm),
+                                    _pred_hub, _hB(_h_nrm),   # def-normal proxy: hub template normals
+                                    cb.src_template, cb.src_template_normal,
+                                    tgt_nfs_feat=_a_nfs,
+                                    tgt_bind_pos_cache=_a_bp,
+                                    tgt_dist_sq_geo=_tgt_geo,
+                                )
+                                loss_dict["L_xcycle"] = F.mse_loss(_pred_cycle, cb.src_vertices)
 
                     # ── Cyclic retarget: B → A reconstruction ────────────
                     # Use pred_tgt (B's predicted deformed) as the new source-deformed,
