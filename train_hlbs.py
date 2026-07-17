@@ -2799,11 +2799,11 @@ class HLBSTrainer:
                             _h_tpl, _h_nrm, _h_nfs, _h_bp, _h_geo = _hub
 
                             def _hB(t):
-                                return None if t is None else t.expand(B_c, *([-1] * (t.dim() - 1))).contiguous()
+                                return t  # hub tensors are [1, ...]; hops run on sample 0 only
 
                             _pred_hub = self.model.retarget(
-                                cb.src_template, cb.src_template_normal,
-                                cb.src_vertices, cb.src_vertices_normal,
+                                cb.src_template[:1], cb.src_template_normal[:1],
+                                cb.src_vertices[:1], cb.src_vertices_normal[:1],
                                 _hB(_h_tpl), _hB(_h_nrm),
                                 tgt_nfs_feat=_hB(_h_nfs),
                                 tgt_bind_pos_cache=_hB(_h_bp),
@@ -2814,63 +2814,42 @@ class HLBSTrainer:
                             _a_nfs = None
                             _xc_ok = True
                             if opts.nfs_feat_dir and self._nfs_feat_cache:
-                                _ref_len = None
-                                for b in range(B_c):
-                                    _f0 = self._nfs_feat_cache.get(cb.src_id_name[b])
-                                    if _f0 is not None:
-                                        _ref_len = _f0.shape[0]; break
-                                if _ref_len is None:
+                                _f = self._nfs_feat_cache.get(cb.src_id_name[0])
+                                if _f is None:
                                     if not getattr(self, '_xc_warned', False):
                                         self._xc_warned = True
-                                        print(f"[xcycle] no src feats resolvable "
-                                              f"(e.g. {cb.src_id_name[:2]}) — hop skipped", flush=True)
+                                        print(f"[xcycle] feat miss for src id "
+                                              f"{cb.src_id_name[0]!r} — hop skipped", flush=True)
                                     _xc_ok = False
                                 else:
-                                    _fl = []
-                                    for b in range(B_c):
-                                        _f = self._nfs_feat_cache.get(cb.src_id_name[b])
-                                        if _f is None:
-                                            if not getattr(self, '_xc_warned', False):
-                                                self._xc_warned = True
-                                                print(f"[xcycle] feat miss for src id "
-                                                      f"{cb.src_id_name[b]!r} — zeros fallback", flush=True)
-                                            _f = torch.zeros(_ref_len, self._nfs_feat_dim,
-                                                             device=self.device)
-                                        elif self._nfs_on_cpu:
-                                            _f = _f.to(self.device, non_blocking=True)
-                                        _fl.append(_f)
-                                    _a_nfs = torch.stack(_fl, 0)
+                                    if self._nfs_on_cpu:
+                                        _f = _f.to(self.device, non_blocking=True)
+                                    _a_nfs = _f.unsqueeze(0)
                                     if _cb_permed:
                                         _a_nfs = torch.gather(
                                             _a_nfs, 1,
-                                            _cperm.unsqueeze(-1).expand(-1, -1, _a_nfs.shape[-1]))
+                                            _cperm[:1].unsqueeze(-1).expand(-1, -1, _a_nfs.shape[-1]))
                                     elif _a_nfs.shape[1] > V_c:
                                         _a_nfs = _a_nfs[:, :V_c]
                             _a_bp = None
-                            _bpl = []
-                            for b in range(B_c):
-                                _idn = cb.src_id_name[b]
-                                if _idn in self._per_id_bind_pose_gt:
-                                    _bpl.append(self._per_id_bind_pose_gt[_idn])
-                                elif _idn in self._bind_pos_cache:
-                                    _bpl.append(self._bind_pos_cache[_idn])
-                                elif hasattr(self.model, 'bind_pos_target_ict'):
-                                    _bpl.append(self.model.bind_pos_target_ict)
-                                else:
-                                    _bpl = None; break
-                            if _bpl is not None and len(_bpl) == B_c:
-                                _a_bp = torch.stack(_bpl, 0).detach()
+                            _idn0 = cb.src_id_name[0]
+                            if _idn0 in self._per_id_bind_pose_gt:
+                                _a_bp = self._per_id_bind_pose_gt[_idn0].unsqueeze(0).detach()
+                            elif _idn0 in self._bind_pos_cache:
+                                _a_bp = self._bind_pos_cache[_idn0].unsqueeze(0).detach()
+                            elif hasattr(self.model, 'bind_pos_target_ict'):
+                                _a_bp = self.model.bind_pos_target_ict.unsqueeze(0).detach()
 
                             if _xc_ok:
                                 _pred_cycle = self.model.retarget(
                                     _hB(_h_tpl), _hB(_h_nrm),
                                     _pred_hub, _hB(_h_nrm),   # def-normal proxy: hub template normals
-                                    cb.src_template, cb.src_template_normal,
+                                    cb.src_template[:1], cb.src_template_normal[:1],
                                     tgt_nfs_feat=_a_nfs,
                                     tgt_bind_pos_cache=_a_bp,
-                                    tgt_dist_sq_geo=_tgt_geo,
+                                    tgt_dist_sq_geo=(_tgt_geo[:1] if _tgt_geo is not None else None),
                                 )
-                                loss_dict["L_xcycle"] = F.mse_loss(_pred_cycle, cb.src_vertices)
+                                loss_dict["L_xcycle"] = F.mse_loss(_pred_cycle, cb.src_vertices[:1])
 
                     # ── Cyclic retarget: B → A reconstruction ────────────
                     # Use pred_tgt (B's predicted deformed) as the new source-deformed,
