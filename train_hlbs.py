@@ -420,6 +420,11 @@ def Options():
     parser.add_argument("--motion_weight", type=float, default=0.0,
                         help="per-vertex motion-weighted recon: w=clamp(1+mw*disp/p95,1,4), "
                              "mean-normalized (loss scale unchanged). 0=off.")
+    parser.add_argument("--lambda_xcycle", type=float, default=0.0,
+                        help="cross-topology cycle consistency A->hub(T')->A "
+                             "(both directions via pair-batch topology). 0=off.")
+    parser.add_argument("--xcycle_prob", type=float, default=0.5,
+                        help="per cross-pair-batch probability of running the xcycle hop.")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--profile", action='store_true',
                         help='Print per-section timing (data/fwd/bwd/opt) every 50 batches.')
@@ -1629,6 +1634,7 @@ class HLBSTrainer:
                       f"geo_dist_{{topo}}.npy in {_gd_dir}. Falling back to Euclidean.")
 
         # ── Cross-pair ICT loader (Track B) ──
+        self._xcycle_hub = {'ict': None, 'mf': None}
         self._cross_pair_loader = None
         self._cross_pair_iter = None
         if getattr(opts, 'lambda_cross_retarget', 0) > 0:
@@ -2099,7 +2105,7 @@ class HLBSTrainer:
 
             # ── Train ────────────────────────────────────────────────────
             self.model.train()
-            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_w_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_ortho": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "metric-himot": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "total": 0.0}
+            running = {"recon-lbs": 0.0, "recon-neu": 0.0, "recon-normal": 0.0, "init-W": 0.0, "init-bind": 0.0, "L_bind_reg": 0.0, "L_bind_residual": 0.0, "L_helper_residual": 0.0, "L_mirror": 0.0, "L_w_mirror": 0.0, "L_rwc_init": 0.0, "L_rwc_min": 0.0, "L_hier": 0.0, "L_dist": 0.0, "L_wlap": 0.0, "L_wref": 0.0, "L_ortho": 0.0, "L_inside_bind": 0.0, "L_inside_def": 0.0, "metric-W_smooth": 0.0, "metric-himot": 0.0, "L_sigma": 0.0, "L_net_center": 0.0, "L_cross_retarget": 0.0, "L_xcycle": 0.0, "total": 0.0}
             cnt = 0
 
             _len_active = len(active_loader)
@@ -2728,6 +2734,20 @@ class HLBSTrainer:
                             _gd = _gd[:V_c]
                             _tgt_geo = (_gd.unsqueeze(0).expand(B_c, -1, -1)) ** 2
 
+                    # cache a full-res hub sample of THIS pair topology for
+                    # the opposite topology's cross-cycle (identity assets only)
+                    if getattr(opts, 'lambda_xcycle', 0) > 0:
+                        try:
+                            self._xcycle_hub[_cp_topo] = (
+                                cb.tgt_template[:1].detach().clone(),
+                                cb.tgt_template_normal[:1].detach().clone(),
+                                (_tgt_nfs[:1].detach().clone() if _tgt_nfs is not None else None),
+                                (_tgt_bp[:1].detach().clone() if _tgt_bp is not None else None),
+                                (_tgt_geo[:1].detach().clone() if _tgt_geo is not None else None),
+                            )
+                        except Exception:
+                            pass
+
                     # ── Subsample cross-retarget batch ─────────────────
                     # Same perm for src and tgt (both ICT, same N). All cb
                     # tensors gather; _tgt_nfs and _tgt_geo also gather; _tgt_bp
@@ -2768,6 +2788,71 @@ class HLBSTrainer:
                         tgt_dist_sq_geo=_tgt_geo,
                     )
                     loss_dict["L_cross_retarget"] = F.mse_loss(pred_tgt, cb.tgt_vertices)
+
+                    # ── Cross-topology cycle: A → hub(T') → A ───────────
+                    # Round trip through the OTHER topology. If a joint owns
+                    # different regions on the two topologies (the wref-off
+                    # convention break), the round trip cannot reconstruct A.
+                    if getattr(opts, 'lambda_xcycle', 0) > 0:
+                        _hub = self._xcycle_hub.get('ict' if _cp_is_mf else 'mf')
+                        if _hub is not None and torch.rand(()).item() < getattr(opts, 'xcycle_prob', 0.5):
+                            _h_tpl, _h_nrm, _h_nfs, _h_bp, _h_geo = _hub
+
+                            def _hB(t):
+                                return None if t is None else t.expand(B_c, *([-1] * (t.dim() - 1))).contiguous()
+
+                            _pred_hub = self.model.retarget(
+                                cb.src_template, cb.src_template_normal,
+                                cb.src_vertices, cb.src_vertices_normal,
+                                _hB(_h_tpl), _hB(_h_nrm),
+                                tgt_nfs_feat=_hB(_h_nfs),
+                                tgt_bind_pos_cache=_hB(_h_bp),
+                                tgt_dist_sq_geo=_hB(_h_geo),
+                            )
+                            # back-hop target = A; per-vertex feats aligned to
+                            # the (possibly permed) cb tensors via _cperm gather
+                            _a_nfs = None
+                            if opts.nfs_feat_dir and self._nfs_feat_cache:
+                                _fl = []
+                                for b in range(B_c):
+                                    _f = self._nfs_feat_cache.get(cb.src_id_name[b])
+                                    if _f is None:
+                                        _fl = None; break
+                                    if self._nfs_on_cpu:
+                                        _f = _f.to(self.device, non_blocking=True)
+                                    _fl.append(_f)
+                                if _fl is not None:
+                                    _a_nfs = torch.stack(_fl, 0)
+                                    if _cb_permed:
+                                        _a_nfs = torch.gather(
+                                            _a_nfs, 1,
+                                            _cperm.unsqueeze(-1).expand(-1, -1, _a_nfs.shape[-1]))
+                                    elif _a_nfs.shape[1] > V_c:
+                                        _a_nfs = _a_nfs[:, :V_c]
+                            _a_bp = None
+                            _bpl = []
+                            for b in range(B_c):
+                                _idn = cb.src_id_name[b]
+                                if _idn in self._per_id_bind_pose_gt:
+                                    _bpl.append(self._per_id_bind_pose_gt[_idn])
+                                elif _idn in self._bind_pos_cache:
+                                    _bpl.append(self._bind_pos_cache[_idn])
+                                elif hasattr(self.model, 'bind_pos_target_ict'):
+                                    _bpl.append(self.model.bind_pos_target_ict)
+                                else:
+                                    _bpl = None; break
+                            if _bpl is not None and len(_bpl) == B_c:
+                                _a_bp = torch.stack(_bpl, 0).detach()
+
+                            _pred_cycle = self.model.retarget(
+                                _hB(_h_tpl), _hB(_h_nrm),
+                                _pred_hub, _hB(_h_nrm),   # def-normal proxy: hub template normals
+                                cb.src_template, cb.src_template_normal,
+                                tgt_nfs_feat=_a_nfs,
+                                tgt_bind_pos_cache=_a_bp,
+                                tgt_dist_sq_geo=_tgt_geo,
+                            )
+                            loss_dict["L_xcycle"] = F.mse_loss(_pred_cycle, cb.src_vertices)
 
                     # ── Cyclic retarget: B → A reconstruction ────────────
                     # Use pred_tgt (B's predicted deformed) as the new source-deformed,
@@ -2845,6 +2930,7 @@ class HLBSTrainer:
                     "L_sigma": opts.lambda_sigma_reg,
                     "L_net_center": opts.lambda_net_center,
                     "L_cross_retarget": opts.lambda_cross_retarget,
+                    "L_xcycle": getattr(opts, 'lambda_xcycle', 0.0),
                     "L_cross_cyclic": getattr(opts, 'lambda_cross_cyclic', 0.0),
                 }
                 loss = sum(loss_dict[k] * loss_lambda.get(k, 0.0) for k in loss_dict)
