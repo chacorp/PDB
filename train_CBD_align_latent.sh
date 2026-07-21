@@ -1,0 +1,14 @@
+python train_CBD.py \
+--max_epoch 200 \
+--lr 1E-4 \
+--sc_step 20 \
+--version 5 \
+--batch_size 8 \
+--num_cage_v 512 \
+--in_type 1 \
+--out_type 1 \
+--last_activation 'relu' \
+--data_toggle --use_data1 \
+--log_dir ckpts_CBD \
+--start_epoch 100 --ckpt './ckpts_CBD/2025-10-23-17-32-49-NGBCv5' --continue_ckpt \
+--align_latent

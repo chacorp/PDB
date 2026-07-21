@@ -1,0 +1,14 @@
+python train_CBD.py \
+--max_epoch 200 \
+--lr 1E-4 \
+--sc_step 500 \
+--version 5 \
+--batch_size 8 \
+--num_cage_v 512 \
+--in_type 1 \
+--out_type 1 \
+--last_activation 'relu' \
+--data_toggle --use_data1 \
+--align_latent \
+--use_dist_loss \
+--log_dir ckpts_CBD
