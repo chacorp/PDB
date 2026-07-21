@@ -486,6 +486,37 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
                   f"diff3f={'yes' if _has_feat else 'MISSING'}")
         print(f"[stylized] {_n_sty} meshes <- {_sty_dir} (feat dir {_sty_feat_dir})")
 
+    # ── extra zero-shot target topologies (GNM head / FLAME mean etc.) ──
+    # Any .obj dropped into new_topo_meshes/ becomes a target topo "new_<stem>";
+    # Diff3F feat expected at diff3f_feat_raw/<stem>_nfs_feat.npy.
+    _ntm_dir = "/source/inyup/NeuralFacialAnimation/new_topo_meshes"
+    if os.path.isdir(_ntm_dir):
+        import trimesh as _tmnt, glob as _gnt
+        _nt_feat_dir = "/source/inyup/NeuralFacialAnimation/diff3f_feat_raw"
+        _n_new = 0
+        for _objp in sorted(_gnt.glob(os.path.join(_ntm_dir, "*.obj"))):
+            _slug = os.path.splitext(os.path.basename(_objp))[0]
+            try:
+                _m = _tmnt.load(_objp, process=False, maintain_order=True)
+            except Exception as _e:
+                print(f"[newtopo] {_slug} load failed: {_e}")
+                continue
+            _vv = np.asarray(_m.vertices, dtype=np.float32)
+            _ff = np.asarray(_m.faces, dtype=np.uint32)
+            _name = "new_" + _slug
+            _has_feat = os.path.exists(os.path.join(_nt_feat_dir, f"{_slug}_nfs_feat.npy"))
+            topos[_name] = TopoData(
+                name=_name, topo=_name, id_names=[_slug], faces=_ff,
+                nfs_dir=_nt_feat_dir, geo_dist=None,
+                supports_anim=False, exp_driver="none",
+                _verts_provider=(lambda nm, _v=_vv: _v),
+            )
+            _n_new += 1
+            print(f"[newtopo] {_name}: V={len(_vv)} F={len(_ff)} "
+                  f"diff3f={'yes' if _has_feat else 'MISSING'}")
+        if _n_new:
+            print(f"[newtopo] {_n_new} meshes <- {_ntm_dir}")
+
     return topos
 
 
