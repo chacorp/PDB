@@ -204,6 +204,9 @@ def Options():
                              'With --per_id_bind_pose_dir set, uses per-id v3 GT '
                              'instead (Stage-2: bind pose = oracle GT).')
     parser.set_defaults(freeze_bind_pose=False)
+    parser.add_argument("--stn_full_identity", action="store_true",
+                        help="ablation: PointNet-style FULL feature STN (y=Tx) in identity "
+                             "nets instead of element-wise affine (y=a*x+b).")
     parser.add_argument("--bind_pose_base_residual", type=int, default=0, choices=[0, 1],
                         help='1: bind_pose_net predicts a residual for ALL joints on '
                              'top of a fixed ICT-mean base (joint_pos = base + residual). '
@@ -1790,6 +1793,7 @@ class HLBSTrainer:
             helper_joint_idx=(self._helper_joint_idx if self._use_helpers
                               and self._helper_joint_idx else None),
             bind_pose_base_residual=bool(getattr(opts, 'bind_pose_base_residual', 0)),
+            stn_full_identity=bool(getattr(opts, 'stn_full_identity', False)),
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 

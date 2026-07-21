@@ -535,6 +535,7 @@ class HierarchicalLBS_FullPred(nn.Module):
         attn_temperature_init: float = 0.1,
         helper_joint_idx: 'list | None' = None,
         bind_pose_base_residual: bool = False,
+        stn_full_identity: bool = False,
     ):
         super().__init__()
 
@@ -786,6 +787,7 @@ class HierarchicalLBS_FullPred(nn.Module):
                 in_dim=_skin_in, out_dim=J, hid_dim=hid_dim,
                 num_layers=_n_layers, out_type='vertices',
                 adain_in_dim=_adain_dim,
+                stn_full=stn_full_identity,
             ).to(device)
 
         # ── GMM hybrid params ────────────────────────────────────────────
@@ -842,6 +844,7 @@ class HierarchicalLBS_FullPred(nn.Module):
                     in_dim=_bind_in, out_dim=J * 3, hid_dim=hid_dim,
                     num_layers=_n_layers, out_type='global',
                     adain_in_dim=_adain_dim,
+                    stn_full=stn_full_identity,
                 ).to(device)
         else:
             self.bind_pose_net = None  # not used; freed for param savings

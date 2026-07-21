@@ -663,6 +663,7 @@ class LinearEncoder(nn.Module):
                  act='lrelu', nrm='layer',
                  tau=1e-2, use_K=False, K_dim=8,
                  adain_in_dim=None,
+                 stn_full=False,
                 ):
         super().__init__()
         
@@ -710,6 +711,22 @@ class LinearEncoder(nn.Module):
             MLP([hid_dim, hid_dim, hid_dim], act=act, nrm=nrm)
             for _ in range(num_layers)
         ])
+
+        self.stn_full = stn_full
+        self._hid = hid_dim
+        if stn_full:
+            # PointNet-style full feature STN per layer: y = T x, T in R^{F x F}
+            # predicted from the pooled global code. Final layer identity-init
+            # (weight=0, bias=I) so training starts from a no-op transform,
+            # exactly like the original STN trick.
+            self.stns = nn.ModuleList()
+            for _ in range(num_layers):
+                _head = nn.Linear(hid_dim, hid_dim * hid_dim)
+                nn.init.zeros_(_head.weight)
+                with torch.no_grad():
+                    _head.bias.copy_(torch.eye(hid_dim).flatten())
+                self.stns.append(nn.Sequential(
+                    MLP([hid_dim, hid_dim], act=act, nrm=nrm), _head))
         
         if self.use_gate_layer:
             self.gate_layer = nn.Sequential(
@@ -816,9 +833,13 @@ class LinearEncoder(nn.Module):
             _adain_src = adain_input if adain_input is not None else x_in
             id_in = self.adain_in(_adain_src).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
         
-        for layer, mu, sigma in zip(self.layers, self.adains_m, self.adains_s):
+        for _li, layer in enumerate(self.layers):
             l_out = layer(out)
-            l_out = l_out * sigma(id_in) + mu(id_in)
+            if getattr(self, 'stn_full', False):
+                _T = self.stns[_li](id_in).reshape(id_in.shape[0], self._hid, self._hid)
+                l_out = torch.einsum('bvf,bfg->bvg', l_out, _T)
+            else:
+                l_out = l_out * self.adains_s[_li](id_in) + self.adains_m[_li](id_in)
             
             if self.use_residual:
                 out = l_out + out
