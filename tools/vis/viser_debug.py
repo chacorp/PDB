@@ -505,15 +505,33 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
             _ff = np.asarray(_m.faces, dtype=np.uint32)
             _name = "new_" + _slug
             _has_feat = os.path.exists(os.path.join(_nt_feat_dir, f"{_slug}_nfs_feat.npy"))
+            # optional clip source: new_topo_meshes/<slug>_clips/<clip>/NNNN.npy
+            # -> makes this topo SOURCE-capable via the mf_real frame driver
+            # (e.g. UniLS in-the-wild FLAME sequences).
+            _clips_dir = os.path.join(_ntm_dir, f"{_slug}_clips")
+            _real_clips = None
+            if os.path.isdir(_clips_dir):
+                _cat = {}
+                for _cd in sorted(_gnt.glob(os.path.join(_clips_dir, "*"))):
+                    if os.path.isdir(_cd):
+                        _fr = sorted(_gnt.glob(os.path.join(_cd, "*.npy")))
+                        if _fr:
+                            _cat[os.path.basename(_cd)] = _fr
+                if _cat:
+                    _real_clips = {_slug: _cat}
             topos[_name] = TopoData(
                 name=_name, topo=_name, id_names=[_slug], faces=_ff,
                 nfs_dir=_nt_feat_dir, geo_dist=None,
-                supports_anim=False, exp_driver="none",
+                supports_anim=(_real_clips is not None),
+                exp_driver=("mf_real" if _real_clips is not None else "none"),
                 _verts_provider=(lambda nm, _v=_vv: _v),
+                _real_clips=_real_clips,
             )
             _n_new += 1
+            _nclip = len(_real_clips[_slug]) if _real_clips else 0
             print(f"[newtopo] {_name}: V={len(_vv)} F={len(_ff)} "
-                  f"diff3f={'yes' if _has_feat else 'MISSING'}")
+                  f"diff3f={'yes' if _has_feat else 'MISSING'}"
+                  + (f" clips={_nclip} (source-capable)" if _nclip else ""))
         if _n_new:
             print(f"[newtopo] {_n_new} meshes <- {_ntm_dir}")
 
