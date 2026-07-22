@@ -252,6 +252,7 @@ class TopoData:
 
     # Real per-id frame catalog: {id_name: {clip_name: [path1.npy, ...]}}
     _real_clips: dict | None = None
+    _align_real_clips: bool = True  # off for pre-canonical clips (e.g. UniLS): per-frame procrustes injects jitter
 
     def apply_exp(self, id_name: str, exp_coeff) -> np.ndarray | None:
         """Apply expression driver to this id, return [V, 3] float32.
@@ -299,6 +300,8 @@ class TopoData:
             if not frames: return None
             fidx = int(fidx) % len(frames)
             v = np.load(frames[fidx]).astype(np.float32)
+            if not self._align_real_clips:
+                return v
             # Procrustes-align to neutral template (matches dataloader pipeline).
             from utils.remesh_utils import procrustes_LDM
             template = self._verts_provider(id_name).astype(np.float32)
@@ -526,6 +529,7 @@ def _build_topos(ict: "ICT_face_model", nfs_dir: str | None,
                 exp_driver=("mf_real" if _real_clips is not None else "none"),
                 _verts_provider=(lambda nm, _v=_vv: _v),
                 _real_clips=_real_clips,
+                _align_real_clips=False,
             )
             _n_new += 1
             _nclip = len(_real_clips[_slug]) if _real_clips else 0
