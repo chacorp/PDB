@@ -133,10 +133,13 @@ class BSDataBatch:
         self.vertices_normal = torch.stack(transposed[2], 0)   # [B, V, 3]
         self.template_normal = torch.stack(transposed[3], 0)   # [B, V, 3]
         self.faces = torch.stack(transposed[4], 0)              # [B, F, 3]
-        self.basis_name = transposed[5][0]                      # basis name (string)
+        self.basis_names = list(transposed[5])                  # basis name per item, len B
         self.mesh_data = transposed[6][0]
         self.exp_disp = torch.stack(transposed[7], 0)           # [B, V, 3]
-        self.identity_name = transposed[8][0]                   # identity name (string)
+        self.identity_name = transposed[8][0]                   # identity name (string);
+        # all items in a batch share one identity -- see evaluate_bs's fixed
+        # batch_size == n_basis, which keeps every batch aligned to exactly
+        # one identity
 
     def to(self, device):
         self.vertices = self.vertices.to(device)
@@ -511,9 +514,17 @@ class Trainer():
         """
         # ── dataset ────────────────────────────────────────────────────
         self.dataset = BasisEvalDataset(n_identity=self.opts.n_identity)
+        # Batch size is forced to exactly one identity's worth of items
+        # (n_basis == 53), not taken from --batch_size: dataset items are
+        # ordered identity-major/basis-minor, all 53 bases for one identity
+        # share the same template/pred_neutral, and the per-identity code
+        # below (context caching, per-identity metric bookkeeping) assumes
+        # each batch is exactly one identity. This lets every basis for an
+        # identity run through the model as a single batched forward pass
+        # instead of 53 sequential single-item calls.
         self.dataloader = torch.utils.data.DataLoader(
             self.dataset,
-            batch_size=self.opts.batch_size,
+            batch_size=self.dataset.n_basis,
             collate_fn=partial(BS_collate_wrapper, device=self.device),
         )
 
@@ -581,6 +592,11 @@ class Trainer():
                 mask_in = displacement_mask(batch.exp_disp, self.opts.mask_eps)   # [B, V]
                 mask_out = 1.0 - mask_in
 
+                # NOTE: F.mse_loss's default 'mean' reduction already averages
+                # over every element of the batched tensor (all n_basis items
+                # x V x 3), so MSE_in/MSE_out below are already the correct
+                # per-identity average over all n_basis bases in one value --
+                # do not divide by n_basis again when aggregating.
                 MSE_in = F.mse_loss(
                     pred_vertices * mask_in.unsqueeze(-1),
                     self.pred_neutral * mask_in.unsqueeze(-1),
@@ -591,37 +607,42 @@ class Trainer():
                 ).item()
                 losses_val['MSE-in'] += MSE_in
                 losses_val['MSE-out'] += MSE_out
-                per_identity[batch.identity_name]['MSE-in'] += MSE_in
-                per_identity[batch.identity_name]['MSE-out'] += MSE_out
+                # exactly one batch per identity (batch_size == n_basis), so
+                # this is a plain assignment, not an accumulation
+                per_identity[batch.identity_name]['MSE-in'] = MSE_in
+                per_identity[batch.identity_name]['MSE-out'] = MSE_out
 
                 pbar.set_description(
-                    f'[{batch.identity_name}/{batch.basis_name}] MSE-in: {MSE_in:.5e} MSE-out: {MSE_out:.5e}'
+                    f'[{batch.identity_name}] MSE-in: {MSE_in:.5e} MSE-out: {MSE_out:.5e}'
                 )
 
             # ── save vertices ─────────────────────────────────────────
+            curr_batch = pred_vertices.shape[0]
             if self.opts.save_vert:
-                curr_batch = pred_vertices.shape[0]
                 for b_idx in range(curr_batch):
                     save_vert_name = f"{save_vert_logdir}/{current_identity}/{index*curr_batch + b_idx:06d}.npy"
                     np.save(save_vert_name, pred_vertices[b_idx].detach().cpu().numpy())
 
             # ── GT-mask vs pred-mask side-by-side visualization ────────
+            # one image per basis in the batch (model forward is batched,
+            # but rendering is still per-item -- matplotlib has no batched API)
             faces_np = batch.faces[0].cpu().numpy()
             pred_disp = (pred_vertices - self.pred_neutral).detach()
             pred_mask_in = displacement_mask(pred_disp, self.opts.mask_eps)
 
-            gt_v = batch.vertices[0].cpu().numpy()
-            pred_v = pred_vertices[0].detach().cpu().numpy()
-            gt_color = mask_to_vertex_color(mask_in[0])
-            pred_color = mask_to_vertex_color(pred_mask_in[0])
+            for b_idx in range(curr_batch):
+                gt_v = batch.vertices[b_idx].cpu().numpy()
+                pred_v = pred_vertices[b_idx].detach().cpu().numpy()
+                gt_color = mask_to_vertex_color(mask_in[b_idx])
+                pred_color = mask_to_vertex_color(pred_mask_in[b_idx])
 
-            plot_image_array_col(
-                [gt_v, pred_v], [faces_np, faces_np], [gt_color, pred_color],
-                rot_list=[[0, 0, 0]] * 2,
-                size=3, bg_black=False,
-                logdir=f"{self.opts.log_dir}/img/{current_identity}",
-                name=f"{index:03d}_{batch.basis_name}", save=True,
-            )
+                plot_image_array_col(
+                    [gt_v, pred_v], [faces_np, faces_np], [gt_color, pred_color],
+                    rot_list=[[0, 0, 0]] * 2,
+                    size=3, bg_black=False,
+                    logdir=f"{self.opts.log_dir}/img/{current_identity}",
+                    name=f"{b_idx:03d}_{batch.basis_names[b_idx]}", save=True,
+                )
 
         # ── write log ─────────────────────────────────────────────────
         losses_val = {k: v * denom for k, v in losses_val.items()}
@@ -635,11 +656,13 @@ class Trainer():
         self.logger.write(log_text + "\n")
 
         if self.opts.n_identity > 1:
-            per_id_denom = 1 / self.dataset.n_basis
+            # per_identity[name] already holds the average over that
+            # identity's n_basis items (see the mse_loss note above) --
+            # no further division needed here
             self.logger.write("[Per-identity]\n")
             for name, vals in per_identity.items():
-                mse_in = vals['MSE-in'] * per_id_denom
-                mse_out = vals['MSE-out'] * per_id_denom
+                mse_in = vals['MSE-in']
+                mse_out = vals['MSE-out']
                 ratio = mse_out / max(mse_in, 1e-12)
                 line = f"  [{name}] MSE-in: {mse_in:.6e} MSE-out: {mse_out:.6e} Ratio(out/in): {ratio:.6e}"
                 print(line)
