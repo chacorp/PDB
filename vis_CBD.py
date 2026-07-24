@@ -255,8 +255,6 @@ class Pipeline():
         #     src_img = np.load(os.path.join(self.ict_precompute_path, f"{src_mesh_id}_img.npy"))
         #     src_img = torch.from_numpy(src_img)[0]
             
-        src_n = igl.per_vertex_normals(src_v, src_f)
-        
         ##########################################################################################################
         tgt_selection = data_name_list[TGT_SELECT_DATA]
 
@@ -347,12 +345,7 @@ class Pipeline():
         
         
         
-        # eval loop ##############################################################################################        
-        global_step = 0
-        BEST_LOSS = 100_000_000
-        
-        check_usage = False
-        
+        # eval loop ##############################################################################################
         len_data = len(src_dataset)
         len_dataloader = len(src_dataloader)
         denom = 1 / len_data
@@ -395,23 +388,23 @@ class Pipeline():
             losses_val["MSE-out"] = 0.0
             
         #mesh_data = src_dataset.data_name
-        SELF_RETARGET = (SRC_SELECT_DATA == TGT_SELECT_DATA) and (SRC_SELECT_MESH == TGT_SELECT_mesh)
-        
         if self.opts.version==0:
             if opts.NFR==False:
                 if SELF_RETARGET:
                     print('self-retargeting! (src == tgt)')
 
                     pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+                    _prev_src_template = None
                     for index, batch in pbar:
                         if index==0:
+                            _prev_src_template = batch.template[0]
                             src_verts = batch.template[0].cpu().numpy()
                             src_faces = batch.faces[0].cpu().numpy()
                             src_m = trimesh.Trimesh(vertices=src_verts, faces=src_faces)
                             # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                             # src_operators = get_mesh_operators(src_m)
                             src_img = self.model.renderer.render_img(src_m).float().to(device)
-                            src_img_feat = self.model.get_img_feat(src_img.float().to(device))
+                            src_img_feat = self.model.get_img_feat(src_img)
                             src_vert_feat = self.model.get_local_feature(
                                 batch.template[0][None], batch.faces[0], src_img_feat, at='verts'
                             ).float()
@@ -422,7 +415,8 @@ class Pipeline():
                             pred_seg_coeff = self.model.encode_seg(src_vert_feat, src_dfn_info)# [1, V, Seg]
                             pred_id_coeff  = self.model.encode_id(src_vert_feat, src_dfn_info)
                         else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                            if not torch.equal(batch.template[0], _prev_src_template):
+                                _prev_src_template = batch.template[0]
                                 pbar.set_description('src chng!?')
 
                                 src_verts = batch.template[0].cpu().numpy()
@@ -441,13 +435,9 @@ class Pipeline():
 
                                 pred_seg_coeff = self.model.encode_seg(src_vert_feat, src_dfn_info)# [1, V, Seg]
                                 pred_id_coeff  = self.model.encode_id(src_vert_feat, src_dfn_info)
-                        
+
                         with torch.no_grad():
-                            vert_feat_exp = []
-                            for b_v in batch.vertices:
-                                _tmp_ = self.model.get_local_feature(b_v[None], batch.faces[0], src_img_feat).float()
-                                vert_feat_exp.append(_tmp_)
-                            vert_feat_exp = torch.vstack(vert_feat_exp) * 1.3
+                            vert_feat_exp = self.model.get_local_feature(batch.vertices, batch.faces[0], src_img_feat).float() * 1.3
                             pred_exp_coeff = self.model.encode_exp(
                                 vert_feat_exp, src_dfn_info, batch_process=True, verbose=False
                             )
@@ -490,14 +480,17 @@ class Pipeline():
                         pred_id_coeff  = self.model.encode_id(tgt_vert_feat, tgt_dfn_info)
 
                     pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+                    _prev_src_template = None
                     for index, batch in pbar:
                         if index==0:
+                            _prev_src_template = batch.template[0]
                             src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                             # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                             src_img = self.model.renderer.render_img(src_m).float().to(device)
                             src_img_feat = self.model.get_img_feat(src_img)
                         else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                            if not torch.equal(batch.template[0], _prev_src_template):
+                                _prev_src_template = batch.template[0]
                                 pbar.set_description('src chng!?')
                                 src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                                 # src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
@@ -505,11 +498,7 @@ class Pipeline():
                                 src_img_feat = self.model.get_img_feat(src_img)
 
                         with torch.no_grad():
-                            vert_feat_exp = []
-                            for b_v in batch.vertices:
-                                _tmp_ = self.model.get_local_feature(b_v[None], batch.faces[0], src_img_feat).float()
-                                vert_feat_exp.append(_tmp_)
-                            vert_feat_exp = torch.vstack(vert_feat_exp) * 1.3
+                            vert_feat_exp = self.model.get_local_feature(batch.vertices, batch.faces[0], src_img_feat).float() * 1.3
                             pred_exp_coeff = self.model.encode_exp(
                                 vert_feat_exp, src_dfn_info, batch_process=True, verbose=False
                             )# [W, Rig]
@@ -534,8 +523,10 @@ class Pipeline():
                     print('self-retargeting! (src == tgt)')
 
                     pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+                    _prev_src_template = None
                     for index, batch in pbar:
                         if index==0:
+                            _prev_src_template = batch.template[0]
                             src_verts = batch.template[0]
                             src_faces = batch.faces[0]
                             src_m = trimesh.Trimesh(
@@ -547,7 +538,8 @@ class Pipeline():
                             src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                             src_operators = self.model.get_mesh_operators(src_m)
                         else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                            if not torch.equal(batch.template[0], _prev_src_template):
+                                _prev_src_template = batch.template[0]
                                 pbar.set_description('src chng!?')
                                 src_verts = batch.template[0]
                                 src_faces = batch.faces[0]
@@ -585,15 +577,18 @@ class Pipeline():
                     tgt_operators = trainer.model.get_mesh_operators(tgt_m)
                     
                     pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
+                    _prev_src_template = None
                     for index, batch in pbar:
                         if index==0:
+                            _prev_src_template = batch.template[0]
                             src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
 
                             src_img = trainer.model.renderer.render_img(src_m).float().to(device)
                             src_img_feat = trainer.model.get_img_feat(src_img)[None]
                             src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
                         else:
-                            if (batch.template[0].cpu().numpy() - src_m.vertices).mean() != 0:
+                            if not torch.equal(batch.template[0], _prev_src_template):
+                                _prev_src_template = batch.template[0]
                                 pbar.set_description('src chng!?')
                                 src_m = trimesh.Trimesh(vertices=batch.template[0].cpu().numpy(), faces=batch.faces[0].cpu().numpy())
                                 src_dfn_info = nfr_utils.get_dfn_info(src_m, map_location=device)
@@ -601,11 +596,7 @@ class Pipeline():
                                 src_img_feat = self.model.get_img_feat(src_img)
 
                         with torch.no_grad():
-                            vert_feat_exp = []
-                            for b_v in batch.vertices:
-                                _tmp_ = self.model.get_local_feature(b_v[None], batch.faces[0], src_img_feat).float()
-                                vert_feat_exp.append(_tmp_)
-                            vert_feat_exp = torch.vstack(vert_feat_exp)
+                            vert_feat_exp = self.model.get_local_feature(batch.vertices, batch.faces[0], src_img_feat).float()
                             pred_exp_coeff = self.model.encode_exp(
                                 vert_feat_exp, src_dfn_info, batch_process=True, verbose=False
                             )# [W, Rig]
@@ -714,12 +705,14 @@ class Pipeline():
                 print('self-retargeting! (src == tgt)')
                 pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                 for index, batch in pbar:
-                    pred_outputs, _ = self.model.retarget(
-                        batch.template, batch.vertices, batch.template
-                    )
+                    with torch.no_grad():
+                        pred_outputs, _ = self.model.retarget(
+                            batch.template, batch.vertices, batch.template
+                        )
                     losses_val = stack_mse(batch, pred_outputs, losses_val, denom)
 
                     pred_outputs_np = pred_outputs.detach().cpu().numpy()
+                    gt_np = batch.vertices.cpu().numpy() if self.opts.save_gt else None
 
                     CurrBS=pred_outputs_np.shape[0]
                     for b_idx in range(CurrBS):
@@ -728,16 +721,18 @@ class Pipeline():
 
                         if self.opts.save_gt:
                             save_gt_name = GT_log_dir+f'/{index*CurrBS+b_idx:06d}.npy'
-                            np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
+                            np.save(save_gt_name, gt_np[b_idx])
             else:
                 print('cross-retargeting! (src != tgt)')
                 pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                 for index, batch in pbar:
-                    pred_outputs, _ = self.model.retarget(
-                        batch.template, batch.vertices, tgt_v_th
-                    )
-                    
+                    with torch.no_grad():
+                        pred_outputs, _ = self.model.retarget(
+                            batch.template, batch.vertices, tgt_v_th
+                        )
+
                     pred_outputs_np = pred_outputs.detach().cpu().numpy()
+                    gt_np = batch.vertices.cpu().numpy() if self.opts.save_gt else None
 
                     CurrBS=pred_outputs_np.shape[0]
                     for b_idx in range(CurrBS):
@@ -745,7 +740,7 @@ class Pipeline():
                         np.save(save_out_name, pred_outputs_np[b_idx])
                         if self.opts.save_gt:
                             save_gt_name = GT_log_dir+f'/{index*CurrBS+b_idx:06d}.npy'
-                            np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
+                            np.save(save_gt_name, gt_np[b_idx])
                         
         elif self.opts.version==5 or self.opts.version==8 or self.opts.version==55:            
             if SELF_RETARGET:
@@ -759,7 +754,7 @@ class Pipeline():
                         with torch.no_grad():
                             key_weight = self.model.predict_coordinate(src_template, src_template_normal)
                     else:
-                        if (batch.template[0] - src_template[0]).mean() != 0:
+                        if not torch.equal(batch.template[0], src_template[0]):
                             src_template = batch.template
                             src_template_normal = batch.template_normal
                             with torch.no_grad():
