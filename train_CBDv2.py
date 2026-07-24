@@ -213,17 +213,33 @@ class Trainer():
         self.load_weight()
     
     def load_weight(self):
+        self._ckpt_optimizer_state = None
+        self._ckpt_scheduler_state = None
         if self.opts.ckpt:
             print(f"Loading... {self.opts.ckpt}")
             if self.opts.continue_ckpt:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
             else:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
-            ckpt_dict = torch.load(ckpt)            
-            self.model.load_state_dict(ckpt_dict)
+            ckpt_dict = torch.load(ckpt)
+            if isinstance(ckpt_dict, dict) and 'model' in ckpt_dict:
+                self.model.load_state_dict(ckpt_dict['model'])
+                if self.opts.continue_ckpt:
+                    self._ckpt_optimizer_state = ckpt_dict.get('optimizer')
+                    self._ckpt_scheduler_state = ckpt_dict.get('scheduler')
+            else:
+                self.model.load_state_dict(ckpt_dict)
             print(f"Loaded! {ckpt}")
         else:
             print('no ckpt found, training from scratch!')
+
+    def _load_optim_states(self):
+        if self._ckpt_optimizer_state is not None:
+            self.optimizer.load_state_dict(self._ckpt_optimizer_state)
+            print("Loaded optimizer state from checkpoint.")
+        if self._ckpt_scheduler_state is not None:
+            self.scheduler.load_state_dict(self._ckpt_scheduler_state)
+            print("Loaded scheduler state from checkpoint.")
             
     def train_v5(self, epochs):
         self.optimizer = torch.optim.AdamW(
@@ -231,17 +247,18 @@ class Trainer():
             lr=self.opts.lr,
             betas=(0.9, 0.999)
         )
-        
+
         # self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        #     self.optimizer, 
-        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)], 
+        #     self.optimizer,
+        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)],
         #     gamma=self.opts.sc_gamma
         # )
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, 
+            self.optimizer,
             step_size=self.opts.sc_step,
             gamma=self.opts.sc_gamma
         )
+        self._load_optim_states()
             
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
@@ -690,9 +707,14 @@ class Trainer():
 
             # save model
             if epoch % self.opts.save_interval == 0:
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
-            
-            
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+
+
             # validation -----------------------------------------------------------------------------------------
             self.model.eval()
             print(f"[{epoch:03d}/{epochs:03d}][Valid]")
@@ -704,17 +726,17 @@ class Trainer():
                 "shape": 0.0,
                 "total": 0.0
             }
-            
+
             counter = 0
             pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
             for index, batch in pbar:
                 counter += 1
-                
+
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
                     pred_vertices, recon_vertices, recon_source, exp_z, \
                     pred_source, _, _, _, _, _, _ = self.model(
-                        batch.template, batch.vertices, 
+                        batch.template, batch.vertices,
                         batch.template_normal, batch.vertices_normal,
                         batch.mesh_data, epoch=epoch
                     )
@@ -807,23 +829,29 @@ class Trainer():
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_best.pth')
             else:
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
-    
+
     def train_v6(self, epochs):
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.opts.lr,
             betas=(0.9, 0.999)
         )
-        
+
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, 
+            self.optimizer,
             step_size=self.opts.sc_step,
             gamma=self.opts.sc_gamma
         )
+        self._load_optim_states()
             
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
@@ -1284,9 +1312,14 @@ class Trainer():
 
             # save model
             if epoch % self.opts.save_interval == 0:
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
-            
-            
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+
+
             # validation -----------------------------------------------------------------------------------------
             self.model.eval()
             print(f"[{epoch:03d}/{epochs:03d}][Valid]")
@@ -1298,12 +1331,12 @@ class Trainer():
                 "shape": 0.0,
                 "total": 0.0
             }
-            
+
             counter = 0
             pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
             for index, batch in pbar:
                 counter += 1
-                
+
                 # model validation -------------------------------------------------------------------------------
                 with torch.no_grad():
                     # pred_vertices, recon_vertices, recon_source, src_exp_z, \
@@ -1410,11 +1443,16 @@ class Trainer():
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_best.pth')
             else:
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
-    
+
     @staticmethod
     def log_loss(writer, loss_dict, step, counter=None):
         if counter:
