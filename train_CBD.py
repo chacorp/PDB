@@ -231,31 +231,49 @@ class Trainer():
         self.load_weight()
     
     def load_weight(self):
+        self._ckpt_optimizer_state = None
+        self._ckpt_scheduler_state = None
         if self.opts.ckpt:
             print(f"Loading... {self.opts.ckpt}")
             if self.opts.continue_ckpt:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
             else:
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
-            ckpt_dict = torch.load(ckpt)            
-            self.model.load_state_dict(ckpt_dict)
+            ckpt_dict = torch.load(ckpt)
+            if isinstance(ckpt_dict, dict) and 'model' in ckpt_dict:
+                self.model.load_state_dict(ckpt_dict['model'])
+                if self.opts.continue_ckpt:
+                    self._ckpt_optimizer_state = ckpt_dict.get('optimizer')
+                    self._ckpt_scheduler_state = ckpt_dict.get('scheduler')
+            else:
+                self.model.load_state_dict(ckpt_dict)
             print(f"Loaded! {ckpt}")
         else:
             print('no ckpt found, training from scratch!')
 
+    def _load_optim_states(self):
+        if self._ckpt_optimizer_state is not None:
+            self.optimizer.load_state_dict(self._ckpt_optimizer_state)
+            print("Loaded optimizer state from checkpoint.")
+        if self._ckpt_scheduler_state is not None:
+            self.scheduler.load_state_dict(self._ckpt_scheduler_state)
+            print("Loaded scheduler state from checkpoint.")
+
     def train_v1(self, epochs):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
-        
+        self.scheduler = None
+
         if self.opts.optim_cage:
             self.model.cage_v = nn.Parameter(self.model.cage_v)
             self.optimizer_cage = torch.optim.AdamW([self.model.cage_v], lr=0.0002, betas=(0.9, 0.999))
         # if self.opts.use_scheduler:
         #     self.scheduler = torch.optim.lr_scheduler.StepLR(
-        #         self.optimizer, 
-        #         step_size=self.opts.sc_step, 
+        #         self.optimizer,
+        #         step_size=self.opts.sc_step,
         #         gamma=self.opts.sc_gamma
         #     )
-            
+        self._load_optim_states()
+
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
@@ -550,7 +568,12 @@ class Trainer():
 
             # save model
             if epoch % 100 == 0:
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
             
             
             
@@ -653,7 +676,12 @@ class Trainer():
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_best.pth')
             else:
                 log_txt_val = f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6f} (Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d})\n"
                 self.logger.write(log_txt_val)
@@ -665,14 +693,15 @@ class Trainer():
             lr=self.opts.lr,
             betas=(0.9, 0.999)
         )
-        
+
         #if self.opts.use_scheduler:
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, 
-            step_size=self.opts.sc_step, 
+            self.optimizer,
+            step_size=self.opts.sc_step,
             gamma=self.opts.sc_gamma
         )
-            
+        self._load_optim_states()
+
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
@@ -913,7 +942,12 @@ class Trainer():
 
             # save model
             if epoch % self.opts.save_interval == 0:
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
             
             
             
@@ -1023,7 +1057,12 @@ class Trainer():
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_best.pth')
             else:
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}]\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}]\n")
@@ -1051,18 +1090,19 @@ class Trainer():
             lr=self.opts.lr,
             betas=(0.9, 0.999)
         )
-        
+
         # self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        #     self.optimizer, 
-        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)], 
+        #     self.optimizer,
+        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)],
         #     gamma=self.opts.sc_gamma
         # )
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, 
+            self.optimizer,
             step_size=self.opts.sc_step,
             gamma=self.opts.sc_gamma
         )
-            
+        self._load_optim_states()
+
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
@@ -1516,7 +1556,12 @@ class Trainer():
 
             # save model
             if epoch % self.opts.save_interval == 0:
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
             
             
             # validation -----------------------------------------------------------------------------------------
@@ -1631,7 +1676,12 @@ class Trainer():
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_best.pth')
             else:
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
@@ -1642,18 +1692,19 @@ class Trainer():
             lr=self.opts.lr,
             betas=(0.9, 0.999)
         )
-        
+
         # self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        #     self.optimizer, 
-        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)], 
+        #     self.optimizer,
+        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)],
         #     gamma=self.opts.sc_gamma
         # )
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, 
+            self.optimizer,
             step_size=self.opts.sc_step,
             gamma=self.opts.sc_gamma
         )
-            
+        self._load_optim_states()
+
         ##########################################################################################################
         # define dataset -----------------------------------------------------------------------------------------
         BS = self.opts.batch_size
@@ -2048,7 +2099,12 @@ class Trainer():
 
             # save model
             if epoch % self.opts.save_interval == 0:
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
             
             
             # validation -----------------------------------------------------------------------------------------
@@ -2163,7 +2219,12 @@ class Trainer():
                 BEST_EPOCH = epoch
                 print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-                torch.save(self.model.state_dict(), f'{self.opts.log_dir}/model_best.pth')
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_best.pth')
             else:
                 self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
                 print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
