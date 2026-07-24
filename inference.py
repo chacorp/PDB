@@ -95,18 +95,24 @@ def parse_args():
     # Runtime
     parser.add_argument('--device',     type=str, default='cuda:0')
     parser.add_argument('--batch_size', type=int, default=1, help='batch size (dataset mode only)')
-    parser.add_argument('--max_frames', type=int, default=-1, help='limit frames (-1: all)')
+    parser.add_argument('--start_frame', type=int, default=0,  help='start frame index, inclusive (default: 0)')
+    parser.add_argument('--max_frames',  type=int, default=-1, help='end frame index, exclusive (-1: all)')
 
     # Output
-    parser.add_argument('--output_dir', type=str, default='eval_CBD', help='root .npy output dir')
+    parser.add_argument('--output_dir', type=str, default='output', help='root .npy output dir')
     parser.add_argument('--save_gt',    action='store_true', help='also save GT source frames')
 
     # Visualization
-    parser.add_argument('--vis',      action='store_true', help='save rendered images')
-    parser.add_argument('--vis_dir',  type=str, default=None,
+    parser.add_argument('--vis',        action='store_true', help='save rendered images')
+    parser.add_argument('--vis_dir',    type=str, default=None,
                         help='image output dir (default: <output_dir>/vis)')
-    parser.add_argument('--size',     type=int, default=4, help='panel size in inches')
-    parser.add_argument('--bg_black', action='store_true')
+    parser.add_argument('--size',       type=int, default=4, help='panel size in inches')
+    parser.add_argument('--bg_black',   action='store_true')
+    parser.add_argument('--video_fps',  type=int, default=25, help='FPS for output video')
+
+    # Retargeting mode
+    parser.add_argument('--use_key_delta', action='store_true',
+                        help='apply cage delta (deformed-neutral) instead of absolute positions')
 
     return parser.parse_args()
 
@@ -163,13 +169,16 @@ def get_dataset_mesh(selection, dataset, select_id):
     return mesh_v, np.array(mesh['face'])
 
 
-def make_dataset_output_path(output_dir, ckpt_name, src, tgt, src_id, tgt_id, exp_num):
+def make_dataset_output_path(output_dir, ckpt_name, src, tgt, src_id, tgt_id, exp_num,
+                             use_key_delta=False):
     if src == 'ict-cap':
         fname = f'{src}-ID_{src_id:03d}_test-to-{tgt}-ID_{tgt_id:03d}_test_{exp_num:02d}'
     elif 'ict' in tgt:
         fname = f'{src}_test-to-{tgt}_test-ID_{tgt_id:03d}'
     else:
         fname = f'{src}_test-to-{tgt}_test'
+    if use_key_delta:
+        fname += '_key_delta'
     return os.path.join(output_dir, ckpt_name, fname)
 
 
@@ -234,6 +243,21 @@ class CustomSourceDataset:
 # Visualization
 # ---------------------------------------------------------------------------
 
+def save_video(vis_dir, out_path, fps):
+    """Stitch rendered PNGs in vis_dir into an mp4 next to the npy folder."""
+    import imageio
+    frames = sorted(glob(os.path.join(vis_dir, '*.png')))
+    if not frames:
+        print('No frames found for video, skipping.')
+        return
+    video_path = os.path.join(out_path, 'result.mp4')
+    writer = imageio.get_writer(video_path, fps=fps, codec='libx264', quality=8)
+    for f in frames:
+        writer.append_data(imageio.imread(f))
+    writer.close()
+    print(f'Video saved: {video_path}')
+
+
 def save_vis(src_neu, src_exp, src_f, tgt_neu, tgt_pred, tgt_f,
              vis_dir, frame_idx, size, bg_black):
     from matplotrender import plot_mesh_gouraud
@@ -246,7 +270,6 @@ def save_vis(src_neu, src_exp, src_f, tgt_neu, tgt_pred, tgt_f,
         rot_list=[[0, -10, 0]] * 4,
         size=size,
         mode='shade',
-        mesh_scale=0.6,
         bg_black=bg_black,
         logdir=vis_dir,
         name=f'{frame_idx:05d}',
@@ -285,15 +308,19 @@ def main():
             data_name=args.src, toggle=False,
             ict_cap_id_num=args.src_id, ict_cap_exp_num=args.exp_num,
         )
+        _start = args.start_frame
+        _end   = args.max_frames if args.max_frames > 0 else len(src_dataset)
+        _end   = min(_end, len(src_dataset))
+        src_subset = torch.utils.data.Subset(src_dataset, range(_start, _end))
         src_loader = torch.utils.data.DataLoader(
-            src_dataset, batch_size=args.batch_size,
+            src_subset, batch_size=args.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device=device),
         )
         src_iter = iter(src_loader)
-        n_frames = len(src_dataset)
+        n_frames = len(src_subset)
         src_v, src_f = get_dataset_mesh(args.src, src_dataset, args.src_id)
         src_name = args.src
-        print(f'Dataset source: {args.src} | frames: {n_frames}')
+        print(f'Dataset source: {args.src} | frames: {n_frames} (frame {_start}–{_end})')
 
     # --- target setup -------------------------------------------------------
     if args.tgt_custom:
@@ -314,12 +341,14 @@ def main():
     # --- output paths -------------------------------------------------------
     custom_mode = bool(args.src_custom or args.tgt_custom)
     if custom_mode:
+        kd_suffix = '_key_delta' if args.use_key_delta else ''
         out_path = os.path.join(args.output_dir, ckpt_name,
-                                f'custom-{src_name}-to-{tgt_name}')
+                                f'custom-{src_name}-to-{tgt_name}{kd_suffix}')
     else:
         out_path = make_dataset_output_path(
             args.output_dir, ckpt_name,
             args.src, args.tgt, args.src_id, args.tgt_id, args.exp_num,
+            use_key_delta=args.use_key_delta,
         )
     os.makedirs(out_path, exist_ok=True)
     print(f'Output path: {out_path}')
@@ -348,16 +377,11 @@ def main():
 
     # --- inference loop -----------------------------------------------------
     BS      = 1 if args.src_custom else args.batch_size
-    total   = (args.max_frames if args.max_frames > 0 else n_frames)
-    # ceil-div for dataset loader
-    n_iters = (total + BS - 1) // BS if not args.src_custom else total
+    n_iters = (n_frames + BS - 1) // BS if not args.src_custom else n_frames
 
     pbar = tqdm(enumerate(src_iter), total=n_iters, ncols=100)
     for index, batch in pbar:
-        frame_start = index * BS
-
-        if args.max_frames >= 0 and frame_start >= args.max_frames:
-            break
+        frame_start = args.start_frame + index * BS
 
         # self-retarget: recompute key_weight when template changes identity
         if SELF_RETARGET:
@@ -374,6 +398,8 @@ def main():
                 batch.template, batch.template_normal,
                 batch.vertices,  batch.vertices_normal,
                 key_weight,
+                tgt_neu_vert=tgt_v_th,
+                use_key_delta=args.use_key_delta,
             )
 
         pred_np = pred_outputs.detach().cpu().numpy()
@@ -406,6 +432,7 @@ def main():
     if args.vis:
         vis_saved = glob(os.path.join(vis_dir, '*.png'))
         print(f'      {len(vis_saved)} images  saved to {vis_dir}')
+        save_video(vis_dir, out_path, fps=args.video_fps)
 
 
 if __name__ == '__main__':
