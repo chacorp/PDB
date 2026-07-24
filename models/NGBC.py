@@ -197,6 +197,25 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
                     for N in N_list
                 ]).to(device)
         
+    def _build_exp_input(self, dfrm, norm, src_neu_feat, src_hat_mask=None):
+        """Build expression encoder input from a delta and its corresponding normals.
+
+        Args:
+            dfrm (Tensor):         [B, N, 3]  vertex deformation (either position or displacement)
+            norm (Tensor):         [B, N, 3]  vertex normals matching the delta frame
+            src_neu_feat (Tensor): [B, N, in_dim-1]  pre-built neutral features (pos [+ norm], no hat)
+            src_hat_mask (Tensor | None): [B, N, 1]  hat mask, required when in_type==2
+        Returns:
+            Tensor: [B, N, in_dim_exp]  concatenated expression input
+        """
+        x = dfrm
+        if self.in_type > 0:
+            x = torch.cat([x, norm], dim=-1)
+        x = torch.cat([x, src_neu_feat], dim=-1)
+        if self.in_type == 2:
+            x = torch.cat([x, src_hat_mask], dim=-1)
+        return x
+
     def reshape_key_d(self, key_d, B):        
         if self.out_type == 2:
             # cage transform matrix
@@ -456,73 +475,99 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
 
     @torch.no_grad()
     def retarget_animation(
-        self, 
+        self,
         src_neu_vert,
-        src_neu_norm, 
+        src_neu_norm,
         src_def_vert,
         src_def_norm,
         key_weight,
-        tgt_neu_vert=None, # required if the model is delta prediction!
+        tgt_neu_vert=None, # required if use_key_delta=True or use_full_vertex=False
         return_source=False,
+        use_key_delta=False,
     ):
         """
         Args:
             src_neu_vert (torch.tensor): [B, N, 3] source neutral mesh vertex positions
             src_neu_norm (torch.tensor): [B, N, 3] source neutral mesh vertex normals
-            
+
             src_def_vert (torch.tensor): [B, N, 3] source deformed mesh vertex positions
             src_def_norm (torch.tensor): [B, N, 3] source deformed mesh vertex normals
-            
-            key_weight (torch.tensor):   [B, M, K] target neutral mesh vertex normals
+
+            key_weight (torch.tensor):   [B, M, K] barycentric coordinate weights w.r.t. cage vertices
             tgt_neu_vert (torch.tensor): [B, M, 3] target neutral mesh vertex positions
 
-            return_source (bool): if True, returns reconstructed source mesh
+            return_source (bool): if True, also returns predicted target neutral mesh as third output
+            use_key_delta (bool): if True, applies cage delta (deformed - neutral) to tgt_neu_vert
+                                  instead of using absolute cage positions
         Returns:
-            (pred_deformed): [B, M, 3] predicted target deformed mesh vertices
+            pred_deformed: [B, M, 3] predicted target deformed mesh vertices
+            src_key_d:     [B, K, 3] predicted source cage vertex positions (deformed)
+            pred_source:   [B, M, 3] predicted target neutral mesh (only if return_source=True)
         """
-        B, N, _ = src_neu_vert.shape
-        src_neu_in = src_neu_vert        
-        src_def_in = src_def_vert - src_neu_vert # as a delta (optional)
-        
-        
-        if self.in_type > 0:
-            src_neu_in = torch.cat([src_neu_in, src_neu_norm], dim=-1)
-            src_def_in = torch.cat([src_def_in, src_def_norm], dim=-1)
-            
-        src_def_in = torch.cat([src_def_in, src_neu_in], dim=-1)
+        if not self.use_full_vertex or use_key_delta:
+            assert tgt_neu_vert is not None, \
+                'tgt_neu_vert is required when use_full_vertex=False or use_key_delta=True'
 
-        if self.in_type == 2:
-            src_hat_mask = plateau_hat_points(src_neu_vert)
-            src_neu_in = torch.cat([src_neu_in, src_hat_mask], dim=-1)
-            src_def_in = torch.cat([src_def_in, src_hat_mask], dim=-1)
-        
+        B, N, _ = src_neu_vert.shape
+
+        # neutral features shared by both expression inputs (pos [+ norm], no hat yet)
+        src_neu_feat = src_neu_vert
+        if self.in_type > 0:
+            src_neu_feat = torch.cat([src_neu_feat, src_neu_norm], dim=-1)
+
+        src_hat_mask = plateau_hat_points(src_neu_vert) if self.in_type == 2 else None
+
+        # build expression encoder input for deformed frame
+        src_def_in = self._build_exp_input(
+            src_def_vert - src_neu_vert, src_def_norm, src_neu_feat, src_hat_mask
+        )
+
+        # src_neu_in for shape_model includes hat (in_type==2)
+        src_neu_in = src_neu_feat if src_hat_mask is None \
+            else torch.cat([src_neu_feat, src_hat_mask], dim=-1)
+
+        # encode source expression
         if self.use_shp:
-            z_ID_B = self.shape_model(src_neu_in) # (B, 1, L)
-            
-            src_exp_z = self.exp_z_model(src_def_in, z_ID_B) # (B, 1, L)
-            src_key_d = self.key_d_model(src_exp_z, z_ID_B) # (B, 3K)
+            z_ID_B    = self.shape_model(src_neu_in)          # (B, 1, L)
+            src_exp_z = self.exp_z_model(src_def_in, z_ID_B)  # (B, 1, L)
+            src_key_d = self.key_d_model(src_exp_z,  z_ID_B)  # (B, K*3)
         else:
-            src_exp_z = self.exp_z_model(src_def_in) # (B, 1, L)
-            src_key_d = self.key_d_model(src_exp_z) # (B, 3K)
-        
-        src_key_d = self.reshape_key_d(src_key_d, B) # (B, K, 3)
-        
+            src_exp_z = self.exp_z_model(src_def_in)           # (B, 1, L)
+            src_key_d = self.key_d_model(src_exp_z)            # (B, K*3)
+
+        src_key_d = self.reshape_key_d(src_key_d, B)  # (B, K, 3)
         tgt_def_v = torch.einsum('bnc,bci->bni', key_weight, src_key_d)
-        
+
+        # encode source neutral (delta=0) — only when needed
+        if use_key_delta or return_source:
+            src_neu_zero_in = self._build_exp_input(
+                torch.zeros_like(src_neu_vert), src_neu_norm, src_neu_feat, src_hat_mask
+            )
+            if self.use_shp:
+                src_exp_neu_z = self.exp_z_model(src_neu_zero_in, z_ID_B)  # (B, 1, L)
+                src_key_n     = self.key_d_model(src_exp_neu_z,   z_ID_B)  # (B, K*3)
+            else:
+                src_exp_neu_z = self.exp_z_model(src_neu_zero_in)           # (B, 1, L)
+                src_key_n     = self.key_d_model(src_exp_neu_z)             # (B, K*3)
+            src_key_n = self.reshape_key_d(src_key_n, B)  # (B, K, 3)
+
         if self.use_full_vertex:
-            # absolute position
-            pred_deformed = tgt_def_v
+            if use_key_delta:
+                # apply expression delta on top of target neutral
+                tgt_delta_v  = torch.einsum('bnc,bci->bni', key_weight, src_key_d - src_key_n)
+                pred_deformed = tgt_neu_vert + tgt_delta_v
+            else:
+                # absolute cage positions
+                pred_deformed = tgt_def_v
         else:
-            # displacement
+            # displacement mode
             pred_deformed = tgt_def_v + tgt_neu_vert
 
-        # if return_source:
-        #     exp_zs = self.exp_z_model(src_neu_in) # (B, 1, L)
-        #     key_s = self.key_d_model(exp_zs) # (B, 3K)
-        #     key_s = self.reshape_key_d(key_s, B)
-        #     pred_source_v = torch.einsum('bnc,bci->bni', key_weight, key_s)
-        #     return pred_deformed, src_key_d, pred_source_v
-            
+        if return_source:
+            tgt_neu_v = torch.einsum('bnc,bci->bni', key_weight, src_key_n)
+            pred_source = tgt_neu_v if self.use_full_vertex else tgt_neu_v + tgt_neu_vert
+            return pred_deformed, src_key_d, pred_source
+
         return pred_deformed, src_key_d
 
     @torch.no_grad()
