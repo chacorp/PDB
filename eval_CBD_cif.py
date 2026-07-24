@@ -5,6 +5,7 @@ import yaml
 import random
 import itertools
 import re
+import pickle
 
 import numpy as np
 import argparse
@@ -29,6 +30,7 @@ from utils.ckpt_utils import *
 from utils.remesh_utils import calc_norm_torch
 
 from models.NGBC import NeuralGeneralizedBarycentricCoordinate
+from models.baseline import CageNet
 
 # Reuse dataset machinery already built and validated by the sibling eval
 # scripts instead of re-deriving per-dataset file paths here:
@@ -186,14 +188,31 @@ def save_heatmap(mat_np, path, title, xlabel='column (mesh b)', ylabel='column (
     plt.close(fig)
 
 
+def to_jsonable(obj):
+    if isinstance(obj, torch.Tensor):
+        return obj.tolist()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        value = obj.item()
+        return None if isinstance(value, float) and not np.isfinite(value) else value
+    if isinstance(obj, dict):
+        return {k: to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [to_jsonable(v) for v in obj]
+    if isinstance(obj, (float, np.floating)) and not np.isfinite(obj):
+        return None
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # CLI options
 # ---------------------------------------------------------------------------
 
 def Options():
     parser = argparse.ArgumentParser(
-        description='Cross-Identity Factor (CIF) consistency evaluation for NGBC '
-                     '(see eval_CBD_cp/cross_id_factor_consist.md, Parts I-IV)'
+        description='Cross-Identity Factor (CIF) consistency evaluation for '
+                    'NGBC, NC, NFS, and NFR'
     )
     parser.add_argument('-c', '--config', default='config/train_CBD.yml', help='config file path')
     parser.add_argument("--device",       type=str,   default="cuda:0")
@@ -201,9 +220,17 @@ def Options():
     parser.add_argument("--log_dir",      type=str,   default="eval_CBD_cif")
 
     parser.add_argument("--version",      type=int,   default=5,
-                        help='model version (only 5: NGBC is supported -- see eval_CBD_cp.py '
-                             'for why: this needs the identity-coordinate / expression-code '
-                             'split exposed by predict_coordinate() / retarget_animation())')
+                        help='model version: 5 (NGBC, full Part I-IV) or 0 (NFS/NFR) / 1 (NC baseline) '
+                             '-- 0/1 only support the generic, architecture-agnostic route-consistency '
+                             '(Part III) and target-GT (Part IV) measurements, since Part I/II are '
+                             'defined in terms of NGBC-specific indexed control points / weight columns '
+                             'that 0/1 do not expose')
+    parser.add_argument("--NFR",          dest='NFR', action='store_true',
+                        help='with --version 0, use the pretrained NFR model instead of NFS')
+    parser.set_defaults(NFR=False)
+    parser.add_argument("--optim_cage", dest='optim_cage', action='store_true',
+                        help='NC architecture option; normally restored from train_opts.yml')
+    parser.set_defaults(optim_cage=None)
 
     parser.add_argument("--last_activation", default=None,
                         choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"])
@@ -231,12 +258,12 @@ def Options():
     parser.add_argument("--n_id_per_dataset", type=int, default=5,
                         help='number of identities per non-ICT dataset in --datasets')
 
-    # ---- source expression sequence (Part II / III route) -----------------
+    # ---- source expression sequence (Part II) ------------------------------
     parser.add_argument("--src_name", type=str, default='mf_SEN',
                         help='dataset supplying the real driving expression sequence')
     parser.add_argument("--n_src_frames", type=int, default=30,
                         help='number of source frames randomly sampled (fixed seed) for '
-                             'Part II (CP coherence) and Part III (route consistency)')
+                             'Part II (CP coherence)')
 
     # ---- Part I: weight-column spatial coherence ---------------------------
     parser.add_argument("--n_columns_sample", type=int, default=64,
@@ -297,6 +324,8 @@ def Options():
         parser.error('--active_mass_ratio must be non-negative')
     if len(set(args.datasets)) != len(args.datasets):
         parser.error('--datasets must not contain duplicates')
+    if args.NFR and args.version != 0:
+        parser.error('--NFR is only valid with --version 0')
     return args
 
 
@@ -312,12 +341,60 @@ class Trainer():
         self.rng = np.random.RandomState(opts.seed)
         self.torch_gen = torch.Generator(device=self.device).manual_seed(opts.seed)
 
-        if opts.version != 5:
+        if opts.version not in (0, 1, 5):
             raise NotImplementedError(
-                'eval_CBD_cif.py only supports version=5 (NGBC): cross-identity factor '
-                'consistency relies on NeuralGeneralizedBarycentricCoordinate.predict_coordinate() '
-                '/ .retarget_animation() exposing the identity-coordinate / expression-code split.'
+                'eval_CBD_cif.py supports version 5 (NGBC, full Part I-IV), 1 (NC baseline, '
+                'Part III/IV only) and 0 (NFS/NFR, Part III/IV only).'
             )
+
+        if opts.quick:
+            # The shared route protocol requires distinct source, via, and
+            # final identities. A quick Part-III run therefore still needs 3.
+            opts.n_ict_identity = 3 if not opts.skip_part3 else min(opts.n_ict_identity, 2)
+            opts.n_id_per_dataset = min(opts.n_id_per_dataset, 2)
+            opts.n_columns_sample = min(opts.n_columns_sample, 16) if opts.n_columns_sample > 0 else 16
+            opts.sw_n_proj = min(opts.sw_n_proj, 4)
+            opts.sw_n_vert_sample = min(opts.sw_n_vert_sample, 500) if opts.sw_n_vert_sample > 0 else 500
+            opts.n_src_frames = min(opts.n_src_frames, 5)
+            opts.n_pert_columns = min(opts.n_pert_columns, 8)
+
+        if not opts.skip_part3 and opts.n_ict_identity < 3:
+            raise ValueError(
+                'Part III route consistency requires at least three ICT identities '
+                '(distinct source, via, and final); use --n_ict_identity >= 3.'
+            )
+
+        if opts.version == 0:
+            # NFS / NFR: Part I/II do not apply (no indexed control-point /
+            # weight-column concept exists in either architecture), so this
+            # path only ever needs part3/part4_generic below.
+            from evaluation import Trainer as EvalTrainer
+            opts.is_train = False
+            opts.img_feat_dim = 128
+            opts.feature_type = "cents&norms"
+            opts.stage1 = True
+            opts.scale_exp = 1.0
+            opts.ict_face_only = False
+            if opts.NFR:
+                opts.ckpt = '/NFR'
+                opts.design = "nfr"
+                opts.dec_type = "jacob"
+            else:
+                opts.design = "new2"
+                opts.dec_type = "disp"
+            eval_trainer = EvalTrainer(opts)
+            self.model = eval_trainer.model
+            self.K = None
+            return
+
+        if opts.version == 1:
+            # NC (CageNet) baseline: Part III/IV only (see part3/4_generic).
+            self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+            self.load_weight()
+            self.K = None
+            return
+
+        # ---- version == 5 (NGBC), full Part I-IV -------------------------------
         if self.opts.out_type not in (0, 1):
             raise ValueError(
                 'CIF evaluation currently supports out_type 0 (delta) and 1 '
@@ -329,15 +406,6 @@ class Trainer():
                 'NGBC version 5 does not pass a sqrelu option to its coordinate encoder; '
                 'evaluating it as sqrelu would silently instantiate a different activation.'
             )
-
-        if opts.quick:
-            opts.n_ict_identity = min(opts.n_ict_identity, 2)
-            opts.n_id_per_dataset = min(opts.n_id_per_dataset, 2)
-            opts.n_columns_sample = min(opts.n_columns_sample, 16) if opts.n_columns_sample > 0 else 16
-            opts.sw_n_proj = min(opts.sw_n_proj, 4)
-            opts.sw_n_vert_sample = min(opts.sw_n_vert_sample, 500) if opts.sw_n_vert_sample > 0 else 500
-            opts.n_src_frames = min(opts.n_src_frames, 5)
-            opts.n_pert_columns = min(opts.n_pert_columns, 8)
 
         last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation == l_act for l_act in last_act_list]
@@ -385,6 +453,8 @@ class Trainer():
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
             print(f"Loading... {ckpt}")
             ckpt_dict = torch.load(ckpt, map_location=self.device)
+            if isinstance(ckpt_dict, dict) and 'model' in ckpt_dict:
+                ckpt_dict = ckpt_dict['model']
             incompatible = self.model.load_state_dict(ckpt_dict, strict=False)
             if incompatible.unexpected_keys:
                 print(
@@ -575,16 +645,24 @@ class Trainer():
                 margin_vec = (off_diag - diag) / off_diag.clamp_min(1e-12)
 
                 valid_query = valid_src & valid_tgt & torch.isfinite(diag)
-                if valid_query.any():
+                n_valid_tgt = int(valid_tgt.sum().item())
+                margin_query = valid_query & torch.isfinite(margin_vec)
+                # With only one valid candidate, Top-k/MRR are guaranteed by
+                # construction and do not measure column correspondence.
+                if n_valid_tgt >= 2 and valid_query.any():
                     top1_all = top1_all_vec[valid_query].float().mean().item()
                     top5_all = top5_all_vec[valid_query].float().mean().item()
                     mrr_all = (1.0 / rank_all[valid_query].float()).mean().item()
-                    margin_all = margin_vec[valid_query].mean().item()
+                    margin_all = (
+                        margin_vec[margin_query].mean().item()
+                        if margin_query.any() else float('nan')
+                    )
                 else:
                     top1_all = top5_all = mrr_all = margin_all = float('nan')
 
                 both_active = c_src['active_sampled'] & c_tgt['active_sampled']
-                if both_active.any():
+                n_active_tgt = int(c_tgt['active_sampled'].sum().item())
+                if n_active_tgt >= 2 and both_active.any():
                     # Active retrieval excludes inactive target columns from
                     # the candidate set instead of only filtering queries.
                     C_active = C_dir.masked_fill(
@@ -593,7 +671,7 @@ class Trainer():
                     rank_active = (C_active < diag[:, None]).sum(-1) + 1
                     top1_active_vec = C_active.argmin(-1) == index
                     top5_active_vec = rank_active <= min(
-                        5, int(c_tgt['active_sampled'].sum().item())
+                        5, n_active_tgt
                     )
                     top1_active = top1_active_vec[both_active].float().mean().item()
                     top5_active = top5_active_vec[both_active].float().mean().item()
@@ -618,6 +696,10 @@ class Trainer():
                     top1_active=top1_active,
                     top5_active=top5_active,
                     mrr_active=mrr_active,
+                    valid_query_count=int(valid_query.sum().item()),
+                    valid_candidate_count=n_valid_tgt,
+                    active_query_count=int(both_active.sum().item()),
+                    active_candidate_count=n_active_tgt,
                     active_both_ratio=both_active.float().mean().item(),
                     gram_err=F.mse_loss(c_src['G_bar'], c_tgt['G_bar']).item(),
                     gram_err_active=gram_active,
@@ -837,7 +919,7 @@ class Trainer():
     # Part III -- Joint factor compatibility
     # ==================================================================
     @torch.no_grad()
-    def part3_joint_factor_compatibility(self, pool, _src_dataset, probe_frames):
+    def part3_joint_factor_compatibility(self, pool):
         print('\n[Part III] Joint factor compatibility...')
 
         # ---- 15. cross-identity neutral factor swap ------------------------
@@ -863,63 +945,8 @@ class Trainer():
                 name=f'part3_neutral_swap_{a0.name}_to_{b0.name}', save=True,
             )
 
-        # ---- 16. third-target route consistency -----------------------------
-        route_records = []
-        target_pairs = []
-        if len(pool) >= 2:
-            all_pairs = list(itertools.permutations(range(len(pool)), 2))
-            n_pairs = min(10, len(all_pairs))
-            chosen = self.rng.choice(len(all_pairs), size=n_pairs, replace=False)
-            target_pairs = [(pool[all_pairs[i][0]], pool[all_pairs[i][1]]) for i in chosen]
-        else:
-            print('  route consistency skipped: needs >=2 identities in the pool')
-
-        first_vis_done = False
-        for batch in tqdm(probe_frames, ncols=100, desc='Route consistency'):
-            for b, c in target_pairs:
-                kw_b, kw_c = self._get_key_weight(b), self._get_key_weight(c)
-
-                pred_c_direct, v_s = self.model.retarget_animation(
-                    batch.template, batch.template_normal, batch.vertices, batch.vertices_normal,
-                    kw_c, c.neu_vert,
-                )
-                pred_c_neutral, _ = self.model.retarget_animation(
-                    batch.template, batch.template_normal, batch.template, batch.template_normal,
-                    kw_c, c.neu_vert,
-                )
-                pred_b = self._apply_key_d(kw_b, v_s, b.neu_vert)
-                pred_b_normal = calc_norm_torch(pred_b, b.faces, at='vert')
-                pred_c_via_b, _ = self.model.retarget_animation(
-                    b.neu_vert, b.neu_norm, pred_b, pred_b_normal, kw_c, c.neu_vert,
-                )
-
-                mse = F.mse_loss(pred_c_direct, pred_c_via_b).item()
-                signal_mse = F.mse_loss(pred_c_direct, pred_c_neutral).item()
-                route_records.append(dict(
-                    via=b.name, final=c.name, direction=direction_tag(b, c),
-                    mse=mse,
-                    signal_mse=signal_mse,
-                    normalized_mse=mse / (signal_mse + 1e-12),
-                    normalized_rmse=np.sqrt(mse / (signal_mse + 1e-12)),
-                ))
-
-                if not self.opts.no_vis and not first_vis_done:
-                    v_list = [pred_c_direct[0].detach().cpu(), pred_c_via_b[0].detach().cpu()]
-                    plot_image_array(
-                        v_list, [c.faces.cpu()] * 2, rot_list=[[0, 0, 0]] * 2, size=1, bg_black=False,
-                        mode='shade', logdir=os.path.join(self.opts.log_dir, 'img'),
-                        name=f'part3_route_direct_vs_via_{b.name}_to_{c.name}', save=True,
-                    )
-                    first_vis_done = True
-
         return {
             'neutral_swap': {'records': swap_records, 'summary': self._aggregate(swap_records, ['mse'])},
-            'route_consistency': {
-                'records': route_records,
-                'summary': self._aggregate(
-                    route_records, ['mse', 'signal_mse', 'normalized_mse', 'normalized_rmse']
-                ),
-            },
         }
 
     # ==================================================================
@@ -1100,6 +1127,304 @@ class Trainer():
             },
         }
 
+    # ==================================================================
+    # Shared (NGBC / NC / NFS / NFR) route-consistency + target-GT
+    # ==================================================================
+    # Part I (weight-column retrieval) and Part II (perturbation Jacobian)
+    # are defined in terms of NGBC's indexed, spatially-meaningful control
+    # points -- NC has an analogous indexed cage (so could in principle
+    # support them too), but NFS/NFR's "expression code" is just an
+    # undifferentiated latent vector with no per-dimension spatial identity,
+    # so there is nothing for those two parts to probe there. Route
+    # consistency (Part III) and target-GT reconstruction (Part IV) only
+    # need an encode/apply split, so they generalize across architectures
+    # and are implemented
+    # once here, dispatched by self.opts.version / self.opts.NFR.
+    #
+    # Restricted to ICT identities 000-099: NFS/NFR need per-identity
+    # dfn_info/operators/img (DiffusionNet spectral basis + a rendered
+    # image), and these are only precomputed on disk for ICT -- computing
+    # them on the fly for arbitrary Multiface identities is expensive and
+    # out of scope here. NC has no such requirement but is kept on the same
+    # ICT-only pool for a like-for-like comparison across all three.
+    _ICT_PRECOMPUTE_PATH = '/data/sihun/ICT-audio2face/precompute-synth-fullhead'
+
+    def _load_ict_precompute(self, id_name):
+        path = self._ICT_PRECOMPUTE_PATH
+        dfn_info = pickle.load(open(f'{path}/{id_name}_dfn_info.pkl', 'rb'))
+        operators = pickle.load(open(f'{path}/{id_name}_operators.pkl', 'rb'))
+        img = np.load(f'{path}/{id_name}_img.npy')
+        img = torch.from_numpy(img)[0].float().to(self.device)
+        return dfn_info, operators, img
+
+    @torch.no_grad()
+    def _generic_context(self, id_name, neu_vert, faces):
+        """Per-identity target-only precompute for the shared ICT protocol."""
+        if self.opts.version == 5:
+            neu_norm = calc_norm_torch(neu_vert, faces, at='vert')
+            key_weight = self.model.predict_coordinate(neu_vert, neu_norm)
+            return dict(neu_vert=neu_vert, neu_norm=neu_norm, faces=faces,
+                        key_weight=key_weight)
+
+        if self.opts.version == 1:
+            return dict(neu_vert=neu_vert, faces=faces)
+
+        dfn_info, operators, img = self._load_ict_precompute(id_name)
+        if self.opts.NFR:
+            return dict(dfn_info=dfn_info, operators=operators, img=img,
+                        neu_vert=neu_vert[0], faces=faces)
+
+        img_feat = self.model.get_img_feat(img)
+        vert_feat = self.model.get_local_feature(neu_vert, faces, img_feat, at='verts').float()
+        id_coeff = self.model.encode_id(vert_feat, dfn_info)
+        seg_coeff = self.model.encode_seg(vert_feat, dfn_info) if self.opts.design == 'new2' else None
+        return dict(dfn_info=dfn_info, operators=operators, img=img, img_feat=img_feat,
+                    vert_feat=vert_feat, id_coeff=id_coeff, seg_coeff=seg_coeff,
+                    neu_vert=neu_vert, faces=faces)
+
+    def _generic_encode(self, ctx, def_vert, faces):
+        """Encode expression from a mesh carried by this identity."""
+        if self.opts.version == 5:
+            batch_size = def_vert.shape[0]
+            neu = ctx['neu_vert'].expand(batch_size, -1, -1)
+            neu_norm = ctx['neu_norm'].expand(batch_size, -1, -1)
+            key_weight = ctx['key_weight'].expand(batch_size, -1, -1)
+            def_norm = calc_norm_torch(def_vert, faces, at='vert')
+            _, key_d = self.model.retarget_animation(
+                neu, neu_norm, def_vert, def_norm, key_weight, neu,
+            )
+            return key_d
+
+        if self.opts.NFR:
+            # my_diffusion_net_template caches its spectral basis as module
+            # parameters (see models/NFR.py), so which identity's basis is
+            # "active" must be set explicitly before every encode/apply call
+            # that touches a different mesh -- there is no dfn_info argument
+            # threaded through encode() itself.
+            self.model.model.update_precomputes(ctx['dfn_info'])
+            inputs_v = self.model.get_inputs(def_vert, faces)
+            img_in = ctx['img'][None] if ctx['img'].dim() == 3 else ctx['img']
+            return self.model.model.encode(inputs_v, img_in, N_F=faces.shape[0])
+        vert_feat_exp = self.model.get_local_feature(def_vert, faces, ctx['img_feat']).float()
+        return self.model.encode_exp(vert_feat_exp, ctx['dfn_info'], batch_process=True, verbose=False)
+
+    def _generic_apply(self, ctx, exp_code):
+        """Apply a cached expression code through this target identity."""
+        if self.opts.version == 5:
+            batch_size = exp_code.shape[0]
+            return self._apply_key_d(
+                ctx['key_weight'].expand(batch_size, -1, -1),
+                exp_code,
+                ctx['neu_vert'].expand(batch_size, -1, -1),
+            )
+
+        if self.opts.NFR:
+            self.model.model.update_precomputes(ctx['dfn_info'])
+            img_in = ctx['img'][None] if ctx['img'].dim() == 3 else ctx['img']
+            pred_vertices, _, _ = self.model.calc_new_mesh(
+                ctx['neu_vert'], ctx['faces'], exp_code, ctx['operators'], ctx['dfn_info'], img_in,
+            )
+            # calc_new_mesh's Poisson solve only recovers vertex positions up
+            # to translation (it recenters to zero-mean internally) -- add
+            # back this identity's own centroid so outputs are comparable in
+            # the same coordinate frame as real GT / the direct-path result.
+            pred_vertices = (
+                pred_vertices - pred_vertices.mean(dim=1, keepdim=True)
+                + ctx['neu_vert'].mean(dim=0, keepdim=True)
+            )
+            return pred_vertices
+        inputs = (ctx['vert_feat'], exp_code, ctx['id_coeff'], ctx['seg_coeff'],
+                  None, ctx['neu_vert'], ctx['faces'], ctx['operators'])
+        pred = self.model.decode(inputs, tgt_mesh=None, batch_process=True)
+        return pred
+
+    def _nc_retarget(self, src_neu, src_def, tgt_neu):
+        pred, _ = self.model.retarget(src_neu, src_def, tgt_neu)
+        return pred
+
+    def _generic_route_pair(self, s_neu, s_mesh, faces, s_ctx, b_neu, b_ctx, c_neu, c_ctx):
+        """Direct vs. via-b path for one (source frame, via-identity b,
+        final target c) triple, dispatched by architecture. Returns
+        (pred_direct, pred_via_b), both on target c's topology."""
+        if self.opts.version == 1:
+            pred_direct = self._nc_retarget(s_neu, s_mesh, c_neu)
+            mesh_b = self._nc_retarget(s_neu, s_mesh, b_neu)
+            pred_via_b = self._nc_retarget(b_neu, mesh_b, c_neu)
+            return pred_direct, pred_via_b
+        code_s = self._generic_encode(s_ctx, s_mesh, faces)
+        pred_direct = self._generic_apply(c_ctx, code_s)
+        mesh_b = self._generic_apply(b_ctx, code_s)
+        code_b = self._generic_encode(b_ctx, mesh_b, b_ctx['faces'])
+        pred_via_b = self._generic_apply(c_ctx, code_b)
+        return pred_direct, pred_via_b
+
+    def _generic_target_gt_pair(self, a_neu, a_mesh, faces, a_ctx, b_neu, b_ctx):
+        """Apply identity a's real expression to identity b, dispatched by
+        architecture. Returns the predicted mesh on b's topology."""
+        if self.opts.version == 1:
+            return self._nc_retarget(a_neu, a_mesh, b_neu)
+        code_a = self._generic_encode(a_ctx, a_mesh, faces)
+        return self._generic_apply(b_ctx, code_a)
+
+    @torch.no_grad()
+    def evaluate_baseline_generic(self, run_route=True, run_target_gt=True):
+        """
+        Architecture-matched route consistency and target reconstruction on
+        a shared ICT identity/blendshape protocol. A dedicated RNG makes the
+        sampled route triples and bases identical in separate method runs.
+        """
+        n_id = self.opts.n_ict_identity
+        arch = (
+            'PDF' if self.opts.version == 5 else
+            ('NC' if self.opts.version == 1 else ('NFR' if self.opts.NFR else 'NFS'))
+        )
+        route_rng = np.random.RandomState(self.opts.seed + 3001)
+        enabled = []
+        if run_route:
+            enabled.append('route-consistency')
+        if run_target_gt:
+            enabled.append('target-GT')
+        print(f"\n[Shared ICT: {arch}] {' + '.join(enabled) or 'no enabled metric'} "
+              f'on {n_id} identities')
+
+        ds = NeutralEvalDataset(data_name='ict', toggle=False)
+        items = ds.items[:n_id]
+        names, neu_verts, faces_list = [], [], []
+        for template_np, faces_np, id_name in items:
+            names.append(id_name)
+            neu_verts.append(torch.tensor(template_np).float()[None].to(self.device))
+            faces_list.append(torch.tensor(faces_np).long().to(self.device))
+        neu_by_name = dict(zip(names, neu_verts))
+        faces_by_name = dict(zip(names, faces_list))
+
+        contexts = {}
+        for name in tqdm(names, ncols=100, desc=f'[{arch}] identity context'):
+            contexts[name] = self._generic_context(name, neu_by_name[name], faces_by_name[name])
+
+        gc_dataset = GCEvalDataset(n_identity=n_id)
+        gc_loader = torch.utils.data.DataLoader(
+            gc_dataset, batch_size=gc_dataset.n_basis,
+            collate_fn=partial(GC_collate_wrapper, device=self.device),
+        )
+
+        blendshapes = {}   # identity name -> [53, V, 3] real blendshape meshes
+        exp_disp_shared = None
+        basis_names = None
+        for batch in tqdm(gc_loader, ncols=100, desc=f'[{arch}] load blendshapes'):
+            blendshapes[batch.identity_name] = batch.vertices
+            if exp_disp_shared is None:
+                exp_disp_shared = batch.exp_disp
+                basis_names = list(batch.basis_names)
+        missing_blendshapes = sorted(set(names) - set(blendshapes))
+        if missing_blendshapes:
+            raise RuntimeError(
+                'The shared ICT neutral/blendshape identity sets do not match; '
+                f'missing blendshapes for: {missing_blendshapes}'
+            )
+        signal_per_basis = (exp_disp_shared ** 2).mean(dim=(1, 2))
+
+        # ---- target-GT and motion-only target-GT ---------------------------
+        target_gt_records = []
+        target_motion_records = []
+        if run_target_gt:
+            for a_name, b_name in tqdm(list(itertools.permutations(names, 2)), ncols=100,
+                                        desc=f'[{arch}] target-GT'):
+                a_mesh = blendshapes[a_name]
+                B = a_mesh.shape[0]
+                faces_a = faces_by_name[a_name]
+                gt_b = neu_by_name[b_name] + exp_disp_shared
+                neutral_pred_b = self._generic_target_gt_pair(
+                    neu_by_name[a_name], neu_by_name[a_name], faces_a, contexts[a_name],
+                    neu_by_name[b_name], contexts[b_name],
+                )
+                preds = []
+                for s in range(B):
+                    pred = self._generic_target_gt_pair(
+                        neu_by_name[a_name], a_mesh[s:s + 1], faces_a, contexts[a_name],
+                        neu_by_name[b_name], contexts[b_name],
+                    )
+                    preds.append(pred[0] if pred.dim() == 3 else pred)
+                preds = torch.stack(preds, dim=0)
+                raw_err = ((preds - gt_b) ** 2).mean(dim=(1, 2))
+                pred_motion = preds - neutral_pred_b
+                motion_err = ((pred_motion - exp_disp_shared) ** 2).mean(dim=(1, 2))
+                for s, basis_name in enumerate(basis_names):
+                    signal = signal_per_basis[s].item()
+                    raw = raw_err[s].item()
+                    motion = motion_err[s].item()
+                    common = dict(
+                        a=a_name, b=b_name, pair=f'{a_name}->{b_name}',
+                        basis=basis_name, group=basis_group(basis_name),
+                    )
+                    target_gt_records.append(dict(
+                        **common, target_gt_mse=raw, signal_mse=signal,
+                        target_gt_nrmse=float(np.sqrt(raw / (signal + 1e-12))),
+                    ))
+                    target_motion_records.append(dict(
+                        **common, target_motion_mse=motion, signal_mse=signal,
+                        target_motion_nrmse=float(np.sqrt(motion / (signal + 1e-12))),
+                    ))
+
+        # ---- route consistency (plan sec. 16) ------------------------------
+        route_records = []
+        if run_route and len(names) >= 3:
+            all_pairs = list(itertools.permutations(range(len(names)), 2))
+            n_pairs = min(8, len(all_pairs))
+            chosen = route_rng.choice(len(all_pairs), size=n_pairs, replace=False)
+            bc_pairs = [(names[all_pairs[i][0]], names[all_pairs[i][1]]) for i in chosen]
+            n_route_basis = min(5, gc_dataset.n_basis)
+            basis_idx = route_rng.choice(gc_dataset.n_basis, size=n_route_basis, replace=False)
+
+            for b_name, c_name in tqdm(bc_pairs, ncols=100, desc=f'[{arch}] route consistency'):
+                s_candidates = [n for n in names if n not in (b_name, c_name)]
+                s_name = s_candidates[route_rng.randint(len(s_candidates))]
+                s_mesh_all = blendshapes[s_name]
+                faces_s = faces_by_name[s_name]
+                neutral_c = self._generic_target_gt_pair(
+                    neu_by_name[s_name], neu_by_name[s_name], faces_s, contexts[s_name],
+                    neu_by_name[c_name], contexts[c_name],
+                )
+                for bi in basis_idx.tolist():
+                    s_mesh = s_mesh_all[bi:bi + 1]
+                    pred_direct, pred_via_b = self._generic_route_pair(
+                        neu_by_name[s_name], s_mesh, faces_s, contexts[s_name],
+                        neu_by_name[b_name], contexts[b_name],
+                        neu_by_name[c_name], contexts[c_name],
+                    )
+                    mse = F.mse_loss(pred_direct, pred_via_b).item()
+                    signal_mse = F.mse_loss(pred_direct, neutral_c).item()
+                    route_records.append(dict(
+                        via=b_name, final=c_name, source=s_name, basis=basis_names[bi],
+                        route=f'{s_name}->{b_name}->{c_name}',
+                        mse=mse, signal_mse=signal_mse,
+                        normalized_mse=mse / (signal_mse + 1e-12),
+                        normalized_rmse=float(np.sqrt(mse / (signal_mse + 1e-12))),
+                    ))
+        elif run_route:
+            print(f'  [{arch}] route consistency skipped: needs >=3 identities in the pool')
+
+        result = {'arch': arch}
+        if run_target_gt:
+            result['target_gt'] = {
+                'records': target_gt_records,
+                'summary': self._aggregate(target_gt_records, ['target_gt_mse', 'signal_mse', 'target_gt_nrmse']),
+            }
+            result['target_motion'] = {
+                'records': target_motion_records,
+                'summary': self._aggregate(
+                    target_motion_records,
+                    ['target_motion_mse', 'signal_mse', 'target_motion_nrmse'],
+                ),
+            }
+        if run_route:
+            result['route_consistency'] = {
+                'records': route_records,
+                'summary': self._aggregate(
+                    route_records, ['mse', 'signal_mse', 'normalized_mse', 'normalized_rmse']
+                ),
+            }
+        return result
+
     # ------------------------------------------------------------------
     @staticmethod
     def _aggregate(records, keys):
@@ -1163,6 +1488,9 @@ class Trainer():
             f'S{self.opts.src_name}{self.opts.n_src_frames}-'
             f'A{self.opts.active_mass_ratio:g}{run_tag}'
         )
+        if self.opts.version != 5:
+            arch = 'NC' if self.opts.version == 1 else ('NFR' if self.opts.NFR else 'NFS')
+            setting_tag = f'-cif-baseline-{arch}-I{self.opts.n_ict_identity}'
         self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path + setting_tag)
         os.makedirs(self.opts.log_dir, exist_ok=True)
         os.makedirs(os.path.join(self.opts.log_dir, 'img'), exist_ok=True)
@@ -1173,7 +1501,26 @@ class Trainer():
         self.logger = open(os.path.join(self.opts.log_dir, 'log.txt'), 'w')
         print(f'Saving log at: {self.opts.log_dir}')
 
-        self.model.eval()
+        if self.opts.version == 0 and self.opts.NFR:
+            self.model.model.eval()
+        else:
+            self.model.eval()
+
+        if self.opts.version != 5:
+            run_route = not self.opts.skip_part3
+            run_target_gt = not self.opts.skip_part4
+            if run_route or run_target_gt:
+                baseline = self.evaluate_baseline_generic(
+                    run_route=run_route, run_target_gt=run_target_gt,
+                )
+            else:
+                arch = 'NC' if self.opts.version == 1 else ('NFR' if self.opts.NFR else 'NFS')
+                baseline = {'arch': arch}
+            results = {'baseline': baseline}
+            self._write_report_baseline(results)
+            self.logger.close()
+            print('done!')
+            return
 
         pool = self._load_identity_pool()
         pool_desc = ', '.join(f'{i.name}({i.dataset})' for i in pool)
@@ -1192,16 +1539,15 @@ class Trainer():
         if not self.opts.skip_part1:
             results['part1'] = self.part1_weight_column_coherence(pool)
 
-        need_probe = (not self.opts.skip_part2) or (not self.opts.skip_part3)
-        if need_probe:
-            src_dataset, probe_frames = self._sample_src_probe_frames()
-            print(f'[Source probe] {self.opts.src_name}: {len(probe_frames)} frames sampled')
-
         if not self.opts.skip_part2:
+            _, probe_frames = self._sample_src_probe_frames()
+            print(f'[Source probe] {self.opts.src_name}: {len(probe_frames)} frames sampled')
             results['part2'] = self.part2_cp_index_coherence(pool, probe_frames)
 
         if not self.opts.skip_part3:
-            results['part3'] = self.part3_joint_factor_compatibility(pool, src_dataset, probe_frames)
+            results['part3'] = self.part3_joint_factor_compatibility(pool)
+            shared = self.evaluate_baseline_generic(run_route=True, run_target_gt=False)
+            results['part3']['route_consistency'] = shared['route_consistency']
 
         if not self.opts.skip_part4:
             results['part4'] = self.part4_ict_paired_validation()
@@ -1284,22 +1630,6 @@ class Trainer():
         print(report_text)
         self.logger.write(report_text + '\n')
 
-        def to_jsonable(obj):
-            if isinstance(obj, torch.Tensor):
-                return obj.tolist()
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            if isinstance(obj, np.generic):
-                value = obj.item()
-                return None if isinstance(value, float) and not np.isfinite(value) else value
-            if isinstance(obj, dict):
-                return {k: to_jsonable(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [to_jsonable(v) for v in obj]
-            if isinstance(obj, (float, np.floating)) and not np.isfinite(obj):
-                return None
-            return obj
-
         # cost matrices / per-pair raw tensors are large -- drop them from the
         # JSON dump, keep only the scalar summaries + per-pair scalar records
         dumpable = {}
@@ -1308,6 +1638,47 @@ class Trainer():
 
         with open(os.path.join(self.opts.log_dir, 'metrics.json'), 'w') as f:
             json.dump(dumpable, f, indent=2)
+
+    def _write_report_baseline(self, results):
+        b = results['baseline']
+
+        def fmt(d, key):
+            item = d.get(key, {})
+            mean, median, std, n = (item.get(k, float('nan')) for k in ('mean', 'median', 'std', 'n'))
+            return f'{mean:.4e} / {median:.4e} / {std:.4e} ({n})' if np.isfinite(mean) else 'n/a'
+
+        lines = [
+            '=' * 70,
+            f"[CIF Eval] Shared ICT protocol ({b['arch']})",
+            '=' * 70,
+            'Values are mean / median / std (n).',
+        ]
+        if 'target_gt' in b:
+            s_gt = b['target_gt']['summary']
+            lines.extend([
+                f"Cross-identity target-GT MSE:       {fmt(s_gt, 'target_gt_mse')}",
+                f"Cross-identity target-GT NRMSE:     {fmt(s_gt, 'target_gt_nrmse')}",
+            ])
+        if 'target_motion' in b:
+            s_motion = b['target_motion']['summary']
+            lines.extend([
+                f"Motion-only target-GT MSE:           {fmt(s_motion, 'target_motion_mse')}",
+                f"Motion-only target-GT NRMSE:         {fmt(s_motion, 'target_motion_nrmse')}",
+            ])
+        if 'route_consistency' in b:
+            s_route = b['route_consistency']['summary']
+            lines.extend([
+                f"Route-consistency MSE:              {fmt(s_route, 'mse')}",
+                f"Route-consistency normalized RMSE:  {fmt(s_route, 'normalized_rmse')}",
+            ])
+        if len(lines) == 4:
+            lines.append('No metric enabled (--skip_part3 and --skip_part4).')
+        report_text = '\n'.join(lines)
+        print(report_text)
+        self.logger.write(report_text + '\n')
+
+        with open(os.path.join(self.opts.log_dir, 'metrics.json'), 'w') as f:
+            json.dump(to_jsonable(results), f, indent=2)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -1335,9 +1706,8 @@ class Trainer():
 
 if __name__ == "__main__":
     """
-    Cross-Identity Factor (CIF) consistency evaluation (NGBC / version=5 only).
-    Implements eval_CBD_cp/cross_id_factor_consist.md Parts I-IV; see
-    `Trainer.evaluate_cif` for a summary of each part.
+    Cross-Identity Factor (CIF) consistency evaluation. NGBC supports all
+    four parts; NC/NFS/NFR support the shared ICT Part-III/IV metrics.
 
     Examples:
         # full run against an ICT + Multiface pool
@@ -1356,19 +1726,28 @@ if __name__ == "__main__":
 
     opts = Options()
 
-    config = f'{opts.ckpt}/train_opts.yml'
-    opts_yaml = yaml.load(open(config), Loader=yaml.FullLoader)
+    if opts.version == 0:
+        # NFS/NFR use a fixed base config, not a per-run train_opts.yml -- NFR
+        # in particular has no user-supplied --ckpt at all (Trainer.__init__
+        # points it at the fixed pretrained checkpoint), and NFS's own
+        # architecture fields (design/dec_type/img_feat_dim/...) are set
+        # directly in Trainer.__init__ rather than merged from a yaml here.
+        opts_yaml = yaml.load(open('config/train_NFS.yml'), Loader=yaml.FullLoader)
+    else:
+        config = f'{opts.ckpt}/train_opts.yml'
+        opts_yaml = yaml.load(open(config), Loader=yaml.FullLoader)
 
     # Model-architecture values come from the checkpoint configuration unless
     # the user explicitly supplied the corresponding CLI flag. Defaults of
     # None prevent an evaluation default from silently changing the model.
     opts_cli = vars(opts)
     for key, value in opts_cli.items():
-        if key in {'last_activation', 'no_pou', 'align_latent'} and value is None:
+        if key in {'last_activation', 'no_pou', 'align_latent', 'optim_cage'} and value is None:
             continue
         opts_yaml[key] = value
     architecture_defaults = dict(
-        last_activation='relu', no_pou=False, align_latent=False, out_type=1,
+        last_activation='relu', no_pou=False, align_latent=False,
+        optim_cage=False, out_type=1,
     )
     for key, default in architecture_defaults.items():
         if opts_yaml.get(key) is None:

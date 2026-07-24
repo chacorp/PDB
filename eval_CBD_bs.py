@@ -353,6 +353,8 @@ class Trainer():
                 ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
             print(f"Loading... {ckpt}")
             ckpt_dict = torch.load(ckpt, map_location=self.device)
+            if isinstance(ckpt_dict, dict) and 'model' in ckpt_dict:
+                ckpt_dict = ckpt_dict['model']
             self.model.load_state_dict(ckpt_dict, strict=False)
         else:
             print('no ckpt found, training from scratch!')
