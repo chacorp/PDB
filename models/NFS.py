@@ -245,9 +245,9 @@ class NFS(nn.Module):
     
     def set_neutral_ict(self, basedir):
         self.ict_basedir = basedir
-        self.ict_precompute = f'{self.ict_basedir}/ICT-audio2face/precompute-synth-fullhead'
-        self.ict_precompute_fo = f'{self.ict_basedir}/ICT-audio2face/precompute-synth-face_only'
-        self.ict_precompute_nf = f'{self.ict_basedir}/ICT-audio2face/precompute-synth-narrow_face'
+        self.ict_precompute = f'{self.ict_basedir}/precompute-synth-fullhead'
+        self.ict_precompute_fo = f'{self.ict_basedir}/precompute-synth-face_only'
+        self.ict_precompute_nf = f'{self.ict_basedir}/precompute-synth-narrow_face'
         
         if self.use_decimate:
             v_idx = torch.from_numpy(self.ict_face_model.ict_deci["v_idx"])
@@ -262,14 +262,9 @@ class NFS(nn.Module):
             self.neu_dfn_info  = pickle.load(open(os.path.join(self.ict_precompute, f"100_dfn_info.pkl"), 'rb'))
             self.neu_operators = pickle.load(open(os.path.join(self.ict_precompute, f"100_operators.pkl"), mode='rb'))
             self.neu_img = torch.from_numpy(np.load(os.path.join(self.ict_precompute, f"100_img.npy"))).to(self.device).float()
-            
-            self.neu_fo_dfn_info  = pickle.load(open(os.path.join(self.ict_precompute_fo, f"100_dfn_info.pkl"), 'rb'))
-            self.neu_fo_operators = pickle.load(open(os.path.join(self.ict_precompute_fo, f"100_operators.pkl"), mode='rb'))
-            self.neu_fo_img = torch.from_numpy(np.load(os.path.join(self.ict_precompute_fo, f"100_img.npy"))).to(self.device).float()
-            
-            self.neu_nf_dfn_info  = pickle.load(open(os.path.join(self.ict_precompute_nf, f"100_dfn_info.pkl"), 'rb'))
-            self.neu_nf_operators = pickle.load(open(os.path.join(self.ict_precompute_nf, f"100_operators.pkl"), mode='rb'))
-            self.neu_nf_img = torch.from_numpy(np.load(os.path.join(self.ict_precompute_nf, f"100_img.npy"))).to(self.device).float()
+            # face_only/narrow_face precomputes (region 1/2) intentionally not loaded here:
+            # train.py's MeshDataset only ever emits fullhead (region 0) ICT ground truth,
+            # so get_inputs_ict() never reaches the region==1/2 branches for this training path.
             
             
     def get_mesh_decoder_parameters(self):

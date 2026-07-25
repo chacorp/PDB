@@ -106,12 +106,8 @@ class Trainer():
         # utils
         self.renderer = Renderer(view_d=2.5, img_size=256, fragments=True)
         
-        if 'exp' in self.opts.design:
-            from models import Exp
-            self.model = Exp(self.opts, None).to(self.device)
-        else:
-            from models import NFS_D
-            self.model = NFS(self.opts, None).to(self.device)
+        from models.NFS import NFS
+        self.model = NFS(self.opts, None).to(self.device)
         
         # load weight
         self.load_weight()
