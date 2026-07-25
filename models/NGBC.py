@@ -220,8 +220,28 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
         
         return key_d
-        
-        
+
+    @staticmethod
+    def count_parameters(module):
+        return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+    def log_parameter_num(self):
+        """Per-submodule + total trainable parameter count, for logging at train start."""
+        log_txt = "========< NeuralGeneralizedBarycentricCoordinate >========\n"
+        log_txt += f"[key_weight_model]: \t{self.count_parameters(self.key_weight_model)}\n"
+        if self.use_shp:
+            log_txt += f"[shape_model]: \t{self.count_parameters(self.shape_model)}\n"
+        log_txt += f"[exp_z_model]: \t{self.count_parameters(self.exp_z_model)}\n"
+        log_txt += f"[key_d_model]: \t{self.count_parameters(self.key_d_model)}\n"
+        if self.is_train and self.use_exp_recon:
+            log_txt += f"[recon_exp_model]: \t{self.count_parameters(self.recon_exp_model)}\n"
+        if self.is_train and self.use_shp_recon:
+            log_txt += f"[recon_shp_model]: \t{self.count_parameters(self.recon_shp_model)}\n"
+        log_txt += "-------------------------------\n"
+        log_txt += f"[total]: \t{self.count_parameters(self)}\n"
+        log_txt += "============================================================\n"
+        return log_txt
+
     def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False):
         """
         Args:
@@ -292,34 +312,33 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         else:
             recon_deformed = 0
         
-        ## optional
-        if self.use_full_vertex:
-            source_in_s = source_vert
-            deform_in_s = source_vert-source_vert # as a delta
-            # deform_in_s = source_vert # as a vertex
-            
-            if self.in_type > 0:
-                source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
-                deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
-                
-            deform_in_s = torch.cat([deform_in_s, source_in_s], dim=-1)
-            
-            if self.in_type == 2:
-                source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
-                deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
-            
-            if self.use_shp:
-                exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)    
-                key_s = self.key_d_model(exp_z_s, z_ID_B)
-            else:
-                exp_z_s = self.exp_z_model(deform_in_s) # (B, 1, L)    
-                key_s = self.key_d_model(exp_z_s)
-            key_s = self.reshape_key_d(key_s, B)
-            
-            pred_source = torch.einsum('bnc,bci->bni',key_weight,key_s)
+        ## source cage (key_s / pred_cage_s): forward the "zero deformation" input
+        ## through the same exp/key predictors to get the cage at rest. Computed
+        ## unconditionally (not just for use_full_vertex/out_type==1) since it's
+        ## needed for cage-consistency and distance losses regardless of out_type.
+        source_in_s = source_vert
+        deform_in_s = source_vert-source_vert # as a delta
+        # deform_in_s = source_vert # as a vertex
+
+        if self.in_type > 0:
+            source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
+            deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
+
+        deform_in_s = torch.cat([deform_in_s, source_in_s], dim=-1)
+
+        if self.in_type == 2:
+            source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
+            deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
+
+        if self.use_shp:
+            exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)
+            key_s = self.key_d_model(exp_z_s, z_ID_B)
         else:
-            pred_source = 0
-            key_s = 0
+            exp_z_s = self.exp_z_model(deform_in_s) # (B, 1, L)
+            key_s = self.key_d_model(exp_z_s)
+        key_s = self.reshape_key_d(key_s, B)
+
+        pred_source = torch.einsum('bnc,bci->bni',key_weight,key_s)
         
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight

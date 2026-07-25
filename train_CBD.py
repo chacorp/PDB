@@ -71,7 +71,7 @@ def Options():
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     
-    parser.add_argument("--save_interval",type=int,   default=10,     help='save interval epoch')
+    parser.add_argument("--save_interval",type=int,   default=50,     help='save interval epoch')
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
@@ -149,10 +149,12 @@ def Options():
 class Logger():
     def __init__(self, file_path):
         self.file_path = file_path
-        
+
     def write(self, txt):
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(self.file_path, 'a') as f:
-            f.write(txt)
+            f.write(f"[{timestamp}] {txt}")
         f.close()
 
 class Trainer():
@@ -404,11 +406,13 @@ class Trainer():
         print(train_sampler.get_sampler_config())
         print(self.valid_dataset.get_data_config())
         print(valid_sampler.get_sampler_config())
-        
+        print(self.model.log_parameter_num())
+
         self.logger.write(self.train_dataset.get_data_config())
-        self.logger.write(train_sampler.get_sampler_config())  
-        self.logger.write(self.valid_dataset.get_data_config())      
+        self.logger.write(train_sampler.get_sampler_config())
+        self.logger.write(self.valid_dataset.get_data_config())
         self.logger.write(valid_sampler.get_sampler_config())
+        self.logger.write(self.model.log_parameter_num())
         #---------------------------------------------------------------------------------------------------------
         ##########################################################################################################
         
@@ -449,7 +453,7 @@ class Trainer():
             self.model.train()
             train_counter = 0
             
-            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
+            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100, disable=(epoch % 10 != 0))
                                              
             for index, batch in pbar:
                 
@@ -1191,11 +1195,13 @@ class Trainer():
         print(train_sampler.get_sampler_config())
         print(self.valid_dataset.get_data_config())
         print(valid_sampler.get_sampler_config())
-        
+        print(self.model.log_parameter_num())
+
         self.logger.write(self.train_dataset.get_data_config())
-        self.logger.write(train_sampler.get_sampler_config())  
-        self.logger.write(self.valid_dataset.get_data_config())      
+        self.logger.write(train_sampler.get_sampler_config())
+        self.logger.write(self.valid_dataset.get_data_config())
         self.logger.write(valid_sampler.get_sampler_config())
+        self.logger.write(self.model.log_parameter_num())
         #---------------------------------------------------------------------------------------------------------
         ##########################################################################################################
         
@@ -1264,7 +1270,7 @@ class Trainer():
             is_stepped = False
             is_stts_added = False
             
-            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100)
+            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100, disable=(epoch % 10 != 0))
             for index, batch in pbar:
                 self.optimizer.zero_grad()
                 
@@ -1581,125 +1587,126 @@ class Trainer():
             
             
             # validation -----------------------------------------------------------------------------------------
-            self.model.eval()
-            print(f"[{epoch:03d}/{epochs:03d}][Valid]")
-            running_losses_val = {
-                "recon-def": 0.0,
-                "recon-neu": 0.0,
-                "exp-z": 0.0,
-                "exp-v": 0.0,
-                "shape": 0.0,
-                "total": 0.0
-            }
+            if epoch % 10 == 0 or epoch == epochs:
+                self.model.eval()
+                print(f"[{epoch:03d}/{epochs:03d}][Valid]")
+                running_losses_val = {
+                    "recon-def": 0.0,
+                    "recon-neu": 0.0,
+                    "exp-z": 0.0,
+                    "exp-v": 0.0,
+                    "shape": 0.0,
+                    "total": 0.0
+                }
             
-            counter = 0
-            pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
-            for index, batch in pbar:
-                counter += 1
+                counter = 0
+                pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
+                for index, batch in pbar:
+                    counter += 1
                 
-                # model validation -------------------------------------------------------------------------------
-                with torch.no_grad():
-                    pred_vertices, recon_vertices, recon_source, exp_z, \
-                    pred_source, _, _, _, _ = self.model(
-                        batch.template, batch.vertices, 
-                        batch.template_normal, batch.vertices_normal,
-                        batch.mesh_data, epoch=epoch
-                    )
-                # ------------------------------------------------------------------------------------------------
+                    # model validation -------------------------------------------------------------------------------
+                    with torch.no_grad():
+                        pred_vertices, recon_vertices, recon_source, exp_z, \
+                        pred_source, _, _, _, _ = self.model(
+                            batch.template, batch.vertices, 
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=epoch
+                        )
+                    # ------------------------------------------------------------------------------------------------
                 
                 
-                # loss ------------------------------------------------------------------------------------------- 
-                with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
-                    mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
+                    # loss ------------------------------------------------------------------------------------------- 
+                    with torch.no_grad():
+                        mesh_data_num = batch.mesh_data.cpu().numpy()
+                        mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
                 
-                    loss_dict = {} # make it as a dictionary
-                    HB = batch.vertices.shape[0] // 2
+                        loss_dict = {} # make it as a dictionary
+                        HB = batch.vertices.shape[0] // 2
                     
-                    loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
-                    if self.model.use_full_vertex:
-                        loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source)
+                        loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
+                        if self.model.use_full_vertex:
+                            loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source)
                         
-                    if self.model.use_shp_recon:
-                        loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
-                    if self.model.use_exp_recon:
-                        loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
-                    # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
+                        if self.model.use_shp_recon:
+                            loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
+                        if self.model.use_exp_recon:
+                            loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
+                        # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
                     
-                    # get total loss
-                    loss = 0
-                    for key, value in loss_dict.items():
-                        tmp = value.item()*self.loss_lambda[key]
-                        loss += tmp
-                        running_losses_val[key] += tmp
-                    loss_dict["total"] = loss 
+                        # get total loss
+                        loss = 0
+                        for key, value in loss_dict.items():
+                            tmp = value.item()*self.loss_lambda[key]
+                            loss += tmp
+                            running_losses_val[key] += tmp
+                        loss_dict["total"] = loss 
 
-                # running loss for logging
-                running_losses_val["total"] += loss_dict["total"]
-                pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
-                # ------------------------------------------------------------------------------------------------
+                    # running loss for logging
+                    running_losses_val["total"] += loss_dict["total"]
+                    pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
+                    # ------------------------------------------------------------------------------------------------
             
                 
-                # ------------------------------------------------------------------------------------------------
-                interv_val = round(len_valid_data / 5)
-                if index % interv_val == 0:
-                    # for visualization
-                    vertices = batch.vertices.cpu()
-                    faces = batch.faces.cpu()
+                    # ------------------------------------------------------------------------------------------------
+                    interv_val = round(len_valid_data / 5)
+                    if index % interv_val == 0:
+                        # for visualization
+                        vertices = batch.vertices.cpu()
+                        faces = batch.faces.cpu()
                 
-                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
-                    __jdx__ = 1/counter
-                    for key, value in running_losses_val.items():
-                        log_text += f"{key}: {value*__jdx__:.6e} "
-                    self.logger.write(log_text+"\n")
+                        log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
+                        __jdx__ = 1/counter
+                        for key, value in running_losses_val.items():
+                            log_text += f"{key}: {value*__jdx__:.6e} "
+                        self.logger.write(log_text+"\n")
                     
-                    frame = HB
-                    v_list = [
-                        vertices[0].cpu().detach(),
-                        vertices[1].cpu().detach(),
-                        vertices[HB].cpu().detach(),
-                        vertices[BS-1].cpu().detach(),
-                        pred_vertices[0].cpu().detach(),
-                        pred_vertices[1].cpu().detach(),
-                        pred_vertices[HB].cpu().detach(),
-                        pred_vertices[BS-1].cpu().detach(),
-                    ]
-                    len_v = len(v_list)
-                    f_list=[faces] * len_v
-                    save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
-                    save_img_name = f"{epoch:03d}_{counter:04d}"
+                        frame = HB
+                        v_list = [
+                            vertices[0].cpu().detach(),
+                            vertices[1].cpu().detach(),
+                            vertices[HB].cpu().detach(),
+                            vertices[BS-1].cpu().detach(),
+                            pred_vertices[0].cpu().detach(),
+                            pred_vertices[1].cpu().detach(),
+                            pred_vertices[HB].cpu().detach(),
+                            pred_vertices[BS-1].cpu().detach(),
+                        ]
+                        len_v = len(v_list)
+                        f_list=[faces] * len_v
+                        save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                        save_img_name = f"{epoch:03d}_{counter:04d}"
                     
-                    plot_image_array(
-                        v_list, f_list, 
-                        rot_list=[[0,0,0]]*len_v,
-                        size=1, bg_black=False, mode='shade', 
-                        logdir=save_logdir, 
-                        name=save_img_name, save=True
-                    )
+                        plot_image_array(
+                            v_list, f_list, 
+                            rot_list=[[0,0,0]]*len_v,
+                            size=1, bg_black=False, mode='shade', 
+                            logdir=save_logdir, 
+                            name=save_img_name, save=True
+                        )
                     
-                # ------------------------------------------------------------------------------------------------
-                if self.opts.debug:
-                    break
-            # log
-            if self.opts.tb:
-                self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
+                    # ------------------------------------------------------------------------------------------------
+                    if self.opts.debug:
+                        break
+                # log
+                if self.opts.tb:
+                    self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
             
-            # best loss
-            val_loss = running_losses_val["total"]/counter
-            if val_loss < BEST_LOSS:
-                BEST_LOSS = val_loss
-                BEST_EPOCH = epoch
-                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
-                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
-                torch.save({
-                    'model': self.model.state_dict(),
-                    'optimizer': self.optimizer.state_dict(),
-                    'scheduler': self.scheduler.state_dict(),
-                    'epoch': epoch,
-                }, f'{self.opts.log_dir}/model_best.pth')
-            else:
-                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
-                print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
+                # best loss
+                val_loss = running_losses_val["total"]/counter
+                if val_loss < BEST_LOSS:
+                    BEST_LOSS = val_loss
+                    BEST_EPOCH = epoch
+                    print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
+                    self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
+                    torch.save({
+                        'model': self.model.state_dict(),
+                        'optimizer': self.optimizer.state_dict(),
+                        'scheduler': self.scheduler.state_dict(),
+                        'epoch': epoch,
+                    }, f'{self.opts.log_dir}/model_best.pth')
+                else:
+                    self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
+                    print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
     
     def train_v6(self, epochs):
         self.optimizer = torch.optim.AdamW(
