@@ -7,11 +7,19 @@ SSS note: Mitsuba 3.6.1 principled BSDF approximates SSS via `flatness`
           (Disney diffuse → flat diffuse transition, mimics forward-scattering).
 
 Install:
-    pip install mitsuba
+    # use docker jeolpyeoni0/gltorch:cu124-vessl
+    # may need to run: apt-get update -y && apt-get install -y libnvidia-gl-535 ffmpeg && pip install ffmpeg-python mitsuba numpy==1.26.4
 
+    ##### deprecated ########################################
+    # may need to run: apt-get update && apt-get install libnvidia-gl-{*} 
+    # NOTE: you need to change {*} with your driver number (ex: libnvidia-gl-470)
+    # apt-get install nvidia-driver-470 libnvidia-gl-470 libnvidia-compute-470
+    #########################################################
 Usage:
     from render.render_mitsuba import render_frame, render_figure, PAPER_CFG
     render_figure([(src_v, f), (pred_v, f), (tgt_v, f)], PAPER_CFG, 'fig.png')
+    
+    python render_mitsuba.py --mesh_type 'mf' --npy_dir '../vis_CBD/2026-04-02-02-04-44-NGBCv5-dist/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00-masked/verts'
 """
 
 import os
@@ -43,7 +51,7 @@ def _init_mitsuba() -> str:
                 'type': 'scene',
                 'integrator': {'type': 'path', 'max_depth': 1},
                 'sensor': {
-                    'type': 'perspective', 'fov': 30,
+                    'type': 'perspective', 'fov': 45,
                     'to_world': t.look_at(
                         mi.ScalarPoint3f(0, 0, 2),
                         mi.ScalarPoint3f(0, 0, 0),
@@ -91,7 +99,7 @@ class RenderConfig:
     # Image
     width:     int   = 1024
     height:    int   = 1024
-    spp:       int   = 256
+    spp:       int   = 132
     max_depth: int   = 8
 
     # Camera (spherical coords around origin)
@@ -99,10 +107,10 @@ class RenderConfig:
     cam_distance:  float = 2.5
     cam_elevation: float = 8.0    # degrees above horizon
     cam_azimuth:   float = 0.0    # 0=front, 90=left, -90=right
-    cam_target:    Tuple = (0.0, 0.0, 0.0)
+    cam_target:    Tuple = (0.0, -0.02, 0.0)
 
     # Geometry
-    mesh_scale: float = 0.25      # 0.25 suits ICT/MF world-space coords
+    mesh_scale: float = 0.225     # 0.25 * 0.9, suits ICT/MF world-space coords
 
     # Skin BSDF (Disney Principled)
     base_color:  Tuple = (0.80, 0.64, 0.52)
@@ -131,15 +139,19 @@ class RenderConfig:
 
     env_intensity:  float = 0.28   # constant ambient
 
+    # Depth of field (thinlens; 0.0 = pinhole / no DOF)
+    aperture_radius: float = 0.02
+    focus_distance:  float = 2.5
+
     # Scene
     bg_color:    Tuple = (1.0, 1.0, 1.0)   # white
     ground_plane: bool  = True
-    ground_color: Tuple = (0.90, 0.90, 0.90)
-    ground_y:    float  = -0.45
+    ground_color: Tuple = (0.65, 0.65, 0.65)
+    ground_y:    float  = -0.5
 
     # Video (overrides width/height/spp in render_sequence_mi)
     fps:          int = 30
-    video_spp:    int = 256
+    video_spp:    int = 400
     video_width:  int = 800
     video_height: int = 800
 
@@ -160,7 +172,7 @@ TEASER_CFG = RenderConfig(
 )
 
 VIDEO_CFG = RenderConfig(
-    width=800, height=800, spp=64, max_depth=6,
+    width=800, height=800, spp=256, max_depth=6,
     flatness=0.0,   # faster without SSS approximation
 )
 
@@ -198,7 +210,7 @@ def _sphere_light(pos: tuple, radius: float, intensity: float, color: tuple) -> 
 
 
 def _skin_bsdf(cfg: RenderConfig) -> dict:
-    return {
+    return  {
         'type': 'twosided',
         'material': {
             'type': 'principled',
@@ -235,18 +247,25 @@ def _build_scene(obj_path: str, cfg: RenderConfig, W: int, H: int, spp: int) -> 
     scene = {
         'type': 'scene',
         'integrator': {
-            'type': 'path',
-            'max_depth': cfg.max_depth,
-            'hide_emitters': False,
+            'type': 'aov',
+            'aovs': 'albedo:albedo,normals:sh_normal',
+            'nested': {
+                'type': 'path',
+                'max_depth': cfg.max_depth,
+                'hide_emitters': False,
+            },
         },
         'sensor': {
-            'type': 'perspective',
+            'type': 'thinlens' if cfg.aperture_radius > 0 else 'perspective',
             'fov': cfg.fov,
             'to_world': _lookat(cam_pos, target),
+            **({'aperture_radius': cfg.aperture_radius,
+                'focus_distance':  cfg.focus_distance}
+               if cfg.aperture_radius > 0 else {}),
             'film': {
                 'type': 'hdrfilm',
                 'width': W, 'height': H,
-                'pixel_filter': {'type': 'gaussian'},
+                'pixel_filter': {'type': 'box'},
             },
             'sampler': {'type': 'multijitter', 'sample_count': spp},
         },
@@ -291,6 +310,64 @@ def _tonemap(image_np: np.ndarray) -> np.ndarray:
     return (img * 255).astype(np.uint8)
 
 
+def _bilateral(img: np.ndarray, d: int = 9, sigma_color: float = 15, sigma_space: float = 15) -> np.ndarray:
+    """Bilateral filter post-process (edge-preserving smoothing)."""
+    try:
+        import cv2
+        return cv2.bilateralFilter(img, d, sigma_color, sigma_space)
+    except ImportError:
+        return img
+
+
+def _background_blur(img: np.ndarray, albedo_raw: np.ndarray, sigma: float = 12.0) -> np.ndarray:
+    """Blur only background pixels using albedo-based face mask.
+
+    Face skin has color variance (R≠G≠B); background/ground is neutral gray (R=G=B).
+    """
+    import cv2
+
+    # std across RGB channels: high for colored face skin, ~0 for gray background
+    std = albedo_raw.std(axis=-1).astype(np.float32)   # (H, W)
+    face_mask = (std > 0.05).astype(np.uint8)
+
+    # dilate slightly to include face edges cleanly
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+    face_mask = cv2.dilate(face_mask, kernel)
+
+    # smooth mask edges for natural blending
+    soft_mask = cv2.GaussianBlur(face_mask.astype(np.float32), (51, 51), 15)[..., np.newaxis]
+
+    ksize = int(sigma * 6) | 1   # odd kernel size ≥ 6σ
+    blurred = cv2.GaussianBlur(img, (ksize, ksize), sigma)
+
+    result = img.astype(np.float32) * soft_mask + blurred.astype(np.float32) * (1 - soft_mask)
+    return result.clip(0, 255).astype(np.uint8)
+
+
+def _denoise(image: "mi.TensorXf", albedo: "mi.TensorXf" = None, normals: "mi.TensorXf" = None) -> "mi.TensorXf":
+    """Apply mi.OptixDenoiser if available (cuda_ad_rgb variant only)."""
+    if not hasattr(mi, 'OptixDenoiser'):
+        return image
+    try:
+        use_albedo  = albedo is not None
+        use_normals = normals is not None
+        H, W = image.shape[:2]
+        denoiser = mi.OptixDenoiser(
+            input_size=[H, W],
+            albedo=use_albedo,
+            normals=use_normals,
+            temporal=False,
+        )
+        kwargs = {}
+        if use_albedo:
+            kwargs['albedo'] = albedo
+        if use_normals:
+            kwargs['normals'] = normals
+        return denoiser(image, **kwargs)
+    except Exception as e:
+        print(f"[Mitsuba] OptixDenoiser skipped: {e}")
+        return image
+
 
 def _save_img(img: np.ndarray, path: str) -> None:
     os.makedirs(Path(path).parent, exist_ok=True)
@@ -334,7 +411,15 @@ def render_frame(
         )
         image = mi.render(scene, spp=cfg.spp)
 
-    img_np = _tonemap(np.array(image))
+    # aov integrator outputs: [rgb(3), albedo(3), normals(3)] = 9 channels
+    image_np_raw = np.array(image)
+    albedo_raw = image_np_raw[..., 3:6] if image_np_raw.shape[-1] >= 6 else None
+    image_t  = mi.TensorXf(image_np_raw[..., :3])
+    albedo_t = mi.TensorXf(image_np_raw[..., 3:6]) if albedo_raw is not None else None
+    normals_t= mi.TensorXf(image_np_raw[..., 6:9]) if image_np_raw.shape[-1] >= 9 else None
+    denoised = _denoise(image_t, albedo_t, normals_t)
+    img_np = _tonemap(np.array(denoised))
+    img_np = _bilateral(img_np)
 
     if save_path:
         _save_img(img_np, save_path)
@@ -515,9 +600,9 @@ if __name__ == '__main__':
     parser.add_argument('--output',    type=str, default='./video_mi/')
     parser.add_argument('--filename',  type=str, default=None)
     parser.add_argument('--fps',       type=int, default=30)
-    parser.add_argument('--spp',       type=int, default=64)
-    parser.add_argument('--width',     type=int, default=800)
-    parser.add_argument('--height',    type=int, default=800)
+    parser.add_argument('--spp',       type=int, default=528)
+    parser.add_argument('--width',     type=int, default=600)
+    parser.add_argument('--height',    type=int, default=600)
     parser.add_argument('--scale',     type=float, default=0.25)
     parser.add_argument('--no_ground', action='store_true')
     parser.add_argument('--paper',     action='store_true')

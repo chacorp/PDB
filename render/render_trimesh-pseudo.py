@@ -12,7 +12,7 @@ Usage:
     from render.render_trimesh_pseudo import render_frame, render_figure, PAPER_CFG
     render_figure([(src_v, f), (pred_v, f), (tgt_v, f)], PAPER_CFG, 'fig.png')
 
-    python render/render_trimesh-pseudo.py --mesh_type 'mf' --npy_dir './vis_CBD/2026-04-02-02-04-44-NGBCv5-dist/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00-masked/verts'
+    python render_trimesh-pseudo.py --mesh_type 'mf' --npy_dir './vis_CBD/2026-04-02-02-04-44-NGBCv5-dist/ict-cap-ID_002_test-to-mf_ROM-ID_012_test_00-masked/verts'
 """
 
 import os
@@ -53,33 +53,29 @@ class RenderConfig:
 
     # Skin material (MetallicRoughness approx of Principled BSDF)
     base_color:  Tuple = (0.80, 0.64, 0.52)
-    roughness:   float = 0.46   # subtle specular highlights on skin
+    roughness:   float = 0.55
     metallic:    float = 0.0
 
-    # 3-point directional lights (frontal bias: large +Z keeps lights near camera axis)
-    key_pos:        Tuple = (-1.0,  1.6,  1.4)
-    key_intensity:  float = 3.5
+    # 3-point directional lights (intensities tuned for pyrender lux scale)
+    key_pos:        Tuple = (-1.4,  1.8,  0.8)
+    key_intensity:  float = 5.0
     key_color:      Tuple = (1.00, 0.95, 0.88)   # warm
 
-    fill_pos:       Tuple = ( 1.2,  0.4,  1.4)
-    fill_intensity: float = 0.7
+    fill_pos:       Tuple = ( 1.6,  0.5,  0.8)
+    fill_intensity: float = 2.0
     fill_color:     Tuple = (0.82, 0.88, 1.00)   # cool
 
     rim_pos:        Tuple = ( 0.2,  2.2, -2.5)
-    rim_intensity:  float = 2.0
+    rim_intensity:  float = 3.0
     rim_color:      Tuple = (1.00, 1.00, 0.96)   # neutral
 
-    env_intensity:  float = 0.07   # low ambient, shadow depth without harshness
+    env_intensity:  float = 0.28   # ambient
 
     # Scene
-    bg_color:    Tuple = (0.72, 0.72, 0.72)
-    ground_plane: bool  = False
-    ground_color: Tuple = (0.72, 0.72, 0.72)   # matches bg_color by default
+    bg_color:    Tuple = (1.0, 1.0, 1.0)
+    ground_plane: bool  = True
+    ground_color: Tuple = (0.90, 0.90, 0.90)
     ground_y:    float  = -0.45
-
-    # Supersampling: render at W*supersample × H*supersample then downsample
-    # 1 = off (fast, video), 2 = 2x (better AA, paper figures)
-    supersample: int = 1
 
     # Video
     fps:          int = 30
@@ -88,29 +84,19 @@ class RenderConfig:
 
 
 # ── Presets ───────────────────────────────────────────────────────────────────
-PAPER_CFG = RenderConfig(
-    width=1024, height=1024,
-    supersample=2,   # 2048×2048 render → downsample to 1024×1024
-)
+PAPER_CFG = RenderConfig(width=1024, height=1024)
 
 TEASER_CFG = RenderConfig(
     width=1200, height=900,
     bg_color=(0.08, 0.08, 0.10),
-    ground_color=(0.08, 0.08, 0.10),
-    key_pos=(-1.0, 1.6, 1.4),
-    fill_pos=(1.2, 0.4, 1.4),
-    env_intensity=0.03,
-    key_intensity=4.5,
-    fill_intensity=0.6,
-    rim_intensity=2.8,
-    roughness=0.44,
-    supersample=2,
+    env_intensity=0.10,
+    ground_color=(0.10, 0.10, 0.13),
+    ground_y=-0.48,
+    key_intensity=8.0,
+    rim_intensity=5.0,
 )
 
-VIDEO_CFG = RenderConfig(
-    width=800, height=800,
-    supersample=1,   # no supersampling for speed
-)
+VIDEO_CFG = RenderConfig(width=800, height=800)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -181,8 +167,7 @@ def _save_img(img: np.ndarray, path: str) -> None:
 
 
 # ── Core rasterizer ───────────────────────────────────────────────────────────
-def _rasterize(vertices: np.ndarray, faces: np.ndarray, cfg: RenderConfig, W: int, H: int) -> np.ndarray:
-    """Single rasterization pass at exactly W×H."""
+def _render(vertices: np.ndarray, faces: np.ndarray, cfg: RenderConfig, W: int, H: int) -> np.ndarray:
     az = cfg.cam_azimuth
     cam_origin = _cam_pos(cfg.cam_distance, cfg.cam_elevation, az)
     cam_pose   = _look_at_pose(cam_origin, cfg.cam_target)
@@ -215,16 +200,6 @@ def _rasterize(vertices: np.ndarray, faces: np.ndarray, cfg: RenderConfig, W: in
     color, _ = r.render(scene, flags=pyrender.RenderFlags.SKIP_CULL_FACES)
     r.delete()
     return color  # uint8 RGB
-
-
-def _render(vertices: np.ndarray, faces: np.ndarray, cfg: RenderConfig, W: int, H: int) -> np.ndarray:
-    """Render with optional supersampling (cfg.supersample > 1 → render at higher res then downsample)."""
-    ss = max(1, cfg.supersample)
-    img = _rasterize(vertices, faces, cfg, W * ss, H * ss)
-    if ss > 1:
-        import cv2 as _cv2
-        img = _cv2.resize(img, (W, H), interpolation=_cv2.INTER_AREA)
-    return img
 
 
 # ── Public API (mirrors render_mitsuba) ───────────────────────────────────────
@@ -366,9 +341,8 @@ def render_sequence_mi(
             return_img=False,
         )
 
-    ffmpeg_bin = '/usr/bin/ffmpeg' if os.path.exists('/usr/bin/ffmpeg') else 'ffmpeg'
     subprocess.run([
-        ffmpeg_bin, '-y',
+        'ffmpeg', '-y',
         '-framerate', str(fps),
         '-i', os.path.join(frame_dir, '%06d.png'),
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
