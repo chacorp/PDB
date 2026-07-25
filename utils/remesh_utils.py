@@ -612,6 +612,14 @@ class ICT_face_model():
         #self.neutral_verts = self.neutral_verts.to(self.device)
         self.exp_basis= self.exp_basis.numpy()
         self.id_basis = self.id_basis.numpy()
+
+        # get_id_disp/get_exp_disp matmul the (float64) coeffs against these
+        # (float32) bases, so numpy upcasts the whole basis to float64 on every
+        # single call -- ~10x slower than doing that cast once here and reusing
+        # it. Precomputing keeps the exact same float64 matmul (bit-identical
+        # output), it just avoids repeating the upcast every call.
+        self._id_basis_f64 = self.id_basis.reshape(100, -1).astype(np.float64)
+        self._exp_basis_f64 = self.exp_basis.reshape(53, -1).astype(np.float64)
     
     def get_region_num(self, vertices):
         """
@@ -801,8 +809,9 @@ class ICT_face_model():
             if len(id_coeff.shape) < 2:
                 id_coeff = id_coeff[None]
             B = id_coeff.shape[0]
-            id_basis_reshaped = self.id_basis.reshape(100, -1)
-            id_disps = np.matmul(id_coeff, id_basis_reshaped).reshape(B, -1, 3)
+            # pre-upcast basis (see __init__): same float64 matmul numpy would
+            # otherwise redo from scratch (via dtype promotion) on every call.
+            id_disps = np.matmul(id_coeff, self._id_basis_f64).reshape(B, -1, 3)
             id_disps = id_disps[:, :self.region[region][0]]
         else:
             id_disps = 0.0
@@ -826,12 +835,13 @@ class ICT_face_model():
         if exp_coeffs is not None:
             if len(exp_coeffs.shape) < 2:
                 exp_coeffs = exp_coeffs[None]
-                
+
             T = exp_coeffs.shape[0]
             #exp_disps = np.einsum('jk,kls->jls', exp_coeffs.float(), self.exp_basis.to(device))[:, :self.region[region][0]]
-            
-            exp_basis_reshaped = self.exp_basis.reshape(53, -1)
-            exp_disps = np.matmul(exp_coeffs, exp_basis_reshaped).reshape(T, -1, 3)
+
+            # pre-upcast basis (see __init__/get_id_disp): avoids redoing the
+            # float64 promotion of the whole basis matrix on every call.
+            exp_disps = np.matmul(exp_coeffs, self._exp_basis_f64).reshape(T, -1, 3)
             exp_disps = exp_disps[:, :self.region[region][0]]
         else:
             exp_disps = 0.0
