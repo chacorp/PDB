@@ -1,4 +1,13 @@
 import os
+# Small per-item CPU ops (dataloading: tensor conversions, ICT blendshape matmuls,
+# igl normal computation) get *slower* under this machine's default thread count
+# because thread-pool sync overhead dwarfs the actual work. Cap it before numpy/
+# torch/igl initialize their thread pools. `setdefault` respects an env already
+# set by the caller's shell/launch script.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+
 import glob
 import json
 import yaml
@@ -22,6 +31,7 @@ import igl
 
 
 import torch
+torch.set_num_threads(1)
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
@@ -95,6 +105,8 @@ def Options():
     
     parser.add_argument("--use_dist_loss",dest='use_dist_loss', action='store_true')
     parser.set_defaults(use_dist_loss=False)
+    parser.add_argument("--use_cage_consistency_loss",dest='use_cage_consistency_loss', action='store_true')
+    parser.set_defaults(use_cage_consistency_loss=False)
     parser.add_argument("--use_segment_weight",dest='use_segment_weight', action='store_true')
     parser.set_defaults(use_segment_weight=False)
     parser.add_argument("--use_laplacian",dest='use_laplacian', action='store_true')
@@ -483,14 +495,13 @@ class Trainer():
                 # get total loss (lambda weights are multiplied here!)
                 loss = 0
                 for key, value in loss_dict.items():
-                    key_ = key.split("_")[0]
-                    tmp = value*self.loss_lambda[key_]
+                    tmp = value*self.loss_lambda[key]
                     loss += tmp
-                    running_losses[key] += tmp
-                loss_dict["total"] = loss 
+                    running_losses[key] += tmp.detach()
+                loss_dict["total"] = loss
 
                 # running loss
-                running_losses["total"] += loss_dict["total"]
+                running_losses["total"] += loss_dict["total"].detach()
                 pbar.set_description(f"total loss: {loss:.5e}")
                 # ------------------------------------------------------------------------------------------------
                 # backward
@@ -507,10 +518,9 @@ class Trainer():
                 
                 global_step += 1
                 train_counter += 1
-                                
-                interv_train = round(len_train_data / 10)
+
                 if train_counter % interv_train == 1:
-                    
+
                     # with torch.no_grad():
                     #     pred_vertices, pred_template, mvc_weights, source_cage_v, deform_cage_v = self.model(
                     #         batch.template, batch.vertices, epoch=epoch, return_cage=True
@@ -623,8 +633,7 @@ class Trainer():
                 # get total loss
                 loss = 0
                 for key, value in loss_dict.items():
-                    key_ = key.split("_")[0]
-                    tmp = value.item()*self.loss_lambda[key_]
+                    tmp = value.item()*self.loss_lambda[key]
                     loss += tmp
                     running_losses_val[key] += tmp
                 loss_dict["total"] = loss 
@@ -870,14 +879,13 @@ class Trainer():
                 # get total loss (lambda weights are multiplied here!)
                 loss = 0
                 for key, value in loss_dict.items():
-                    key_ = key.split("_")[0]
-                    tmp = value*self.loss_lambda[key_]
+                    tmp = value*self.loss_lambda[key]
                     loss += tmp
-                    running_losses[key] += tmp
-                loss_dict["total"] = loss 
+                    running_losses[key] += tmp.detach()
+                loss_dict["total"] = loss
 
                 # running loss for logging
-                running_losses["total"] += loss_dict["total"]
+                running_losses["total"] += loss_dict["total"].detach()
                 pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
                 # ------------------------------------------------------------------------------------------------
                 
@@ -888,8 +896,7 @@ class Trainer():
                 
                 global_step += 1
                 train_counter += 1
-                                
-                interv_train = round(len_train_data / 10)
+
                 if train_counter % interv_train == 1:
                     # for visualization
                     vertices = batch.vertices.cpu()
@@ -994,8 +1001,7 @@ class Trainer():
                     # get total loss
                     loss = 0
                     for key, value in loss_dict.items():
-                        key_ = key.split("_")[0]
-                        tmp = value.item()*self.loss_lambda[key_]
+                        tmp = value.item()*self.loss_lambda[key]
                         loss += tmp
                         running_losses_val[key] += tmp
                     loss_dict["total"] = loss 
@@ -1207,11 +1213,13 @@ class Trainer():
             "recon-neu": self.opts.lambda_vert,
             "exp-z": self.opts.lambda_vert * 0.5,
             "exp-v": self.opts.lambda_vert,
-            "shape": self.opts.lambda_vert,  
-            "dist": 0.5,          
+            "shape": self.opts.lambda_vert,
+            "cage-consist": 0.5,
             # "pou": self.opts.lambda_vert,
-            # symm 
+            # symm
         }
+        if self.opts.use_dist_loss:
+            self.loss_lambda['dist'] = 0.5
         if self.opts.pou_loss:
             self.loss_lambda['pou'] = 1.0
         if self.opts.use_laplacian:
@@ -1238,6 +1246,8 @@ class Trainer():
                 "shape": 0.0,
                 "total": 0.0,
             }
+            if self.opts.use_cage_consistency_loss:
+                running_losses['cage-consist']=0.0
             if self.opts.use_dist_loss:
                 running_losses['dist']=0.0
             if self.opts.pou_loss:
@@ -1297,12 +1307,15 @@ class Trainer():
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
-                #if mesh_data=='ict':
-                _, _, _, exp_z_full, \
-                _, _, _, pred_cage_s_full, pred_cage_d_full = self.model(
-                    batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
-                    batch.mesh_data, epoch=epoch
-                )
+                # cage-consistency target: only needed when the loss is enabled, and it's a
+                # stop-gradient target so no graph needs to be built for it.
+                if self.opts.use_cage_consistency_loss:
+                    with torch.no_grad():
+                        _, _, _, _, \
+                        _, _, _, pred_cage_s_full, pred_cage_d_full = self.model(
+                            batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=epoch
+                        )
                 # ------------------------------------------------------------------------------------------------
 
                 # import pdb;pdb.set_trace()
@@ -1344,15 +1357,19 @@ class Trainer():
                         batch_template_v*inv_t_mask, pred_vertices*inv_t_mask
                     )
 
-                # loss_dict['dist'] = distance_loss(
-                #     batch_template_v, pred_cage_s, pred_key_weight
-                # )
-                #+ distance_loss(
-                #    batch_vertices_v, pred_cage_d, pred_key_weight
-                #)
-                # if mesh_data =='ict':
+                # coordinate-weight sparsity: a mesh vertex's barycentric weight onto a
+                # cage vertex should vanish once they're farther apart than `tau`.
                 if self.opts.use_dist_loss:
-                    loss_dict['dist'] = F.mse_loss(
+                    loss_dict['dist'] = distance_loss(
+                        batch_template_v, pred_cage_s, pred_key_weight
+                    ) + distance_loss(
+                        batch_vertices_v, pred_cage_d, pred_key_weight
+                    )
+
+                # if mesh_data =='ict':
+                # cage consistency: full-mesh vs. subsampled-mesh cage predictions should agree
+                if self.opts.use_cage_consistency_loss:
+                    loss_dict['cage-consist'] = F.mse_loss(
                         pred_cage_s_full, pred_cage_s
                     ) + F.mse_loss(
                         pred_cage_d_full, pred_cage_d
@@ -1456,10 +1473,9 @@ class Trainer():
                 # get total loss (lambda weights are multiplied here!) -------------------------------------------
                 loss = 0
                 for key, value in loss_dict.items():
-                    key_ = key.split("_")[0]
-                    tmp = value*self.loss_lambda[key_]
+                    tmp = value*self.loss_lambda[key]
                     loss += tmp
-                    running_losses[key] += tmp # for logging
+                    running_losses[key] += tmp.detach() # for logging
                 loss_dict["total"] = loss
                 # ------------------------------------------------------------------------------------------------
 
@@ -1475,7 +1491,7 @@ class Trainer():
 
                 
                 # running loss for logging -----------------------------------------------------------------------
-                running_losses["total"] += loss_dict["total"]
+                running_losses["total"] += loss_dict["total"].detach()
                 pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
                 # ------------------------------------------------------------------------------------------------
 
@@ -1613,8 +1629,7 @@ class Trainer():
                     # get total loss
                     loss = 0
                     for key, value in loss_dict.items():
-                        key_ = key.split("_")[0]
-                        tmp = value.item()*self.loss_lambda[key_]
+                        tmp = value.item()*self.loss_lambda[key]
                         loss += tmp
                         running_losses_val[key] += tmp
                     loss_dict["total"] = loss 
@@ -1999,10 +2014,9 @@ class Trainer():
                 # get total loss (lambda weights are multiplied here!)
                 loss = 0
                 for key, value in loss_dict.items():
-                    key_ = key.split("_")[0]
-                    tmp = value*self.loss_lambda[key_]
+                    tmp = value*self.loss_lambda[key]
                     loss += tmp
-                    running_losses[key] += tmp # for logging
+                    running_losses[key] += tmp.detach() # for logging
                 loss_dict["total"] = loss
                 # ------------------------------------------------------------------------------------------------
 
@@ -2018,7 +2032,7 @@ class Trainer():
 
                 
                 # running loss for logging -----------------------------------------------------------------------
-                running_losses["total"] += loss_dict["total"]
+                running_losses["total"] += loss_dict["total"].detach()
                 pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
                 # ------------------------------------------------------------------------------------------------
 
@@ -2156,8 +2170,7 @@ class Trainer():
                     # get total loss
                     loss = 0
                     for key, value in loss_dict.items():
-                        key_ = key.split("_")[0]
-                        tmp = value.item()*self.loss_lambda[key_]
+                        tmp = value.item()*self.loss_lambda[key]
                         loss += tmp
                         running_losses_val[key] += tmp
                     loss_dict["total"] = loss 

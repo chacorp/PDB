@@ -567,7 +567,7 @@ class CBDDataset(data.Dataset):
             use_mf_SEN=False
             use_mf_ROM=False
             use_ict=True
-            use_ict_narrow=True
+            use_ict_narrow=False
         else:
             pass
             # use_voca=True
