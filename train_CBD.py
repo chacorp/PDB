@@ -581,7 +581,7 @@ class Trainer():
                 self.log_loss(self.writer_train, running_losses, epoch, train_counter)
 
             # save model
-            if epoch % 100 == 0:
+            if epoch % self.opts.save_interval == 0:
                 torch.save({
                     'model': self.model.state_dict(),
                     'optimizer': self.optimizer.state_dict(),
@@ -592,113 +592,114 @@ class Trainer():
             
             
             # validation -----------------------------------------------------------------------------------------
-            self.model.eval()
-            print(f"[{epoch:03d}/{epochs:03d}][Valid]")
-            running_losses_val = {
-                "mvc": 0.0,
-                "align": 0.0,
-                "p2f": 0.0,
-                "norm": 0.0,
-                "total": 0.0
-            }
+            if epoch % 10 == 0 or epoch == epochs:
+                self.model.eval()
+                print(f"[{epoch:03d}/{epochs:03d}][Valid]")
+                running_losses_val = {
+                    "mvc": 0.0,
+                    "align": 0.0,
+                    "p2f": 0.0,
+                    "norm": 0.0,
+                    "total": 0.0
+                }
             
-            counter = 0
-            pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
-            for index, batch in pbar:
-                counter += 1
+                counter = 0
+                pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
+                for index, batch in pbar:
+                    counter += 1
                 
-                # model validation -------------------------------------------------------------------------------
-                with torch.no_grad():
-                    pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
-                # ------------------------------------------------------------------------------------------------
+                    # model validation -------------------------------------------------------------------------------
+                    with torch.no_grad():
+                        pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
+                    # ------------------------------------------------------------------------------------------------
                 
                 
-                ##################################################################################################
-                # ------------------------------------------------------------------------------------------------ 
-                with torch.no_grad():
-                    mesh_data_num = batch.mesh_data.cpu().numpy()
-                    mesh_data = np.array(['voca', 'biwi', 'mf','voca','mf','ict'])[mesh_data_num]
-                    template_expanded = batch.template#.expand_as(pred_vertices)
+                    ##################################################################################################
+                    # ------------------------------------------------------------------------------------------------ 
+                    with torch.no_grad():
+                        mesh_data_num = batch.mesh_data.cpu().numpy()
+                        mesh_data = np.array(['voca', 'biwi', 'mf','voca','mf','ict'])[mesh_data_num]
+                        template_expanded = batch.template#.expand_as(pred_vertices)
                     
                     
-                    idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
-                    normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
-                    normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
+                        idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
+                        normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
+                        normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
 
-                    loss_dict = {} # make it as a dictionary
+                        loss_dict = {} # make it as a dictionary
                     
-                    loss_dict['mvc'] = mvc_loss(mvc_weights)
-                    loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                    loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)
-                    loss_dict['norm']  = norm_loss(normals_before, normals_after)
-                # ------------------------------------------------------------------------------------------------
-                ##################################################################################################
+                        loss_dict['mvc'] = mvc_loss(mvc_weights)
+                        loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
+                        loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)
+                        loss_dict['norm']  = norm_loss(normals_before, normals_after)
+                    # ------------------------------------------------------------------------------------------------
+                    ##################################################################################################
                 
-                # get total loss
-                loss = 0
-                for key, value in loss_dict.items():
-                    tmp = value.item()*self.loss_lambda[key]
-                    loss += tmp
-                    running_losses_val[key] += tmp
-                loss_dict["total"] = loss 
+                    # get total loss
+                    loss = 0
+                    for key, value in loss_dict.items():
+                        tmp = value.item()*self.loss_lambda[key]
+                        loss += tmp
+                        running_losses_val[key] += tmp
+                    loss_dict["total"] = loss 
 
-                # running loss
-                running_losses_val["total"] += loss_dict["total"]
+                    # running loss
+                    running_losses_val["total"] += loss_dict["total"]
             
-                pbar.set_description(f"total loss: {loss:.5e}")
+                    pbar.set_description(f"total loss: {loss:.5e}")
                 
-                # ------------------------------------------------------------------------------------------------
-                interv_val = round(len_valid_data / 5)
-                if index % interv_val == 0:
-                    # for visualization
-                    vertices = batch.vertices.cpu()
-                    faces = batch.faces.cpu()
+                    # ------------------------------------------------------------------------------------------------
+                    interv_val = round(len_valid_data / 5)
+                    if index % interv_val == 0:
+                        # for visualization
+                        vertices = batch.vertices.cpu()
+                        faces = batch.faces.cpu()
                 
-                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
-                    for key, value in running_losses_val.items():
-                        log_text += f"{key}: {value:.6f} "
-                    self.logger.write(log_text+"\n")
+                        log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
+                        for key, value in running_losses_val.items():
+                            log_text += f"{key}: {value:.6f} "
+                        self.logger.write(log_text+"\n")
 
-                    frame = BS//2
-                    v_list = [ v for v in vertices[frame:frame+2] ] + \
-                        [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
-                    len_v = len(v_list)
-                    f_list=[faces] * len_v
-                    save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
-                    save_img_name = f"{epoch:03d}_{index:04d}"
+                        frame = BS//2
+                        v_list = [ v for v in vertices[frame:frame+2] ] + \
+                            [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
+                        len_v = len(v_list)
+                        f_list=[faces] * len_v
+                        save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                        save_img_name = f"{epoch:03d}_{index:04d}"
                     
-                    plot_image_array(
-                        v_list, f_list, 
-                        rot_list=[[0,0,0]]*len_v,
-                        size=1, bg_black=False, mode='shade', 
-                        logdir=save_logdir, 
-                        name=save_img_name, save=True
-                    )
+                        plot_image_array(
+                            v_list, f_list, 
+                            rot_list=[[0,0,0]]*len_v,
+                            size=1, bg_black=False, mode='shade', 
+                            logdir=save_logdir, 
+                            name=save_img_name, save=True
+                        )
                     
-                # ------------------------------------------------------------------------------------------------
-                if self.opts.debug:
-                    break
-            # log
-            if self.opts.tb:
-                self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
+                    # ------------------------------------------------------------------------------------------------
+                    if self.opts.debug:
+                        break
+                # log
+                if self.opts.tb:
+                    self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
             
-            # best loss
-            val_loss = running_losses_val["total"]/counter
-            if val_loss < BEST_LOSS:
-                BEST_LOSS = val_loss
-                BEST_EPOCH = epoch
-                print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
-                self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
-                torch.save({
-                    'model': self.model.state_dict(),
-                    'optimizer': self.optimizer.state_dict(),
-                    'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
-                    'epoch': epoch,
-                }, f'{self.opts.log_dir}/model_best.pth')
-            else:
-                log_txt_val = f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6f} (Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d})\n"
-                self.logger.write(log_txt_val)
-                print(log_txt_val)
+                # best loss
+                val_loss = running_losses_val["total"]/counter
+                if val_loss < BEST_LOSS:
+                    BEST_LOSS = val_loss
+                    BEST_EPOCH = epoch
+                    print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
+                    self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
+                    torch.save({
+                        'model': self.model.state_dict(),
+                        'optimizer': self.optimizer.state_dict(),
+                        'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
+                        'epoch': epoch,
+                    }, f'{self.opts.log_dir}/model_best.pth')
+                else:
+                    log_txt_val = f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6f} (Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d})\n"
+                    self.logger.write(log_txt_val)
+                    print(log_txt_val)
     
     def train_v2(self, epochs):
         self.optimizer = torch.optim.AdamW(

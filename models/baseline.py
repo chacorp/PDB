@@ -75,11 +75,26 @@ class CageNet(nn.Module):
             act='lrelu', nrm='none', #dropout=True, p=.2
         ).to(device)
         self.nd_decoder = MLP(
-            # [in_dim+hid_dim+hid_dim]+[hid_dim]*3+[out_dim], 
-            [hid_dim+hid_dim]+[hid_dim]*2+[out_dim*self.C], 
+            # [in_dim+hid_dim+hid_dim]+[hid_dim]*3+[out_dim],
+            [hid_dim+hid_dim]+[hid_dim]*2+[out_dim*self.C],
             act='lrelu', nrm='none', #dropout=True, p=.2
         ).to(device)
-        
+
+    @staticmethod
+    def count_parameters(module):
+        return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+    def log_parameter_num(self):
+        """Per-submodule + total trainable parameter count, for logging at train start."""
+        log_txt = "========< CageNet >========\n"
+        log_txt += f"[encoder]: \t{self.count_parameters(self.encoder)}\n"
+        log_txt += f"[nc_decoder]: \t{self.count_parameters(self.nc_decoder)}\n"
+        log_txt += f"[nd_decoder]: \t{self.count_parameters(self.nd_decoder)}\n"
+        log_txt += "-------------------------------\n"
+        log_txt += f"[total]: \t{self.count_parameters(self)}\n"
+        log_txt += "============================\n"
+        return log_txt
+
     def forward(self, source_mesh, deform_mesh, mesh_data=0, epoch=0, return_cage=False):
         """
         Args:
