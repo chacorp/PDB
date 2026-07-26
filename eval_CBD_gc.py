@@ -24,7 +24,7 @@ from scipy.sparse.csgraph import dijkstra
 from utils.matplotlib_rnd import plot_image_array_col
 from utils.ckpt_utils import *
 from utils.remesh_utils import ICT_face_model
-from utils.keys import ICT_KEYS
+from utils.keys import ICT_KEYS, ict_data_split
 
 from models.baseline import CageNet
 from models.NGBC import NeuralGeneralizedBarycentricCoordinate
@@ -74,54 +74,88 @@ class GCEvalDataset(data.Dataset):
     share the same identity -- callers can cheaply detect an identity
     switch by comparing `identity_name` between items.
 
+    `ict_split_set=True` switches from synthetic identities (coefficient
+    vectors in `data/ICT_live_100/iden_vecs.npy`) to the 10 real captured
+    ICT-FaceKit identities in `ict_data_split['test']` (utils/keys.py --
+    train/val/test all name the same 10 identities, so there is no
+    train/val/test choice to make here). Their neutral templates come
+    from `ict_real_templates.pkl`, which shares vertex ordering/topology
+    with `ICT_face_model`'s default region (verified: identical face
+    array, region 0). Since ICT expression bases are additive
+    displacements independent of identity, `exp_disp` is synthesized the
+    same way as for synthetic identities (`ICT_face_model.get_exp_disp`);
+    only the neutral template differs (real scan instead of a
+    synthesized one). When set, `--n_identity`/`--identity_indices` are
+    ignored.
+
     Output per item:
         (vertices, template, vertices_normal, template_normal, faces,
          basis_name, mesh_data, exp_disp, identity_name)
     """
 
-    def __init__(self, n_identity=1, identity_indices=None):
+    ICT_SPLIT_SET_PKL = '/data/sihun/ICT-audio2face/split_set/ict_real_templates.pkl'
+
+    def __init__(self, n_identity=1, identity_indices=None, ict_split_set=False):
         super().__init__()
         self.ict = ICT_face_model()
         self.exp_names = ICT_KEYS
         self.n_basis = len(ICT_KEYS)  # 53
         self.mesh_data = torch.tensor([5])  # 'ict'
 
-        id_vecs = np.load(f'{__abs_path__}/data/ICT_live_100/iden_vecs.npy')
-        if identity_indices is None:
-            if n_identity < 1 or n_identity > len(id_vecs):
-                raise ValueError(
-                    f'--n_identity must be in [1, {len(id_vecs)}], got {n_identity}'
-                )
-            self.identity_indices = list(range(n_identity))
-        else:
-            self.identity_indices = list(identity_indices)
-            if not self.identity_indices:
-                raise ValueError('--identity_indices must contain at least one index')
-            invalid = [i for i in self.identity_indices if i < 0 or i >= len(id_vecs)]
-            if invalid:
-                raise ValueError(
-                    f'identity indices out of range [0, {len(id_vecs) - 1}]: {invalid}'
-                )
-            if len(set(self.identity_indices)) != len(self.identity_indices):
-                raise ValueError('--identity_indices must not contain duplicates')
-
-        self.identity_names = [f'{i:03d}' for i in self.identity_indices]
-        self.n_identity = len(self.identity_indices)
-
         self.faces_np = self.ict.faces
-
         self.items = []  # (vertices_np, template_np, exp_disp_np, basis_name, identity_name)
         eye = np.eye(self.n_basis, dtype=np.float32)
-        for identity_idx, identity_name in zip(self.identity_indices, self.identity_names):
-            id_coeff = id_vecs[identity_idx].astype(np.float32)
-            for k in range(self.n_basis):
-                exp_coeff = eye[k]
-                vertices, template, exp_disp = self.ict.apply_coeffs(
-                    id_coeff, exp_coeff, return_all=True
-                )
-                self.items.append(
-                    (vertices[0], template[0], exp_disp[0], self.exp_names[k], identity_name)
-                )
+
+        if ict_split_set:
+            self.identity_names = list(ict_data_split['test'])
+            self.identity_indices = None
+            self.n_identity = len(self.identity_names)
+
+            with open(self.ICT_SPLIT_SET_PKL, 'rb') as f:
+                real_templates = pickle.load(f)
+
+            for identity_name in self.identity_names:
+                template = real_templates[identity_name].astype(np.float32)
+                for k in range(self.n_basis):
+                    exp_coeff = eye[k]
+                    exp_disp = self.ict.get_exp_disp(exp_coeff)[0]
+                    vertices = template + exp_disp
+                    self.items.append(
+                        (vertices, template, exp_disp, self.exp_names[k], identity_name)
+                    )
+        else:
+            id_vecs = np.load(f'{__abs_path__}/data/ICT_live_100/iden_vecs.npy')
+            if identity_indices is None:
+                if n_identity < 1 or n_identity > len(id_vecs):
+                    raise ValueError(
+                        f'--n_identity must be in [1, {len(id_vecs)}], got {n_identity}'
+                    )
+                self.identity_indices = list(range(n_identity))
+            else:
+                self.identity_indices = list(identity_indices)
+                if not self.identity_indices:
+                    raise ValueError('--identity_indices must contain at least one index')
+                invalid = [i for i in self.identity_indices if i < 0 or i >= len(id_vecs)]
+                if invalid:
+                    raise ValueError(
+                        f'identity indices out of range [0, {len(id_vecs) - 1}]: {invalid}'
+                    )
+                if len(set(self.identity_indices)) != len(self.identity_indices):
+                    raise ValueError('--identity_indices must not contain duplicates')
+
+            self.identity_names = [f'{i:03d}' for i in self.identity_indices]
+            self.n_identity = len(self.identity_indices)
+
+            for identity_idx, identity_name in zip(self.identity_indices, self.identity_names):
+                id_coeff = id_vecs[identity_idx].astype(np.float32)
+                for k in range(self.n_basis):
+                    exp_coeff = eye[k]
+                    vertices, template, exp_disp = self.ict.apply_coeffs(
+                        id_coeff, exp_coeff, return_all=True
+                    )
+                    self.items.append(
+                        (vertices[0], template[0], exp_disp[0], self.exp_names[k], identity_name)
+                    )
 
     def __len__(self):
         return len(self.items)
@@ -397,6 +431,14 @@ def Options():
     parser.add_argument("--identity_indices", type=int, nargs='+', default=None,
                         help='explicit ICT identity indices to evaluate (for example: '
                              '--identity_indices 0 7 19); overrides --n_identity')
+
+    parser.add_argument("--ict_split_set", dest='ict_split_set', action='store_true',
+                        help='evaluate on the 10 real captured ICT-FaceKit identities in '
+                             "ict_data_split['test'] (utils/keys.py) instead of synthetic "
+                             'iden_vecs.npy identities; neutral templates are loaded from '
+                             f'{GCEvalDataset.ICT_SPLIT_SET_PKL}. Overrides --n_identity/'
+                             '--identity_indices.')
+    parser.set_defaults(ict_split_set=False)
 
     parser.add_argument("--min_region_area_frac", type=float, default=1e-4,
                         help='minimum surface-area fraction required for both the active and '
@@ -745,6 +787,7 @@ class Trainer():
         self.dataset = GCEvalDataset(
             n_identity=self.opts.n_identity,
             identity_indices=self.opts.identity_indices,
+            ict_split_set=self.opts.ict_split_set,
         )
         # Batch size is forced to exactly one identity's worth of items
         # (n_basis == 53), not taken from --batch_size: dataset items are
