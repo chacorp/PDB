@@ -28,7 +28,7 @@ from utils.remesh_utils import (
 from utils.cages import mean_value_coordinates_3D
 from utils.exp_utils import Model_mk1, Model_mk3_1
 from utils.exp_utils import plateau_hat_points
-from models.encoder import PointNet_small, PointNet_large, MLP
+from models.encoder import PointNetFeatSimple, PointNet_small, PointNet_large, MLP
 from torch.utils.checkpoint import checkpoint
 
 class CageNet(nn.Module):
@@ -51,33 +51,26 @@ class CageNet(nn.Module):
         
         
         # self.cage_v = nn.Parameter(torch.rand(128, 3))
-        test_cage = trimesh.load(f'{__abs_path__}/test_cage.obj') # 512 vertices 988 faces
+        test_cage = trimesh.load(f'{__abs_path__}/test_cage.obj') # 512 vertices, 1020 faces, y-up aligned
         ## may need a better mesh!
-        self.C = test_cage.vertices.shape[0]        
-        
-        self.cage_v = torch.tensor(test_cage.vertices+np.array([0,0.1,0])).float().to(device)#*1.2
+        self.C = test_cage.vertices.shape[0]
+
+        self.cage_v = torch.tensor(test_cage.vertices).float().to(device)
         self.cage_f = torch.tensor(test_cage.faces).long().to(device)
         # if self.optim_cage:
         #     self.cage_v = nn.Parameter(self.cage_v)
-        
-        ## poinnet encoder
-        # self.encoder = Model_mk3_1(in_dim, hid_dim).to(device)
-        self.encoder = PointNet_small(
-            in_dim, hid_dim, out_type='global',
-            no_norm_layer=True
-        ).to(device)
-        # self.encoder = PointNet_large(in_dim, hid_dim, out_type='global').to(device)
-        
-        ## atlasnet decoder => MLP
+
+        ## pointnet encoder (deep_cage style: no STN, no normalization)
+        self.encoder = PointNetFeatSimple(in_dim, hid_dim).to(device)
+
+        ## MLP decoder (deep_cage MLPDeformer style: bottleneck -> 512 -> 256 -> out)
         self.nc_decoder = MLP(
-            # [in_dim+hid_dim]+[hid_dim]*3+[out_dim], 
-            [hid_dim]+[hid_dim]*2+[out_dim*self.C], 
-            act='lrelu', nrm='none', #dropout=True, p=.2
+            [hid_dim, hid_dim, 256, out_dim*self.C],
+            act='lrelu', nrm='none',
         ).to(device)
         self.nd_decoder = MLP(
-            # [in_dim+hid_dim+hid_dim]+[hid_dim]*3+[out_dim],
-            [hid_dim+hid_dim]+[hid_dim]*2+[out_dim*self.C],
-            act='lrelu', nrm='none', #dropout=True, p=.2
+            [hid_dim+hid_dim, hid_dim, 256, out_dim*self.C],
+            act='lrelu', nrm='none',
         ).to(device)
 
     @staticmethod
