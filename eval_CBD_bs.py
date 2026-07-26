@@ -292,7 +292,7 @@ class Trainer():
                 no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
-                use_pou=~self.opts.no_pou,
+                use_pou=not self.opts.no_pou,
                 device=self.device,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
@@ -312,7 +312,7 @@ class Trainer():
                 use_sqrelu=last_act_list[5],
                 use_least_N_on_V=False,
                 is_train=True,
-                use_pou=~self.opts.no_pou,
+                use_pou=not self.opts.no_pou,
                 device=self.device,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
@@ -332,7 +332,7 @@ class Trainer():
                 use_sqrelu=last_act_list[5],
                 use_least_N_on_V=False,
                 is_train=True,
-                use_pou=~self.opts.no_pou,
+                use_pou=not self.opts.no_pou,
                 device=self.device,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
