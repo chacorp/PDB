@@ -513,6 +513,18 @@ class Trainer():
         script's design was based on). A model free of global coupling
         should show a large MSE-in and a small MSE-out. Metrics are
         averaged over all (identity, basis) pairs.
+
+        Additionally reports MSE-in-GT / MSE-out-GT: the same in/out masks,
+        but measured against the raw GT target mesh (`batch.vertices`,
+        the expression mesh the model was actually asked to reproduce)
+        instead of `pred_neutral`. These isolate prediction *accuracy*
+        rather than movement *magnitude* -- unlike MSE-in above, a model
+        that simply over-deforms the active region cannot inflate
+        MSE-in-GT, since error is measured against the true target, not
+        against a static baseline. Both MSE-in-GT and MSE-out-GT should be
+        *small* for a good model (no ratio is reported for this pair,
+        since -- unlike MSE-in/MSE-out -- both directions share the same
+        "smaller is better" interpretation).
         """
         # ── dataset ────────────────────────────────────────────────────
         self.dataset = BasisEvalDataset(n_identity=self.opts.n_identity)
@@ -560,13 +572,16 @@ class Trainer():
             self.model.eval()
 
         # per-identity metric bookkeeping, reported alongside the overall average
-        per_identity = {name: {"MSE-in": 0.0, "MSE-out": 0.0} for name in self.dataset.identity_names}
+        per_identity = {
+            name: {"MSE-in": 0.0, "MSE-out": 0.0, "MSE-in-GT": 0.0, "MSE-out-GT": 0.0}
+            for name in self.dataset.identity_names
+        }
 
         # ── eval loop ──────────────────────────────────────────────────
         len_data = len(self.dataloader)
         denom = 1 / len_data
 
-        losses_val = {"MSE-in": 0.0, "MSE-out": 0.0}
+        losses_val = {"MSE-in": 0.0, "MSE-out": 0.0, "MSE-in-GT": 0.0, "MSE-out-GT": 0.0}
         current_identity = None
 
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
@@ -607,15 +622,34 @@ class Trainer():
                     pred_vertices * mask_out.unsqueeze(-1),
                     self.pred_neutral * mask_out.unsqueeze(-1),
                 ).item()
+
+                # ── GT-accuracy metrics ─────────────────────────────────
+                # Same masks, but compared against the raw GT target mesh
+                # (batch.vertices) instead of pred_neutral -- see
+                # evaluate_bs docstring. Smaller is better for both.
+                MSE_in_GT = F.mse_loss(
+                    pred_vertices * mask_in.unsqueeze(-1),
+                    batch.vertices * mask_in.unsqueeze(-1),
+                ).item()
+                MSE_out_GT = F.mse_loss(
+                    pred_vertices * mask_out.unsqueeze(-1),
+                    batch.vertices * mask_out.unsqueeze(-1),
+                ).item()
+
                 losses_val['MSE-in'] += MSE_in
                 losses_val['MSE-out'] += MSE_out
+                losses_val['MSE-in-GT'] += MSE_in_GT
+                losses_val['MSE-out-GT'] += MSE_out_GT
                 # exactly one batch per identity (batch_size == n_basis), so
                 # this is a plain assignment, not an accumulation
                 per_identity[batch.identity_name]['MSE-in'] = MSE_in
                 per_identity[batch.identity_name]['MSE-out'] = MSE_out
+                per_identity[batch.identity_name]['MSE-in-GT'] = MSE_in_GT
+                per_identity[batch.identity_name]['MSE-out-GT'] = MSE_out_GT
 
                 pbar.set_description(
-                    f'[{batch.identity_name}] MSE-in: {MSE_in:.5e} MSE-out: {MSE_out:.5e}'
+                    f'[{batch.identity_name}] MSE-in: {MSE_in:.5e} MSE-out: {MSE_out:.5e} '
+                    f'MSE-in-GT: {MSE_in_GT:.5e} MSE-out-GT: {MSE_out_GT:.5e}'
                 )
 
             # ── save vertices ─────────────────────────────────────────
@@ -666,7 +700,12 @@ class Trainer():
                 mse_in = vals['MSE-in']
                 mse_out = vals['MSE-out']
                 ratio = mse_out / max(mse_in, 1e-12)
-                line = f"  [{name}] MSE-in: {mse_in:.6e} MSE-out: {mse_out:.6e} Ratio(out/in): {ratio:.6e}"
+                mse_in_gt = vals['MSE-in-GT']
+                mse_out_gt = vals['MSE-out-GT']
+                line = (
+                    f"  [{name}] MSE-in: {mse_in:.6e} MSE-out: {mse_out:.6e} Ratio(out/in): {ratio:.6e} "
+                    f"MSE-in-GT: {mse_in_gt:.6e} MSE-out-GT: {mse_out_gt:.6e}"
+                )
                 print(line)
                 self.logger.write(line + "\n")
 
@@ -704,7 +743,10 @@ if __name__ == "__main__":
     expression-basis axes one at a time (one-hot), self-retargets it, and
     reports MSE-in (inside the GT basis-coverage mask -- should be large)
     vs. MSE-out (outside the mask -- should be small; large values indicate
-    global coupling / leakage).
+    global coupling / leakage), plus MSE-in-GT / MSE-out-GT -- the same
+    masks measured against the raw GT target mesh instead of the model's
+    neutral self-reconstruction, so both should be small (accuracy, not
+    just movement magnitude).
 
     Examples:
         # NC
