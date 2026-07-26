@@ -170,6 +170,27 @@ def displacement_mask(disp, eps):
     return (torch.norm(disp, dim=-1) > eps).float()
 
 
+def masked_mse(pred, gt, mask):
+    """
+    Mean squared error restricted to `mask`, normalized by the number of
+    masked coordinate-elements (not by the full tensor size) -- unlike
+    F.mse_loss(pred*mask, gt*mask), which divides by every element of
+    pred/gt regardless of the mask.
+
+    Args:
+        pred, gt: [..., V, 3] tensors
+        mask: [..., V] float mask (1.0 = included, 0.0 = excluded)
+    Returns:
+        (mse: float, n_masked: float) -- n_masked is the mask's coordinate
+        count (mask.sum() * 3), returned so callers can recombine multiple
+        masked_mse calls into a properly weighted overall average.
+    """
+    diff = (pred - gt) * mask.unsqueeze(-1)
+    n_masked = mask.sum().item() * pred.shape[-1]
+    mse = diff.pow(2).sum().item() / max(n_masked, 1e-12)
+    return mse, n_masked
+
+
 def mask_to_vertex_color(mask_in, in_color=(0.90, 0.15, 0.15), out_color=(0.75, 0.75, 0.75)):
     """
     Args:
@@ -524,7 +545,16 @@ class Trainer():
         against a static baseline. Both MSE-in-GT and MSE-out-GT should be
         *small* for a good model (no ratio is reported for this pair,
         since -- unlike MSE-in/MSE-out -- both directions share the same
-        "smaller is better" interpretation).
+        "smaller is better" interpretation). Each is normalized by its own
+        region's coordinate count (`masked_mse`), i.e. a true per-region
+        mean, not by the full-mesh count -- so MSE-in-GT and MSE-out-GT are
+        each other's per-region accuracy and are directly comparable to the
+        same metric for a different method, but MSE-in-GT should not be
+        compared to MSE-out-GT *within* the same method to conclude which
+        region is "more accurate", since the two regions generally have
+        different vertex counts. MSE-GT-full recombines the two into the
+        true full-mesh MSE against the GT target mesh, weighted by each
+        region's coordinate count.
         """
         # ── dataset ────────────────────────────────────────────────────
         self.dataset = BasisEvalDataset(n_identity=self.opts.n_identity)
@@ -573,7 +603,11 @@ class Trainer():
 
         # per-identity metric bookkeeping, reported alongside the overall average
         per_identity = {
-            name: {"MSE-in": 0.0, "MSE-out": 0.0, "MSE-in-GT": 0.0, "MSE-out-GT": 0.0}
+            name: {
+                "MSE-in": 0.0, "MSE-out": 0.0,
+                "MSE-in-GT": 0.0, "MSE-out-GT": 0.0,
+                "N-in-GT": 0.0, "N-out-GT": 0.0,
+            }
             for name in self.dataset.identity_names
         }
 
@@ -581,7 +615,11 @@ class Trainer():
         len_data = len(self.dataloader)
         denom = 1 / len_data
 
-        losses_val = {"MSE-in": 0.0, "MSE-out": 0.0, "MSE-in-GT": 0.0, "MSE-out-GT": 0.0}
+        losses_val = {
+            "MSE-in": 0.0, "MSE-out": 0.0,
+            "MSE-in-GT": 0.0, "MSE-out-GT": 0.0,
+            "N-in-GT": 0.0, "N-out-GT": 0.0,
+        }
         current_identity = None
 
         pbar = tqdm(enumerate(self.dataloader), total=len_data, ncols=100)
@@ -627,25 +665,29 @@ class Trainer():
                 # Same masks, but compared against the raw GT target mesh
                 # (batch.vertices) instead of pred_neutral -- see
                 # evaluate_bs docstring. Smaller is better for both.
-                MSE_in_GT = F.mse_loss(
-                    pred_vertices * mask_in.unsqueeze(-1),
-                    batch.vertices * mask_in.unsqueeze(-1),
-                ).item()
-                MSE_out_GT = F.mse_loss(
-                    pred_vertices * mask_out.unsqueeze(-1),
-                    batch.vertices * mask_out.unsqueeze(-1),
-                ).item()
+                # Normalized by each region's own coordinate count (true
+                # per-region mean), not the full-mesh count -- unlike
+                # F.mse_loss(pred*mask, gt*mask), which would divide by
+                # every element regardless of the mask. N_in_GT/N_out_GT
+                # are carried along so the two region MSEs can later be
+                # recombined into a correctly weighted full-mesh MSE.
+                MSE_in_GT, N_in_GT = masked_mse(pred_vertices, batch.vertices, mask_in)
+                MSE_out_GT, N_out_GT = masked_mse(pred_vertices, batch.vertices, mask_out)
 
                 losses_val['MSE-in'] += MSE_in
                 losses_val['MSE-out'] += MSE_out
                 losses_val['MSE-in-GT'] += MSE_in_GT
                 losses_val['MSE-out-GT'] += MSE_out_GT
+                losses_val['N-in-GT'] += N_in_GT
+                losses_val['N-out-GT'] += N_out_GT
                 # exactly one batch per identity (batch_size == n_basis), so
                 # this is a plain assignment, not an accumulation
                 per_identity[batch.identity_name]['MSE-in'] = MSE_in
                 per_identity[batch.identity_name]['MSE-out'] = MSE_out
                 per_identity[batch.identity_name]['MSE-in-GT'] = MSE_in_GT
                 per_identity[batch.identity_name]['MSE-out-GT'] = MSE_out_GT
+                per_identity[batch.identity_name]['N-in-GT'] = N_in_GT
+                per_identity[batch.identity_name]['N-out-GT'] = N_out_GT
 
                 pbar.set_description(
                     f'[{batch.identity_name}] MSE-in: {MSE_in:.5e} MSE-out: {MSE_out:.5e} '
@@ -683,6 +725,17 @@ class Trainer():
         # ── write log ─────────────────────────────────────────────────
         losses_val = {k: v * denom for k, v in losses_val.items()}
         losses_val['Ratio(out/in)'] = losses_val['MSE-out'] / max(losses_val['MSE-in'], 1e-12)
+        # Vertex-count-weighted recombination of MSE-in-GT/MSE-out-GT --
+        # exactly the full-mesh MSE against the GT target mesh (unlike a
+        # plain MSE-in-GT + MSE-out-GT sum, which would double-count each
+        # region's own normalization). N-in-GT/N-out-GT are internal
+        # bookkeeping only, so drop them once MSE-GT-full is computed.
+        losses_val['MSE-GT-full'] = (
+            losses_val['MSE-in-GT'] * losses_val['N-in-GT']
+            + losses_val['MSE-out-GT'] * losses_val['N-out-GT']
+        ) / max(losses_val['N-in-GT'] + losses_val['N-out-GT'], 1e-12)
+        del losses_val['N-in-GT']
+        del losses_val['N-out-GT']
 
         log_text = "[BS Eval] "
         for key, value in losses_val.items():
@@ -702,9 +755,12 @@ class Trainer():
                 ratio = mse_out / max(mse_in, 1e-12)
                 mse_in_gt = vals['MSE-in-GT']
                 mse_out_gt = vals['MSE-out-GT']
+                mse_gt_full = (
+                    mse_in_gt * vals['N-in-GT'] + mse_out_gt * vals['N-out-GT']
+                ) / max(vals['N-in-GT'] + vals['N-out-GT'], 1e-12)
                 line = (
                     f"  [{name}] MSE-in: {mse_in:.6e} MSE-out: {mse_out:.6e} Ratio(out/in): {ratio:.6e} "
-                    f"MSE-in-GT: {mse_in_gt:.6e} MSE-out-GT: {mse_out_gt:.6e}"
+                    f"MSE-in-GT: {mse_in_gt:.6e} MSE-out-GT: {mse_out_gt:.6e} MSE-GT-full: {mse_gt_full:.6e}"
                 )
                 print(line)
                 self.logger.write(line + "\n")
@@ -745,8 +801,10 @@ if __name__ == "__main__":
     vs. MSE-out (outside the mask -- should be small; large values indicate
     global coupling / leakage), plus MSE-in-GT / MSE-out-GT -- the same
     masks measured against the raw GT target mesh instead of the model's
-    neutral self-reconstruction, so both should be small (accuracy, not
-    just movement magnitude).
+    neutral self-reconstruction (each normalized by its own region's
+    vertex count, a true per-region mean), so both should be small
+    (accuracy, not just movement magnitude), and MSE-GT-full, their
+    vertex-count-weighted recombination into the true full-mesh GT MSE.
 
     Examples:
         # NC

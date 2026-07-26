@@ -409,6 +409,7 @@ class Trainer():
             self.dataset,
             batch_size=self.opts.batch_size,
             collate_fn=partial(CBD_collate_wrapper_eval, device=self.device),
+            num_workers=8,
         )
 
         # ── logging ────────────────────────────────────────────────────
