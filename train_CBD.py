@@ -76,6 +76,9 @@ def Options():
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
     parser.add_argument("--sc_step",      type=int,   default=10,     help='scheduler step')
+    parser.add_argument("--warmup_epochs",type=int,   default=1,      help='(v1/CageNet) epochs before mvc loss is activated')
+    parser.add_argument("--use_p2f_loss", dest='use_p2f_loss', action='store_true')
+    parser.set_defaults(use_p2f_loss=False)
     
     parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
     parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
@@ -274,18 +277,17 @@ class Trainer():
             print("Loaded scheduler state from checkpoint.")
 
     def train_v1(self, epochs):
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
-        self.scheduler = None
+        # deep_cage humanoid recipe: plain Adam (no weight decay), StepLR schedule
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer,
+            step_size=self.opts.sc_step,
+            gamma=self.opts.sc_gamma
+        )
 
         if self.opts.optim_cage:
             self.model.cage_v = nn.Parameter(self.model.cage_v)
-            self.optimizer_cage = torch.optim.AdamW([self.model.cage_v], lr=0.0002, betas=(0.9, 0.999))
-        # if self.opts.use_scheduler:
-        #     self.scheduler = torch.optim.lr_scheduler.StepLR(
-        #         self.optimizer,
-        #         step_size=self.opts.sc_step,
-        #         gamma=self.opts.sc_gamma
-        #     )
+            self.optimizer_cage = torch.optim.Adam([self.model.cage_v], lr=0.0002, betas=(0.9, 0.999))
         self._load_optim_states()
 
         ##########################################################################################################
@@ -424,44 +426,44 @@ class Trainer():
         BEST_EPOCH = 0
         start_epoch = self.opts.start_epoch
                 
-        # define loss lamdba 
+        # define loss lamdba (deep_cage humanoid recipe: mvc + align(MSE) only by default;
+        # p2f/norm kept available behind flags, off by default)
         self.loss_lambda = {
             "mvc": self.opts.lambda_mvc,
             "align": self.opts.lambda_align,
-            "p2f": self.opts.lambda_p2f,
-            "norm": self.opts.lambda_norm,
-            # symm 
         }
-        
+        if self.opts.use_p2f_loss:
+            self.loss_lambda["p2f"] = self.opts.lambda_p2f
+        if self.opts.use_normal_loss:
+            self.loss_lambda["norm"] = self.opts.lambda_norm
+
         check_usage = False
-        
+
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
         interv_train = round(len_train_data / 10)
+        running_avg_loss = -1.0
         for epoch in range(start_epoch, epochs+1):
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
-            
+
             ## for logging loss!
-            running_losses = {
-                "mvc": 0.0,
-                "align": 0.0,
-                "p2f": 0.0,
-                "norm": 0.0,
-                "total": 0.0
-            }
-            
+            running_losses = {k: 0.0 for k in list(self.loss_lambda.keys()) + ["total"]}
+
             self.model.train()
             train_counter = 0
-            
+
+            # warm-up: hold off on the mvc regularizer until the cage prediction stabilizes
+            warming_up = epoch < self.opts.warmup_epochs
+
             pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100, disable=(epoch % 10 != 0))
-                                             
+
             for index, batch in pbar:
-                
+
                 self.optimizer.zero_grad()
                 if self.opts.optim_cage:
                     self.optimizer_cage.zero_grad()
 
-                
+
                 # model prediction -------------------------------------------------------------------------------
                 pred_vertices, pred_template, mvc_weights, source_cage_v, deform_cage_v = self.model(
                     # batch_template_v, batch_vertices_v, epoch=epoch, return_cage=True
@@ -469,19 +471,14 @@ class Trainer():
                     # batch.template[0,None], batch.vertices, epoch=epoch, return_cage=True
                 )
                 # ------------------------------------------------------------------------------------------------
-                
+
                 ##################################################################################################
-                # ------------------------------------------------------------------------------------------------                
+                # ------------------------------------------------------------------------------------------------
                 mesh_data_num = batch.mesh_data.cpu().numpy()
                 mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
-                                
-                
-                idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
-                normals_before = pca_normal_axis_vectorized(batch.template, idx_pad, mask)
-                normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
-                                
+
                 loss_dict = {} # make it as a dictionary
-                                
+
                 loss_dict['mvc'] = mvc_loss(mvc_weights)
                 loss_dict['align'] = F.mse_loss(
                     batch.vertices,
@@ -490,16 +487,23 @@ class Trainer():
                     batch.template,
                     pred_template,
                 )
-                loss_dict['p2f']   = p2f_loss(batch.template, pred_vertices, normals_before, normals_after)                
-                loss_dict['norm']  = norm_loss(normals_before, normals_after)
+                if self.opts.use_p2f_loss or self.opts.use_normal_loss:
+                    idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
+                    normals_before = pca_normal_axis_vectorized(batch.template, idx_pad, mask)
+                    normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
+                    if self.opts.use_p2f_loss:
+                        loss_dict['p2f'] = p2f_loss(batch.template, pred_vertices, normals_before, normals_after)
+                    if self.opts.use_normal_loss:
+                        loss_dict['norm'] = norm_loss(normals_before, normals_after)
                 # ------------------------------------------------------------------------------------------------
                 ##################################################################################################
-                               
-                
+
+
                 # get total loss (lambda weights are multiplied here!)
                 loss = 0
                 for key, value in loss_dict.items():
-                    tmp = value*self.loss_lambda[key]
+                    weight = 0.0 if (key == "mvc" and warming_up) else self.loss_lambda[key]
+                    tmp = value*weight
                     loss += tmp
                     running_losses[key] += tmp.detach()
                 loss_dict["total"] = loss
@@ -507,19 +511,38 @@ class Trainer():
                 # running loss
                 running_losses["total"] += loss_dict["total"].detach()
                 pbar.set_description(f"total loss: {loss:.5e}")
-                # ------------------------------------------------------------------------------------------------
-                # backward
-                loss.backward()
 
-                if True:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                
-                self.optimizer.step()
-                
-                if self.opts.optim_cage:
-                    self.optimizer_cage.step()                
+                # deep_cage safety net: skip the update (not the whole step count) if loss spikes
+                # or turns non-finite (NaN/Inf comparisons are always False, so the finiteness
+                # check must be explicit or a NaN loss would silently reach backward()).
+                loss_val = loss_dict["total"].item()
+                loss_is_finite = np.isfinite(loss_val)
+                # TEMP DIAGNOSTIC: identify which dataset/identity a loss spike came from
+                if (not loss_is_finite) or loss_val > 10.0:
+                    diag = f"[DIAG] e{epoch} t{global_step} mesh_data={mesh_data} id_name={getattr(batch, 'id_name', '?')} loss={loss_val}"
+                    print(diag)
+                    self.logger.write(diag + "\n")
+                if loss_is_finite:
+                    if running_avg_loss < 0:
+                        running_avg_loss = loss_val
+                    else:
+                        running_avg_loss += (loss_val - running_avg_loss) / (global_step + 1)
+                if (not loss_is_finite) or loss_val > 100 * running_avg_loss:
+                    global_step += 1
+                    train_counter += 1
+                    if self.opts.debug:
+                        break
+                    continue
                 # ------------------------------------------------------------------------------------------------
-                
+                # backward (no gradient clipping, matching deep_cage's humanoid recipe;
+                # the loss-spike skip above is the safety net instead)
+                loss.backward()
+                self.optimizer.step()
+
+                if self.opts.optim_cage:
+                    self.optimizer_cage.step()
+                # ------------------------------------------------------------------------------------------------
+
                 global_step += 1
                 train_counter += 1
 
@@ -572,10 +595,9 @@ class Trainer():
                     break
                 # ------------------------------------------------------------------------------------------------
             
-            ### scheduler (not used - for now...)
-            # if self.opts.use_scheduler:
-            #     self.scheduler.step()
-            
+            ### scheduler
+            self.scheduler.step()
+
             # log
             if self.opts.tb:
                 self.log_loss(self.writer_train, running_losses, epoch, train_counter)
@@ -595,43 +617,38 @@ class Trainer():
             if epoch % 10 == 0 or epoch == epochs:
                 self.model.eval()
                 print(f"[{epoch:03d}/{epochs:03d}][Valid]")
-                running_losses_val = {
-                    "mvc": 0.0,
-                    "align": 0.0,
-                    "p2f": 0.0,
-                    "norm": 0.0,
-                    "total": 0.0
-                }
-            
+                running_losses_val = {k: 0.0 for k in list(self.loss_lambda.keys()) + ["total"]}
+
                 counter = 0
                 pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
                 for index, batch in pbar:
                     counter += 1
-                
+
                     # model validation -------------------------------------------------------------------------------
                     with torch.no_grad():
                         pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
                     # ------------------------------------------------------------------------------------------------
-                
-                
+
+
                     ##################################################################################################
-                    # ------------------------------------------------------------------------------------------------ 
+                    # ------------------------------------------------------------------------------------------------
                     with torch.no_grad():
                         mesh_data_num = batch.mesh_data.cpu().numpy()
                         mesh_data = np.array(['voca', 'biwi', 'mf','voca','mf','ict'])[mesh_data_num]
                         template_expanded = batch.template#.expand_as(pred_vertices)
-                    
-                    
-                        idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
-                        normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
-                        normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
 
                         loss_dict = {} # make it as a dictionary
-                    
+
                         loss_dict['mvc'] = mvc_loss(mvc_weights)
                         loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                        loss_dict['p2f']   = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)
-                        loss_dict['norm']  = norm_loss(normals_before, normals_after)
+                        if self.opts.use_p2f_loss or self.opts.use_normal_loss:
+                            idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
+                            normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
+                            normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
+                            if self.opts.use_p2f_loss:
+                                loss_dict['p2f'] = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)
+                            if self.opts.use_normal_loss:
+                                loss_dict['norm'] = norm_loss(normals_before, normals_after)
                     # ------------------------------------------------------------------------------------------------
                     ##################################################################################################
                 
