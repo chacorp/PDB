@@ -15,6 +15,14 @@ vis_CBD/
 ckpts_CBD/
 eval_CBD/
 eval_cyc/
+eval_CBD_bs/
+eval_CBD_cif/
+eval_CBD_cp/
+eval_CBD_gc/
+eval_CBD_lp/
+eval_1000/
+eval_align/
+smoke_test/
 
 *.pkl
 */*.pkl
