@@ -627,6 +627,19 @@ class Trainer():
                     template[0], faces, pred_exp,
                     self._src_operators, self._src_dfn_info, self._src_img,
                 )
+                # calc_new_mesh's Poisson solve only recovers the mesh up to an
+                # arbitrary rigid translation (integrating a Jacobian field has no
+                # translation term), so it re-centers its output to zero mean
+                # internally. `vertices` (GT) is in ICT's own non-zero-mean frame,
+                # so comparing the two directly would count that translation gap
+                # as error on top of the real reconstruction error. Re-align pred
+                # to GT's mean here -- matches the same fix in eval_CBD_lp.py.
+                dims = tuple(range(pred_vertices.dim() - 1))
+                pred_vertices = (
+                    pred_vertices
+                    - pred_vertices.mean(dim=dims, keepdim=True)
+                    + vertices.mean(dim=dims, keepdim=True)
+                )
 
         elif self.opts.version == 1:
             # ── NC (Neural Cage) ────────────────────────────────────
@@ -678,13 +691,23 @@ class Trainer():
         if self.opts.version == 0:
             self._src_mesh = trimesh.Trimesh(vertices=template_np, faces=faces_np)
 
-            # identities "000".."099" have a precomputed dfn_info / operators
-            # / rendered image cache on disk (matches eval_CBD.py /
-            # eval_CBD_lp.py's ict precompute handling); anything else falls
-            # back to computing on the fly
-            ict_precompute_path = '/data/sihun/ICT-audio2face/precompute-synth-fullhead'
-            dfn_path = os.path.join(ict_precompute_path, f"{identity_name}_dfn_info.pkl")
-            if os.path.exists(dfn_path):
+            # identities "000".."099" (synthetic) have a precomputed dfn_info /
+            # operators / rendered image cache under precompute-synth-fullhead
+            # (matches eval_CBD.py / eval_CBD_lp.py's ict precompute handling);
+            # the real captured identities used by --ict_split_set (m00, w00,
+            # ...) have the same three files under precompute-real-fullhead.
+            # Anything with neither falls back to computing (and rendering)
+            # on the fly.
+            dfn_path = None
+            for ict_precompute_path in (
+                '/data/sihun/ICT-audio2face/precompute-synth-fullhead',
+                '/data/sihun/ICT-audio2face/precompute-real-fullhead',
+            ):
+                cand_dfn_path = os.path.join(ict_precompute_path, f"{identity_name}_dfn_info.pkl")
+                if os.path.exists(cand_dfn_path):
+                    dfn_path = cand_dfn_path
+                    break
+            if dfn_path is not None:
                 self._src_dfn_info = pickle.load(open(dfn_path, 'rb'))
                 self._src_operators = pickle.load(open(
                     os.path.join(ict_precompute_path, f"{identity_name}_operators.pkl"), 'rb'

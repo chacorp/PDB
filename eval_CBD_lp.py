@@ -499,7 +499,11 @@ class Trainer():
                                 os.path.join(precompute_path, f"{src_mesh_id}_operators.pkl"), mode='rb'
                             ))
                             src_img = np.load(os.path.join(precompute_path, f"{src_mesh_id}_img.npy"))
-                            src_img = torch.from_numpy(src_img)[0].float().to(self.device)
+                            # keep the batch dim ([1, 256, 256, 3]) -- matches what
+                            # render_img() itself returns; NFR's encode() requires a
+                            # 4D image (indexing [0] here breaks NFR, though NFS's
+                            # get_img_feat happens to re-add a missing batch dim)
+                            src_img = torch.from_numpy(src_img).float().to(self.device)
                         else:
                             src_dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
                             src_operators = self.get_mesh_operators(src_mesh)
@@ -565,7 +569,9 @@ class Trainer():
                                 os.path.join(precompute_path, f"{src_mesh_id}_operators.pkl"), mode='rb'
                             ))
                             src_img = np.load(os.path.join(precompute_path, f"{src_mesh_id}_img.npy"))
-                            src_img = torch.from_numpy(src_img)[0].float().to(self.device)
+                            # keep the batch dim ([1, 256, 256, 3]) -- NFR's encode()
+                            # requires a 4D image (indexing [0] here breaks NFR)
+                            src_img = torch.from_numpy(src_img).float().to(self.device)
                         else:
                             src_dfn_info = self.get_dfn_info(src_m, map_location=self.device)
                             src_operators = self.get_mesh_operators(src_m)
@@ -578,6 +584,21 @@ class Trainer():
                         )
                         pred_vertices, _, _ = self.model.calc_new_mesh(
                             src_verts, src_faces, pred_exp, src_operators, src_dfn_info, src_img
+                        )
+                        # calc_new_mesh's Poisson solve only recovers the mesh up to an
+                        # arbitrary rigid translation (integrating a Jacobian field has no
+                        # translation term), so it re-centers its output to zero mean
+                        # internally (see NFR_helper.calc_new_mesh). batch.vertices is in
+                        # ICT's own (non-zero-mean) coordinate frame, so comparing the two
+                        # directly would count that translation gap as error on top of the
+                        # real reconstruction error. Re-align pred to GT's mean here so the
+                        # downstream MSE measures shape accuracy only -- matches how NFS/NGBC
+                        # already sit in GT's frame with no re-centering needed.
+                        dims = tuple(range(pred_vertices.dim() - 1))
+                        pred_vertices = (
+                            pred_vertices
+                            - pred_vertices.mean(dim=dims, keepdim=True)
+                            + batch.vertices.mean(dim=dims, keepdim=True)
                         )
 
                 else:
@@ -742,7 +763,9 @@ class Trainer():
                     os.path.join(precompute_path, f"{id_name}_operators.pkl"), mode='rb'
                 ))
             img = np.load(os.path.join(precompute_path, f"{id_name}_img.npy"))
-            img = torch.from_numpy(img)[0].float().to(self.device)
+            # keep the batch dim ([1, 256, 256, 3]) -- NFR's encode() requires a
+            # 4D image (indexing [0] here breaks NFR)
+            img = torch.from_numpy(img).float().to(self.device)
         else:
             dfn_info = self.get_dfn_info(m, map_location=self.device)
             operators = self.get_mesh_operators(m) if need_operators else None
