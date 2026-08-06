@@ -1583,7 +1583,26 @@ def _boundary_vert_mask(faces, n_rings, n_verts):
     _BMASK_CACHE[key] = excl
     return excl
 
-def _err_norm2(err, key=None, faces=None):
+_FMASK_CACHE = {}
+
+def _face_vert_mask(verts):
+    """Model-identical face mask: plateau_hat_points(r0=1.0, r1=2.25) >= 0.5.
+    True = inside face region. Cached per mesh (shape + centroid)."""
+    k = (verts.shape[0], tuple(np.round(verts.mean(0), 3)))
+    if k in _FMASK_CACHE:
+        return _FMASK_CACHE[k]
+    try:
+        import torch as _t
+        from utils.exp_utils import plateau_hat_points
+        v = _t.from_numpy(np.asarray(verts, dtype=np.float32))[None]
+        tm = plateau_hat_points(v, r0=1.0, r1=2.25).squeeze(-1)[0].cpu().numpy()
+        m = tm >= 0.5
+    except Exception:
+        m = np.ones(verts.shape[0], dtype=bool)
+    _FMASK_CACHE[k] = m
+    return m
+
+def _err_norm2(err, key=None, faces=None, verts=None):
     """Sequence-adaptive, frame-independent error normalization.
     modes: 'seq p95' (default) / 'seq max' — running stats per (target, clip),
     stabilize after one pass; 'fixed' — absolute cap; 'per-frame' — legacy."""
@@ -1591,6 +1610,9 @@ def _err_norm2(err, key=None, faces=None):
     mask = None
     if faces is not None and int(_MAT.get("err_face_rings", 3)) > 0:
         mask = _boundary_vert_mask(faces, int(_MAT.get("err_face_rings", 3)), err.shape[0])
+    if verts is not None and bool(_MAT.get("err_face_only", True)):
+        fm = _face_vert_mask(verts)          # True = face region
+        mask = (~fm) if mask is None else (mask | (~fm))
     core = err[~mask] if (mask is not None and (~mask).any()) else err
     if mode == "fixed":
         den = float(_MAT.get("err_absmax", 0.02))
@@ -2024,6 +2046,7 @@ def main():
     g_err_face_rings = server.gui.add_slider(
         "error: exclude boundary rings", min=0, max=8, step=1, initial_value=3,
     )
+    g_err_face_only = server.gui.add_checkbox("error: face mask only", True)
     g_err_reset = server.gui.add_button("reset seq error scale")
     g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
     # Global saturation boost for ALL displayed vertex colors (weight maps,
@@ -2506,7 +2529,7 @@ def main():
 
         if g_err_color.value:
             err = np.linalg.norm(pred_v - gt_v, axis=-1)             # [V]
-            err_n = _err_norm2(err, key=("anim", g_dataset.value, g_anim_seq.value, err.size), faces=cache.faces)
+            err_n = _err_norm2(err, key=("anim", g_dataset.value, g_anim_seq.value, err.size), faces=cache.faces, verts=c["neu_v"])
             # hot: black (err≈0) → red → yellow → white (err=max). At low err the
             # heat is black, alpha is also low → mesh_color shows through. At
             # high err alpha=1 → full white/yellow highlight.
@@ -2730,7 +2753,7 @@ def main():
         m = out["metrics"]
         if g_cross_err.value and m is not None:
             err = np.linalg.norm(out["tgt_pred_v"] - out["src_def_v"], axis=-1)
-            err_n = _err_norm2(err, key=("cross", err.size), faces=tgt_td.faces)
+            err_n = _err_norm2(err, key=("cross", err.size), faces=tgt_td.faces, verts=out["tgt_neu_v"])
             heat = _err_rgb(err_n, g_err_cmap.value).astype(np.float32)
             base = np.tile(np.asarray(tgt_c, dtype=np.float32),
                            (out["tgt_pred_v"].shape[0], 1))
@@ -3552,6 +3575,11 @@ def main():
         _MAT["err_face_rings"] = int(g_err_face_rings.value)
         render()
     g_err_scale_mode.on_update(_errmode_upd)
+    def _errface_upd(_e=None):
+        _MAT["err_face_only"] = bool(g_err_face_only.value)
+        _ERR_STATS.clear()
+        render()
+    g_err_face_only.on_update(_errface_upd)
     g_err_face_rings.on_update(_errmode_upd)
     def _err_reset(_e=None):
         _ERR_STATS.clear()
