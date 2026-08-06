@@ -1615,6 +1615,7 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
         vn = igl.per_vertex_normals(
             verts.astype(np.float64), faces.astype(np.int64)
         ).astype(np.float32)
+        vn = np.nan_to_num(vn, nan=0.0)   # orphaned verts (boundary trim) -> zero normal
         mesh.vertex_normals = vn
     # else: leave normals unset → trimesh GLB exports no normals → flat shading.
 
@@ -1933,7 +1934,7 @@ def main():
     g_lighting = server.gui.add_dropdown(
         "lighting mode",
         options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "clay (figure)", "flat (no shadows)"],
-        initial_value="hdri",
+        initial_value="clay (figure)",
     )
     # Color pickers — used wherever the renderer needs a single tint
     # (bind_pose mesh, anim neutral, mesh-only fallbacks, cross side meshes).
