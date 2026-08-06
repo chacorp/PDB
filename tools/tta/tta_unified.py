@@ -103,6 +103,20 @@ def _resolve(sub):
 def load_target(kind,idn):
     """Return tpl, faces, clips: {clip_name: [frame npy paths]}"""
     clips={}
+    if kind=="mf":
+        _mtpl=pickle.load(open("utils/templates/mf_templates.pkl","rb"))
+        _ids=[k for k in _mtpl.keys() if k!="face"]
+        if idn.isdigit(): idn=_ids[int(idn)]
+        faces=np.asarray(_mtpl["face"]); tpl=np.asarray(_mtpl[idn],dtype=np.float32)
+        import glob as _g
+        for cat in ("SEN","ROM"):
+            for mode in ("test","train","val"):
+                base=f"/data/sihun/multiface_align/{cat}/{mode}/vertices_npy/{idn}"
+                for p in sorted(_g.glob(os.path.join(base,"*"))):
+                    if os.path.isdir(p):
+                        fr=sorted(_g.glob(os.path.join(p,"*.npy")))
+                        if fr: clips[f"{cat}_{os.path.basename(p)}"]=fr
+        return tpl,faces,clips,True,idn
     if kind=="newtopo":
         base="new_topo_meshes"
         tpl=[]; faces=[]
@@ -158,7 +172,9 @@ class PoseWrap(torch.nn.Module):
 for kind,idn in TARGETS:
     tag=f"{kind}_{idn}"
     odir=f"{OUT}/{tag}"; os.makedirs(odir,exist_ok=True)
-    tpl,faces,clips,align=load_target(kind,idn)
+    _lt=load_target(kind,idn)
+    if len(_lt)==5: tpl,faces,clips,align,idn=_lt; tag=f"{kind}_{idn}"
+    else: tpl,faces,clips,align=_lt
     align=_auto_align(clips,tpl,align)
     cnames=sorted(clips.keys())
     n_hold_clips=max(1,len(cnames)//10)

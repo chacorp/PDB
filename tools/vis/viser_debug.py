@@ -1552,6 +1552,8 @@ def _boost_saturation(rgb_uint8, factor):
     return np.clip(hsv_to_rgb(hsv) * 255.0, 0, 255).astype(np.uint8)
 
 
+_VIS_FLAGS = {"src": True, "tgt": True}
+
 def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
                                opacity=1.0, shading="smooth", double_sided=False,
                                sat=1.0):
@@ -1601,7 +1603,15 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
         roughnessFactor=1.0,
         doubleSided=bool(double_sided),
     )
-    return server.scene.add_mesh_trimesh(name, mesh)
+    _h = server.scene.add_mesh_trimesh(name, mesh)
+    try:
+        if name.startswith(("/anim/gt", "/anim/neu", "/cross/src", "/feat/src")):
+            _h.visible = bool(_VIS_FLAGS.get("src", True))
+        elif name == "/mesh" or name.startswith(("/anim/pred", "/cross/tgt", "/feat/tgt")):
+            _h.visible = bool(_VIS_FLAGS.get("tgt", True))
+    except Exception:
+        pass
+    return _h
 
 
 def main():
@@ -1896,7 +1906,7 @@ def main():
     )
     g_lighting = server.gui.add_dropdown(
         "lighting mode",
-        options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "flat (no shadows)"],
+        options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "clay (figure)", "flat (no shadows)"],
         initial_value="hdri",
     )
     # Color pickers — used wherever the renderer needs a single tint
@@ -1909,6 +1919,8 @@ def main():
     g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
     g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
     g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
+    g_show_src = server.gui.add_checkbox("show source/GT mesh", True)
+    g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
     g_global_sat = server.gui.add_slider(
@@ -2648,11 +2660,17 @@ def main():
                     colors=np.tile(np.array([255, 255, 255], dtype=np.uint8), (len(jp), 1)),
                     point_size=0.009))
                 if bones:
-                    _seg = [[jp[int(parent_idx[j])], jp[j]] for j in range(len(jp)) if int(parent_idx[j]) >= 0]
-                    if _seg:
-                        _p = np.array(_seg, dtype=np.float32)
-                        _c = np.broadcast_to(np.array([80, 220, 180], dtype=np.uint8), (_p.shape[0], 2, 3)).copy()
-                        nodes.append(server.scene.add_line_segments(prefix + "/bones", points=_p, colors=_c, line_width=2.0))
+                    if g_skel_style.value.startswith("fancy"):
+                        _fv, _ff, _fc = _fancy_skel_mesh(jp, parent_idx, helper_set=helper_set)
+                        nodes.append(_add_per_vertex_color_mesh(
+                            server, prefix + "/bones_fancy", _fv, _ff, _fc,
+                            shading="smooth", sat=1.0))
+                    else:
+                        _seg = [[jp[int(parent_idx[j])], jp[j]] for j in range(len(jp)) if int(parent_idx[j]) >= 0]
+                        if _seg:
+                            _p = np.array(_seg, dtype=np.float32)
+                            _c = np.broadcast_to(np.array([80, 220, 180], dtype=np.uint8), (_p.shape[0], 2, 3)).copy()
+                            nodes.append(server.scene.add_line_segments(prefix + "/bones", points=_p, colors=_c, line_width=2.0))
                 if axes and Tw is not None:
                     from scipy.spatial.transform import Rotation as _R
                     _q = _R.from_matrix(Tw[:, :3, :3]).as_quat()
@@ -2928,6 +2946,37 @@ def main():
                     )
                 _light_state["ambient"].visible = True
                 _light_state["ambient"].intensity = 0.35  # ~0.2 ambient floor
+            elif mode == "clay (figure)":
+                # Disney-figure clay look: soft key from upper-front-left +
+                # strong ambient fill (shadows lifted, never black), zero
+                # specular (meshes are already roughness=1/metallic=0), and a
+                # matte slate-blue tint on all mesh color pickers.
+                server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
+                server.scene.configure_default_lights(enabled=False, cast_shadow=False)
+                _hide_axis6()
+                if _light_state["front"] is None:
+                    _light_state["front"] = server.scene.add_light_directional(
+                        "/lights/front", color=(255, 250, 244), intensity=1.6,
+                        cast_shadow=False,
+                    )
+                _light_state["front"].position = (-0.9, 1.5, 3.0)
+                _light_state["front"].visible = True
+                _light_state["front"].intensity = 1.6
+                try: _light_state["front"].color = (255, 250, 244)
+                except Exception: pass
+                if _light_state["ambient"] is None:
+                    _light_state["ambient"] = server.scene.add_light_ambient(
+                        "/lights/ambient", color=(235, 240, 255), intensity=0.5,
+                    )
+                _light_state["ambient"].visible = True
+                _light_state["ambient"].intensity = 0.5
+                try:
+                    _clay = (122, 138, 170)
+                    g_mesh_color.value = _clay
+                    g_src_color.value = _clay
+                    g_tgt_color.value = _clay
+                except Exception:
+                    pass
             elif mode == "6-axis studio":
                 # Soft surround: 6 directional lights (±X, ±Y, ±Z), each lower
                 # intensity so combined ≈ ambient but with shape cues from each
@@ -3372,6 +3421,12 @@ def main():
         render()
     g_feat_tgt_ds.on_update(_on_feat_tgt_ds)
     g_skel_style.on_update(lambda _e: render())
+    def _vis_upd(_e=None):
+        _VIS_FLAGS["src"] = bool(g_show_src.value)
+        _VIS_FLAGS["tgt"] = bool(g_show_tgt.value)
+        render()
+    g_show_src.on_update(_vis_upd)
+    g_show_tgt.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
     g_env_intensity.on_update(_apply_lighting)
