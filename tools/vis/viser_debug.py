@@ -1557,6 +1557,7 @@ def _boost_saturation(rgb_uint8, factor):
 
 
 _VIS_FLAGS = {"src": True, "tgt": True}
+_MAT = {"roughness": 1.0}
 
 def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
                                opacity=1.0, shading="smooth", double_sided=False,
@@ -1604,7 +1605,7 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
         alphaMode="BLEND" if opacity < 1.0 else "OPAQUE",
         baseColorFactor=[1.0, 1.0, 1.0, 1.0],
         metallicFactor=0.0,
-        roughnessFactor=1.0,
+        roughnessFactor=float(_MAT.get("roughness", 1.0)),
         doubleSided=bool(double_sided),
     )
     _h = server.scene.add_mesh_trimesh(name, mesh)
@@ -1931,6 +1932,9 @@ def main():
     g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
     g_show_src = server.gui.add_checkbox("show source/GT mesh", True)
     g_show_jlabels = server.gui.add_checkbox("show joint name labels", True)
+    g_mat_rough = server.gui.add_slider(
+        "mesh roughness (1=matte)", min=0.2, max=1.0, step=0.05, initial_value=1.0,
+    )
     g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
@@ -2982,6 +2986,7 @@ def main():
                 _light_state["ambient"].visible = True
                 _light_state["ambient"].intensity = 0.5
                 try:
+                    g_mat_rough.value = 0.65
                     _clay = (122, 138, 170)
                     g_mesh_color.value = _clay
                     g_src_color.value = _clay
@@ -3440,6 +3445,10 @@ def main():
     g_show_jlabels.on_update(lambda _e: render())
     g_fancy_joint.on_update(lambda _e: render())
     g_fancy_bone.on_update(lambda _e: render())
+    def _rough_upd(_e=None):
+        _MAT["roughness"] = float(g_mat_rough.value)
+        render()
+    g_mat_rough.on_update(_rough_upd)
     g_show_tgt.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
