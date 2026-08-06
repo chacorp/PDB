@@ -1920,6 +1920,7 @@ def main():
     g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
     g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
     g_show_src = server.gui.add_checkbox("show source/GT mesh", True)
+    g_show_jlabels = server.gui.add_checkbox("show joint name labels", True)
     g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
@@ -2187,7 +2188,7 @@ def main():
                 "/joints/pred", points=pred, colors=cols_pred, point_size=0.012
             )
             nodes.append(h)
-            if g_show_helpers.value:
+            if g_show_helpers.value and g_show_jlabels.value:
                 for _hj in helper_set:
                     if 0 <= _hj < J and _hj in helper_label_map:
                         try:
@@ -3426,6 +3427,7 @@ def main():
         _VIS_FLAGS["tgt"] = bool(g_show_tgt.value)
         render()
     g_show_src.on_update(_vis_upd)
+    g_show_jlabels.on_update(lambda _e: render())
     g_show_tgt.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
