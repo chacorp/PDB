@@ -1696,7 +1696,7 @@ def main():
             _kind, _idn = _nm.split("_", 1)
         except ValueError:
             continue
-        _ver = "v3" if "tta_proto_v3" in _p else "v2"
+        _ver = os.path.basename(os.path.dirname(os.path.dirname(_p))).replace("tta_proto_", "").replace("tta_", "")
         _z = np.load(_p)
         _J = model.num_joints
         _tta_data[f"{_ver}:{_nm}"] = {
@@ -1836,6 +1836,55 @@ def main():
     g_ortho = server.gui.add_checkbox(
         "orthographic (small-FOV fake)", False,
     )
+    # ── Exact camera control: live readout + numeric set (reproducible renders)
+    with server.gui.add_folder("Camera (exact)"):
+        g_cam_live = server.gui.add_text("live pos|look", "-", disabled=True)
+        g_cam_px = server.gui.add_number("cam x", initial_value=0.0, step=0.01)
+        g_cam_py = server.gui.add_number("cam y", initial_value=0.05, step=0.01)
+        g_cam_pz = server.gui.add_number("cam z", initial_value=1.8, step=0.01)
+        g_cam_lx = server.gui.add_number("look x", initial_value=0.0, step=0.01)
+        g_cam_ly = server.gui.add_number("look y", initial_value=0.05, step=0.01)
+        g_cam_lz = server.gui.add_number("look z", initial_value=0.0, step=0.01)
+        g_cam_read = server.gui.add_button("read current camera")
+        g_cam_apply = server.gui.add_button("apply to camera")
+
+    def _cam_fill_from(cam):
+        try:
+            p = cam.position; l = cam.look_at
+            g_cam_px.value = round(float(p[0]), 4); g_cam_py.value = round(float(p[1]), 4); g_cam_pz.value = round(float(p[2]), 4)
+            g_cam_lx.value = round(float(l[0]), 4); g_cam_ly.value = round(float(l[1]), 4); g_cam_lz.value = round(float(l[2]), 4)
+        except Exception:
+            pass
+
+    def _cam_read(_e=None):
+        for c in server.get_clients().values():
+            _cam_fill_from(c.camera); break
+
+    def _cam_apply(_e=None):
+        for c in server.get_clients().values():
+            try:
+                c.camera.position = (float(g_cam_px.value), float(g_cam_py.value), float(g_cam_pz.value))
+                c.camera.look_at = (float(g_cam_lx.value), float(g_cam_ly.value), float(g_cam_lz.value))
+            except Exception:
+                pass
+    g_cam_read.on_click(_cam_read)
+    g_cam_apply.on_click(_cam_apply)
+
+    @server.on_client_connect
+    def _cam_on_connect(client):
+        _first = {"done": False}
+
+        @client.camera.on_update
+        def _cam_live_update(_cam):
+            try:
+                p = client.camera.position; l = client.camera.look_at
+                g_cam_live.value = (f"p({p[0]:+.3f},{p[1]:+.3f},{p[2]:+.3f}) "
+                                    f"l({l[0]:+.3f},{l[1]:+.3f},{l[2]:+.3f})")
+                if not _first["done"]:
+                    _first["done"] = True
+                    _cam_fill_from(client.camera)
+            except Exception:
+                pass
     g_env_intensity = server.gui.add_slider(
         "env light intensity", min=0.0, max=2.0, step=0.05, initial_value=0.4,
     )
@@ -2040,7 +2089,7 @@ def main():
             "video fps", min=1, max=60, step=1, initial_value=30,
         )
         g_render_w = server.gui.add_slider(
-            "render width", min=256, max=1920, step=64, initial_value=720,
+            "render width", min=256, max=1920, step=64, initial_value=1200,
         )
         g_render_h = server.gui.add_slider(
             "render height", min=256, max=1080, step=64, initial_value=720,
