@@ -707,11 +707,14 @@ def _load_gt_bind_pos(nfs_dir: str, id_idx: int) -> np.ndarray | None:
     return np.load(p).astype(np.float32)
 
 
-def _fancy_skel_mesh(jp, parent, helper_set=None, bone_col=(180, 190, 205),
-                     joint_col=(255, 170, 60), helper_col=(255, 80, 200),
-                     ball_r=0.0035, waist_frac=0.12, waist_cap=0.010):
-    """Maya-style skeleton as ONE merged mesh: octahedral bones (4-sided
-    bipyramid, waist near the parent) + small icosphere joint balls."""
+def _fancy_skel_mesh(jp, parent, helper_set=None, bone_col=(200, 205, 214),
+                     joint_col=(150, 155, 165), helper_col=(255, 80, 200),
+                     ball_r=0.02, bone_r=0.012):
+    """Maya-style skeleton as ONE merged mesh.
+    - joint = icosphere (radius ball_r, gray)
+    - bone  = 4-sided pyramid: base ring tangent to the PARENT ball
+      (offset ball_r along the bone axis), apex AT the child joint.
+    Sizes auto-shrink for very short bones so geometry never overlaps."""
     import trimesh as _tm
     jp = np.asarray(jp, dtype=np.float32)
     Jn = jp.shape[0]
@@ -730,15 +733,16 @@ def _fancy_skel_mesh(jp, parent, helper_set=None, bone_col=(180, 190, 205),
         up = np.array([0.0, 1.0, 0.0]) if abs(z[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
         x = np.cross(up, z); x /= max(np.linalg.norm(x), 1e-9)
         y = np.cross(z, x)
-        r = min(L * waist_frac, waist_cap)
-        w = a + d * 0.2
+        base_off = min(ball_r, 0.35 * L)          # ring sits on the parent ball
+        r = min(bone_r, 0.30 * L)                 # base half-width
+        w = a + z * base_off
         ring = [w + x * r, w + y * r, w - x * r, w - y * r]
-        verts = np.array([a, *ring, b], dtype=np.float32)
-        faces = np.array([[0, 2, 1], [0, 3, 2], [0, 4, 3], [0, 1, 4],
-                          [5, 1, 2], [5, 2, 3], [5, 3, 4], [5, 4, 1]])
-        Vs.append(verts); Fs.append(faces + off); off += 6
-        Cs.append(np.tile(bone_col, (6, 1)))
-    ico = _tm.creation.icosphere(subdivisions=1, radius=1.0)
+        verts = np.array([*ring, b], dtype=np.float32)
+        faces = np.array([[0, 1, 2], [0, 2, 3],          # base cap (faces parent)
+                          [4, 1, 0], [4, 2, 1], [4, 3, 2], [4, 0, 3]])  # sides -> apex
+        Vs.append(verts); Fs.append(faces + off); off += 5
+        Cs.append(np.tile(bone_col, (5, 1)))
+    ico = _tm.creation.icosphere(subdivisions=2, radius=1.0)
     iv = np.asarray(ico.vertices, dtype=np.float32)
     ifc = np.asarray(ico.faces)
     for j in range(Jn):
@@ -1916,6 +1920,12 @@ def main():
         "skeleton style", options=["classic (lines)", "fancy (maya)"],
         initial_value="classic (lines)",
     )
+    g_fancy_joint = server.gui.add_slider(
+        "fancy joint size", min=0.002, max=0.08, step=0.002, initial_value=0.02,
+    )
+    g_fancy_bone = server.gui.add_slider(
+        "fancy bone thickness", min=0.002, max=0.05, step=0.002, initial_value=0.012,
+    )
     g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
     g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
     g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
@@ -2315,7 +2325,7 @@ def main():
         if g_w_show_joints.value and c["joint_pos_pred"] is not None:
             _jp = c["joint_pos_pred"]
             if g_skel_style.value.startswith("fancy"):
-                _fv, _ff, _fc = _fancy_skel_mesh(_jp, parent_idx, helper_set)
+                _fv, _ff, _fc = _fancy_skel_mesh(_jp, parent_idx, helper_set, ball_r=float(g_fancy_joint.value), bone_r=float(g_fancy_bone.value))
                 nodes.append(_add_per_vertex_color_mesh(
                     server, "/joints/weight_fancy", _fv, _ff, _fc,
                     opacity=1.0, shading=g_shading.value, double_sided=False, sat=1.0))
@@ -2447,7 +2457,7 @@ def main():
         # Skeleton on pred side: joint points + bones
         _fancy = g_skel_style.value.startswith("fancy")
         if _fancy and (g_show_joints.value or g_show_bones.value) and jp is not None:
-            _fv, _ff, _fc = _fancy_skel_mesh(jp, parent_idx, helper_set)
+            _fv, _ff, _fc = _fancy_skel_mesh(jp, parent_idx, helper_set, ball_r=float(g_fancy_joint.value), bone_r=float(g_fancy_bone.value))
             nodes.append(_add_per_vertex_color_mesh(
                 server, "/anim/skel_fancy", _fv, _ff, _fc,
                 opacity=1.0, shading=g_shading.value, double_sided=False, sat=1.0))
@@ -2662,7 +2672,7 @@ def main():
                     point_size=0.009))
                 if bones:
                     if g_skel_style.value.startswith("fancy"):
-                        _fv, _ff, _fc = _fancy_skel_mesh(jp, parent_idx, helper_set=helper_set)
+                        _fv, _ff, _fc = _fancy_skel_mesh(jp, parent_idx, helper_set=helper_set, ball_r=float(g_fancy_joint.value), bone_r=float(g_fancy_bone.value))
                         nodes.append(_add_per_vertex_color_mesh(
                             server, prefix + "/bones_fancy", _fv, _ff, _fc,
                             shading="smooth", sat=1.0))
@@ -3428,6 +3438,8 @@ def main():
         render()
     g_show_src.on_update(_vis_upd)
     g_show_jlabels.on_update(lambda _e: render())
+    g_fancy_joint.on_update(lambda _e: render())
+    g_fancy_bone.on_update(lambda _e: render())
     g_show_tgt.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
