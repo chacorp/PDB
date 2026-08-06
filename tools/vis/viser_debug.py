@@ -1557,7 +1557,14 @@ def _boost_saturation(rgb_uint8, factor):
 
 
 _VIS_FLAGS = {"src": True, "tgt": True}
-_MAT = {"roughness": 1.0, "trim_rings": 0}
+_MAT = {"roughness": 1.0, "trim_rings": 0, "err_absmax": 0.02}
+
+def _err_norm(err):
+    """Frame-independent error normalization: fixed absolute cap when
+    err_absmax>0 (same error = same color on every frame), else per-frame max."""
+    cap = float(_MAT.get("err_absmax", 0.0))
+    den = cap if cap > 0 else max(float(np.max(err)), 1e-8)
+    return np.clip(err / den, 0.0, 1.0)
 
 def _trim_boundary_faces(faces, n_rings):
     """Drop faces touching the open-boundary vertices, n_rings times.
@@ -1960,6 +1967,9 @@ def main():
     g_trim_rings = server.gui.add_slider(
         "trim open boundary (rings)", min=0, max=6, step=1, initial_value=0,
     )
+    g_err_absmax = server.gui.add_number(
+        "error color max (0=per-frame auto)", initial_value=0.02, step=0.005,
+    )
     g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
@@ -2257,7 +2267,7 @@ def main():
         if g_show_err.value and gt is not None:
             points = np.stack([gt, pred], axis=1).astype(np.float32)  # [J, 2, 3]
             err = np.linalg.norm(pred - gt, axis=-1)                  # [J]
-            err_n = err / max(err.max(), 1e-8)
+            err_n = _err_norm(err)
             cols = _viridis_rgb(err_n)
             h = server.scene.add_arrows(
                 "/joints/err_arrows", points=points, colors=cols,
@@ -2441,7 +2451,7 @@ def main():
 
         if g_err_color.value:
             err = np.linalg.norm(pred_v - gt_v, axis=-1)             # [V]
-            err_n = np.clip(err / max(err.max(), 1e-8), 0, 1)
+            err_n = _err_norm(err)
             # hot: black (err≈0) → red → yellow → white (err=max). At low err the
             # heat is black, alpha is also low → mesh_color shows through. At
             # high err alpha=1 → full white/yellow highlight.
@@ -2665,7 +2675,7 @@ def main():
         m = out["metrics"]
         if g_cross_err.value and m is not None:
             err = np.linalg.norm(out["tgt_pred_v"] - out["src_def_v"], axis=-1)
-            err_n = np.clip(err / max(err.max(), 1e-8), 0, 1)
+            err_n = _err_norm(err)
             heat = _err_rgb(err_n, g_err_cmap.value).astype(np.float32)
             base = np.tile(np.asarray(tgt_c, dtype=np.float32),
                            (out["tgt_pred_v"].shape[0], 1))
@@ -3478,6 +3488,10 @@ def main():
         _MAT["trim_rings"] = int(g_trim_rings.value)
         render()
     g_trim_rings.on_update(_trim_upd)
+    def _errmax_upd(_e=None):
+        _MAT["err_absmax"] = float(g_err_absmax.value)
+        render()
+    g_err_absmax.on_update(_errmax_upd)
     g_show_tgt.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
