@@ -29,6 +29,10 @@ CKPT_DIR=os.environ.get("TTA_CKPT","ckpts_hlbs/xcycle670_best_import")
 OUT=os.path.join(R,os.environ.get("TTA_OUT","tta_unified"))
 ITERS=int(os.environ.get("TTA_ITERS","300")); VIZ_EVERY=10; BATCH=8; LR=5e-3
 NEU_W=float(os.environ.get("TTA_NEU_W","0.25"))
+TR_W=float(os.environ.get("TTA_TR_W","1.0"))      # static-region W trust region
+TR_BIND=float(os.environ.get("TTA_TR_BIND","10.0"))  # bind drift penalty
+TR_S=float(os.environ.get("TTA_TR_S","0.1"))      # transform-scale trust
+RNEU_W=float(os.environ.get("TTA_RNEU_W","0.5"))  # retarget-neutral anchor (ICT mean src)
 dev="cuda"; SEED=42
 
 o=SimpleNamespace(**yaml.safe_load(open(f"{CKPT_DIR}/train_opts.yml"))); g=lambda k,d=None: getattr(o,k,d)
@@ -199,6 +203,27 @@ for kind,idn in TARGETS:
             (idx_hold if cn in hold_clips else idx_opt).append(i)
     n=len(gts)
     print(f"[{tag}] clips={len(cnames)} (hold {sorted(hold_clips)}) frames={n} opt={len(idx_opt)} hold={len(idx_hold)} V={tpl.shape[0]}",flush=True)
+    # per-vertex motion magnitude over all frames (for static trust region)
+    _mv=np.zeros(tpl.shape[0],dtype=np.float32); _mc=0
+    for _g in gts[::max(1,len(gts)//60)]:
+        _mv+=np.linalg.norm(_g.numpy()-tpl,axis=-1); _mc+=1
+    _mv/=max(_mc,1); _mv=np.clip(_mv/max(float(np.quantile(_mv,0.95)),1e-6),0,1)
+    static_w=torch.tensor(1.0-_mv,device=dev)                    # 1=static, 0=mover
+    # retarget-neutral: transforms from a canonical neutral source (ICT mean)
+    from utils.remesh_utils import ICT_face_model as _ICT
+    _ict=_ICT(base_dir=R)
+    _iv=np.asarray(_ict.neutral_verts,dtype=np.float32); _if=_ict.faces.astype(np.int64)
+    _in=_pvn(_iv,_if)
+    with torch.no_grad():
+        _src=torch.cat([torch.tensor(_iv,device=dev)[None],torch.tensor(_in,device=dev)[None]],dim=-1)
+        _di=torch.cat([torch.zeros(1,_iv.shape[0],3,device=dev),torch.tensor(_in,device=dev)[None],_src],dim=-1)
+        _z=m.lbs_exp_z_model(_di); _zf=_z.squeeze(1) if _z.dim()==3 else _z
+        _po=orig_pose(_zf.unsqueeze(1)).squeeze(1)
+        _r6=_po[:,:J*6].reshape(J,6); _lt=_po[:,J*6:].reshape(1,J,3,1)
+        _lR=orig_rot6d(_r6).reshape(1,J,3,3)
+        _top=torch.cat([_lR,_lt],dim=-1)
+        _bot=torch.cat([torch.zeros(1,J,1,3,device=dev),torch.ones(1,J,1,1,device=dev)],dim=-1)
+        T_srcneu=m._chain_hierarchy(torch.cat([_top,_bot],dim=-2)).detach()  # [1,J,4,4]
 
     # ---- capture + free vars ----
     cap={}
@@ -231,10 +256,10 @@ for kind,idn in TARGETS:
         return axis_angle_to_matrix(aa.reshape(-1,3))
     m._rot6d=rot6d_scaled
     m.lbs_pose_model=PoseWrap(orig_pose,s_trn,J)
-    opt=torch.optim.Adam([
-        {"params":[W_logit,bind_var],"lr":LR},
-        {"params":[s_rot,s_trn],"lr":1e-2},
-    ])
+    _groups=[{"params":[W_logit,bind_var],"lr":LR}]
+    if int(os.environ.get("TTA_OPT_SCALES","1")):
+        _groups.append({"params":[s_rot,s_trn],"lr":1e-2})
+    opt=torch.optim.Adam(_groups)
 
     def frame_rmse(i):
         with torch.no_grad():
@@ -283,6 +308,20 @@ for kind,idn in TARGETS:
             loss=loss+(per_v*wgt[i].to(dev)).mean()
             err[i]=float(np.sqrt(per_v.mean().item()))   # online score refresh
         loss=loss/BATCH
+        if TR_W>0:
+            _Wcur=torch.softmax(W_logit,dim=-1)
+            loss=loss+TR_W*(static_w[None,:,None]*(_Wcur-W0).abs()).sum(-1).mean()
+        if TR_BIND>0:
+            loss=loss+TR_BIND*((bind_var-jp0)**2).sum(-1).mean()
+        if TR_S>0:
+            loss=loss+TR_S*(((s_rot-1.0)**2).mean()+((s_trn-1.0)**2).mean())
+        if RNEU_W>0:
+            _Binv=m._build_B_inv(bind_var)
+            _G=torch.matmul(T_srcneu.reshape(J,4,4),_Binv.reshape(J,4,4)).reshape(1,J,4,4)
+            _vh=torch.cat([sv,torch.ones(1,sv.shape[1],1,device=dev)],dim=-1)
+            _vp=torch.einsum("bjkl,bnl->bnjk",_G[:,:,:3,:],_vh)
+            _rv=torch.einsum("bnj,bnjk->bnk",torch.softmax(W_logit,dim=-1),_vp)
+            loss=loss+RNEU_W*((_rv-sv)**2).sum(-1).mean()
         if NEU_W>0:
             pred_neu=m(sv,dis_neu,source_normal=sn,nfs_feat=ft)
             loss=loss+NEU_W*((pred_neu[0]-sv[0])**2).sum(-1).mean()
