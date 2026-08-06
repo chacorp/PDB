@@ -1557,7 +1557,26 @@ def _boost_saturation(rgb_uint8, factor):
 
 
 _VIS_FLAGS = {"src": True, "tgt": True}
-_MAT = {"roughness": 1.0}
+_MAT = {"roughness": 1.0, "trim_rings": 0}
+
+def _trim_boundary_faces(faces, n_rings):
+    """Drop faces touching the open-boundary vertices, n_rings times.
+    Kills ragged dark rim triangles on cropped scans (e.g. Multiface)."""
+    f = np.asarray(faces)
+    for _ in range(int(n_rings)):
+        e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], 0)
+        e = np.sort(e, 1)
+        _, idx, cnt = np.unique(e, axis=0, return_index=True, return_counts=True)
+        bverts = np.unique(e[idx[cnt == 1]])
+        if len(bverts) == 0:
+            break
+        bset = np.zeros(int(f.max()) + 1, dtype=bool)
+        bset[bverts] = True
+        keep = ~bset[f].any(1)
+        if keep.all():
+            break
+        f = f[keep]
+    return f
 
 def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
                                opacity=1.0, shading="smooth", double_sided=False,
@@ -1581,6 +1600,8 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
     else:
         rgba = rgb_uint8.copy()
         rgba[:, 3] = a_val
+    if _MAT.get("trim_rings", 0) and name.startswith(("/mesh", "/anim/", "/cross/", "/feat/")):
+        faces = _trim_boundary_faces(faces, _MAT["trim_rings"])
     mesh = trimesh.Trimesh(
         vertices=verts.astype(np.float32),
         faces=faces.astype(np.uint32),
@@ -1934,6 +1955,9 @@ def main():
     g_show_jlabels = server.gui.add_checkbox("show joint name labels", True)
     g_mat_rough = server.gui.add_slider(
         "mesh roughness (1=matte)", min=0.2, max=1.0, step=0.05, initial_value=1.0,
+    )
+    g_trim_rings = server.gui.add_slider(
+        "trim open boundary (rings)", min=0, max=6, step=1, initial_value=0,
     )
     g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
     # Global saturation boost for ALL displayed vertex colors (weight maps,
@@ -2986,7 +3010,7 @@ def main():
                 _light_state["ambient"].visible = True
                 _light_state["ambient"].intensity = 0.5
                 try:
-                    g_mat_rough.value = 0.65
+                    g_mat_rough.value = 0.45
                     _clay = (122, 138, 170)
                     g_mesh_color.value = _clay
                     g_src_color.value = _clay
@@ -3449,6 +3473,10 @@ def main():
         _MAT["roughness"] = float(g_mat_rough.value)
         render()
     g_mat_rough.on_update(_rough_upd)
+    def _trim_upd(_e=None):
+        _MAT["trim_rings"] = int(g_trim_rings.value)
+        render()
+    g_trim_rings.on_update(_trim_upd)
     g_show_tgt.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
