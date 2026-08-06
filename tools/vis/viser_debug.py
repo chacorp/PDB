@@ -1556,7 +1556,14 @@ def _boost_saturation(rgb_uint8, factor):
     return np.clip(hsv_to_rgb(hsv) * 255.0, 0, 255).astype(np.uint8)
 
 
-_VIS_FLAGS = {"src": True, "tgt": True}
+_VIS_FLAGS = {"src": True, "tgt": True, "neu": True}
+# mesh group routing by node name (src / neutral / predicted)
+def _mesh_group(name):
+    if name.startswith(("/anim/gt", "/cross/src", "/feat/src")): return "src"
+    if name.startswith(("/anim/neu", "/cross/tgt_neu")): return "neu"
+    if name == "/mesh" or name.startswith(("/anim/pred", "/feat/tgt")): return "pred"
+    if name.startswith("/cross/tgt"): return "pred"
+    return None
 _MAT = {"roughness": 1.0, "trim_rings": 0, "err_absmax": 0.02}
 
 _ERR_STATS = {}
@@ -1669,6 +1676,12 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
     from trimesh.visual.material import PBRMaterial
 
     rgb_uint8 = _boost_saturation(rgb_uint8[:, :3], sat) if rgb_uint8.shape[1] >= 3 else rgb_uint8
+    _grp = _mesh_group(name)
+    if _grp == "src":
+        opacity = float(_MAT.get("op_src", opacity))
+    elif _grp == "pred":
+        opacity = float(_MAT.get("op_pred", opacity))
+    # neutrals keep the passed-in (legacy) opacity untouched
     a_val = int(np.clip(opacity, 0.05, 1.0) * 255)
     if rgb_uint8.shape[1] == 3:
         a = np.full((rgb_uint8.shape[0], 1), a_val, dtype=np.uint8)
@@ -1708,9 +1721,11 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
     )
     _h = server.scene.add_mesh_trimesh(name, mesh)
     try:
-        if name.startswith(("/anim/gt", "/anim/neu", "/cross/src", "/feat/src")):
+        if _grp == "src":
             _h.visible = bool(_VIS_FLAGS.get("src", True))
-        elif name == "/mesh" or name.startswith(("/anim/pred", "/cross/tgt", "/feat/tgt")):
+        elif _grp == "neu":
+            _h.visible = bool(_VIS_FLAGS.get("neu", True))
+        elif _grp == "pred":
             _h.visible = bool(_VIS_FLAGS.get("tgt", True))
     except Exception:
         pass
@@ -2048,7 +2063,14 @@ def main():
     )
     g_err_face_only = server.gui.add_checkbox("error: face mask only", True)
     g_err_reset = server.gui.add_button("reset seq error scale")
-    g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
+    g_show_tgt = server.gui.add_checkbox("show predicted (deformed) mesh", True)
+    g_show_neu = server.gui.add_checkbox("show neutral mesh(es)", True)
+    g_op_src = server.gui.add_slider(
+        "source mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
+    )
+    g_op_pred = server.gui.add_slider(
+        "predicted mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
+    )
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
     g_global_sat = server.gui.add_slider(
@@ -3553,6 +3575,9 @@ def main():
     def _vis_upd(_e=None):
         _VIS_FLAGS["src"] = bool(g_show_src.value)
         _VIS_FLAGS["tgt"] = bool(g_show_tgt.value)
+        _VIS_FLAGS["neu"] = bool(g_show_neu.value)
+        _MAT["op_src"] = float(g_op_src.value)
+        _MAT["op_pred"] = float(g_op_pred.value)
         render()
     g_show_src.on_update(_vis_upd)
     g_show_jlabels.on_update(lambda _e: render())
@@ -3586,6 +3611,9 @@ def main():
         render()
     g_err_reset.on_click(_err_reset)
     g_show_tgt.on_update(_vis_upd)
+    g_show_neu.on_update(_vis_upd)
+    g_op_src.on_update(_vis_upd)
+    g_op_pred.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
     g_env_intensity.on_update(_apply_lighting)
