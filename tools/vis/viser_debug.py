@@ -1559,6 +1559,53 @@ def _boost_saturation(rgb_uint8, factor):
 _VIS_FLAGS = {"src": True, "tgt": True}
 _MAT = {"roughness": 1.0, "trim_rings": 0, "err_absmax": 0.02}
 
+_ERR_STATS = {}
+_BMASK_CACHE = {}
+
+def _boundary_vert_mask(faces, n_rings, n_verts):
+    """True for vertices within n_rings of an open boundary (excluded from
+    error stats/coloring — scan-crop rim junk)."""
+    key = (int(n_verts), int(len(faces)), int(n_rings))
+    if key in _BMASK_CACHE:
+        return _BMASK_CACHE[key]
+    f = np.asarray(faces)
+    excl = np.zeros(n_verts, dtype=bool)
+    for _ in range(int(n_rings)):
+        e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], 0)
+        e = np.sort(e, 1)
+        _, idx, cnt = np.unique(e, axis=0, return_index=True, return_counts=True)
+        bverts = np.unique(e[idx[cnt == 1]])
+        if len(bverts) == 0:
+            break
+        excl[bverts[bverts < n_verts]] = True
+        keep = ~excl[f].any(1)
+        f = f[keep]
+    _BMASK_CACHE[key] = excl
+    return excl
+
+def _err_norm2(err, key=None, faces=None):
+    """Sequence-adaptive, frame-independent error normalization.
+    modes: 'seq p95' (default) / 'seq max' — running stats per (target, clip),
+    stabilize after one pass; 'fixed' — absolute cap; 'per-frame' — legacy."""
+    mode = str(_MAT.get("err_mode", "seq p95"))
+    mask = None
+    if faces is not None and int(_MAT.get("err_face_rings", 3)) > 0:
+        mask = _boundary_vert_mask(faces, int(_MAT.get("err_face_rings", 3)), err.shape[0])
+    core = err[~mask] if (mask is not None and (~mask).any()) else err
+    if mode == "fixed":
+        den = float(_MAT.get("err_absmax", 0.02))
+    elif mode == "per-frame":
+        den = float(np.max(core))
+    else:
+        st = _ERR_STATS.setdefault(key, {"max": 1e-8, "p95": 1e-8})
+        st["max"] = max(st["max"], float(np.max(core)))
+        st["p95"] = max(st["p95"], float(np.percentile(core, 95)))
+        den = st["max"] if mode == "seq max" else st["p95"]
+    n = np.clip(err / max(den, 1e-8), 0.0, 1.0)
+    if mask is not None:
+        n[mask] = 0.0
+    return n
+
 def _err_norm(err):
     """Frame-independent error normalization: fixed absolute cap when
     err_absmax>0 (same error = same color on every frame), else per-frame max."""
@@ -1967,9 +2014,17 @@ def main():
     g_trim_rings = server.gui.add_slider(
         "trim open boundary (rings)", min=0, max=6, step=1, initial_value=0,
     )
-    g_err_absmax = server.gui.add_number(
-        "error color max (0=per-frame auto)", initial_value=0.02, step=0.005,
+    g_err_scale_mode = server.gui.add_dropdown(
+        "error scale", options=["seq p95", "seq max", "fixed", "per-frame"],
+        initial_value="seq p95",
     )
+    g_err_absmax = server.gui.add_number(
+        "error fixed max (for 'fixed')", initial_value=0.02, step=0.005,
+    )
+    g_err_face_rings = server.gui.add_slider(
+        "error: exclude boundary rings", min=0, max=8, step=1, initial_value=3,
+    )
+    g_err_reset = server.gui.add_button("reset seq error scale")
     g_show_tgt = server.gui.add_checkbox("show target/pred mesh", True)
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
@@ -2451,7 +2506,7 @@ def main():
 
         if g_err_color.value:
             err = np.linalg.norm(pred_v - gt_v, axis=-1)             # [V]
-            err_n = _err_norm(err)
+            err_n = _err_norm2(err, key=("anim", g_dataset.value, g_anim_seq.value, err.size), faces=cache.faces)
             # hot: black (err≈0) → red → yellow → white (err=max). At low err the
             # heat is black, alpha is also low → mesh_color shows through. At
             # high err alpha=1 → full white/yellow highlight.
@@ -2675,7 +2730,7 @@ def main():
         m = out["metrics"]
         if g_cross_err.value and m is not None:
             err = np.linalg.norm(out["tgt_pred_v"] - out["src_def_v"], axis=-1)
-            err_n = _err_norm(err)
+            err_n = _err_norm2(err, key=("cross", err.size), faces=tgt_td.faces)
             heat = _err_rgb(err_n, g_err_cmap.value).astype(np.float32)
             base = np.tile(np.asarray(tgt_c, dtype=np.float32),
                            (out["tgt_pred_v"].shape[0], 1))
@@ -3492,6 +3547,16 @@ def main():
         _MAT["err_absmax"] = float(g_err_absmax.value)
         render()
     g_err_absmax.on_update(_errmax_upd)
+    def _errmode_upd(_e=None):
+        _MAT["err_mode"] = str(g_err_scale_mode.value)
+        _MAT["err_face_rings"] = int(g_err_face_rings.value)
+        render()
+    g_err_scale_mode.on_update(_errmode_upd)
+    g_err_face_rings.on_update(_errmode_upd)
+    def _err_reset(_e=None):
+        _ERR_STATS.clear()
+        render()
+    g_err_reset.on_click(_err_reset)
     g_show_tgt.on_update(_vis_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
