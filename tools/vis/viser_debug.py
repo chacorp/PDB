@@ -2110,8 +2110,8 @@ def main():
     with server.gui.add_folder("Lighting"):
         g_lighting = server.gui.add_dropdown(
             "lighting mode",
-            options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "clay (figure)", "flat (no shadows)"],
-            initial_value="clay (figure)",
+            options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "clay (figure)", "clay v2 (reference)", "flat (no shadows)"],
+            initial_value="clay v2 (reference)",
         )
         g_env_intensity = server.gui.add_slider(
             "env light intensity", min=0.0, max=2.0, step=0.05, initial_value=0.4,
@@ -3161,8 +3161,13 @@ def main():
         try:
             mode = g_lighting.value
             _MAT["light_mode"] = "clay" if mode == "clay (figure)" else "other"
+            if mode == "clay v2 (reference)":
+                _MAT["light_mode"] = "clayv2"
             if _MAT["light_mode"] != "clay":
                 _hide_clay_lights()
+            if mode != "clay v2 (reference)" and _light_state.get("hemi") is not None:
+                try: _light_state["hemi"].visible = False
+                except Exception: pass
             # Always sync env from dropdowns first; modes may override.
             if mode == "hdri":
                 hdri = g_env_map.value
@@ -3218,6 +3223,55 @@ def main():
                     )
                 _light_state["ambient"].visible = True
                 _light_state["ambient"].intensity = 0.35  # ~0.2 ambient floor
+            elif mode == "clay v2 (reference)":
+                # Disney-figure reference look: hemisphere dome (soft top-down
+                # gradient, no hard edges) + gentle PARALLEL directional key
+                # (identical shading on every side-by-side mesh) + low ambient
+                # floor. Powder-blue tint + mild sheen. Per-mesh spots off.
+                server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
+                server.scene.configure_default_lights(enabled=False, cast_shadow=False)
+                _hide_axis6()
+                _hide_clay_lights()
+                _shadow = bool(_MAT.get("ground_shadow", False))
+                if _light_state.get("hemi") is None:
+                    _light_state["hemi"] = server.scene.add_light_hemisphere(
+                        "/lights/hemi", sky_color=(255, 255, 255),
+                        ground_color=(178, 184, 200), intensity=0.9,
+                    )
+                _light_state["hemi"].visible = True
+                try: _light_state["hemi"].intensity = float(_MAT.get("clay_ambient", 0.9))
+                except Exception: pass
+                # directional key: recreate when shadow flag changes
+                if _light_state.get("front_shadow_flag") != _shadow and _light_state.get("front") is not None:
+                    try: _light_state["front"].remove()
+                    except Exception: pass
+                    _light_state["front"] = None
+                if _light_state.get("front") is None:
+                    _light_state["front"] = server.scene.add_light_directional(
+                        "/lights/front", color=(255, 250, 244),
+                        intensity=float(_MAT.get("clay_key_int", 1.3)),
+                        cast_shadow=_shadow,
+                    )
+                    _light_state["front_shadow_flag"] = _shadow
+                _light_state["front"].position = (-1.2, 2.2, 3.0)
+                _light_state["front"].visible = True
+                try: _light_state["front"].intensity = float(_MAT.get("clay_key_int", 1.3))
+                except Exception: pass
+                if _light_state["ambient"] is None:
+                    _light_state["ambient"] = server.scene.add_light_ambient(
+                        "/lights/ambient", color=(240, 244, 255), intensity=0.25,
+                    )
+                _light_state["ambient"].visible = True
+                _light_state["ambient"].intensity = 0.25
+                try:
+                    g_mat_rough.value = 0.5
+                    g_clay_key.value = 1.3
+                    _clay2 = (168, 180, 206)
+                    g_mesh_color.value = _clay2
+                    g_src_color.value = _clay2
+                    g_tgt_color.value = _clay2
+                except Exception:
+                    pass
             elif mode == "clay (figure)":
                 # Disney-figure clay look: soft key from upper-front-left +
                 # strong ambient fill (shadows lifted, never black), zero
@@ -3732,6 +3786,9 @@ def main():
     g_op_pred.on_update(_vis_upd)
     def _clay_key_upd(_e=None):
         _MAT["clay_key_int"] = float(g_clay_key.value)
+        if _MAT.get("light_mode") == "clayv2" and _light_state.get("front") is not None:
+            try: _light_state["front"].intensity = float(g_clay_key.value)
+            except Exception: pass
         _MAT["clay_dx"] = float(g_clay_dx.value)
         _MAT["clay_dy"] = float(g_clay_dy.value)
         _MAT["clay_dz"] = float(g_clay_dz.value)
@@ -3746,7 +3803,11 @@ def main():
     g_clay_angle.on_update(_clay_key_upd)
     def _clay_amb_upd(_e=None):
         _MAT["clay_ambient"] = float(g_clay_ambient.value)
-        if _light_state.get("ambient") is not None:
+        if _MAT.get("light_mode") == "clayv2":
+            if _light_state.get("hemi") is not None:
+                try: _light_state["hemi"].intensity = float(g_clay_ambient.value)
+                except Exception: pass
+        elif _light_state.get("ambient") is not None:
             try: _light_state["ambient"].intensity = float(g_clay_ambient.value)
             except Exception: pass
     g_clay_ambient.on_update(_clay_amb_upd)
@@ -3754,7 +3815,8 @@ def main():
         _MAT["ground_shadow"] = bool(g_ground_shadow.value)
         _MAT["ground_y"] = float(g_ground_y.value)
         _sync_ground(server)
-        render()   # spot lights recreated with/without cast_shadow
+        _apply_lighting()   # v2 directional recreated with/without cast_shadow
+        render()            # clay spots likewise
     g_ground_shadow.on_update(_ground_upd)
     g_ground_y.on_update(_ground_upd)
     g_clay_penumbra.on_update(_clay_key_upd)
