@@ -3160,6 +3160,8 @@ def main():
     def _apply_lighting(_e=None):
         try:
             mode = g_lighting.value
+            _entering = (_MAT.get("_last_mode") != mode)
+            _MAT["_last_mode"] = mode
             _MAT["light_mode"] = "clay" if mode == "clay (figure)" else "other"
             if mode == "clay v2 (reference)":
                 _MAT["light_mode"] = "clayv2"
@@ -3228,7 +3230,11 @@ def main():
                 # gradient, no hard edges) + gentle PARALLEL directional key
                 # (identical shading on every side-by-side mesh) + low ambient
                 # floor. Powder-blue tint + mild sheen. Per-mesh spots off.
-                server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
+                # env HDRI/intensity act as an EXTRA image-based fill here.
+                _hdri = g_env_map.value
+                server.scene.configure_environment_map(
+                    hdri=None if _hdri == "none" else _hdri,
+                    environment_intensity=float(g_env_intensity.value))
                 server.scene.configure_default_lights(enabled=False, cast_shadow=False)
                 _hide_axis6()
                 _hide_clay_lights()
@@ -3263,15 +3269,16 @@ def main():
                     )
                 _light_state["ambient"].visible = True
                 _light_state["ambient"].intensity = 0.25
-                try:
-                    g_mat_rough.value = 0.5
-                    g_clay_key.value = 1.3
-                    _clay2 = (168, 180, 206)
-                    g_mesh_color.value = _clay2
-                    g_src_color.value = _clay2
-                    g_tgt_color.value = _clay2
-                except Exception:
-                    pass
+                if _entering:
+                    try:
+                        g_mat_rough.value = 0.5
+                        g_clay_key.value = 1.3
+                        _clay2 = (168, 180, 206)
+                        g_mesh_color.value = _clay2
+                        g_src_color.value = _clay2
+                        g_tgt_color.value = _clay2
+                    except Exception:
+                        pass
             elif mode == "clay (figure)":
                 # Disney-figure clay look: soft key from upper-front-left +
                 # strong ambient fill (shadows lifted, never black), zero
@@ -3290,14 +3297,15 @@ def main():
                     )
                 _light_state["ambient"].visible = True
                 _light_state["ambient"].intensity = float(_MAT.get("clay_ambient", 0.5))
-                try:
-                    g_mat_rough.value = 0.42
-                    _clay = (122, 138, 170)
-                    g_mesh_color.value = _clay
-                    g_src_color.value = _clay
-                    g_tgt_color.value = _clay
-                except Exception:
-                    pass
+                if _entering:
+                    try:
+                        g_mat_rough.value = 0.42
+                        _clay = (122, 138, 170)
+                        g_mesh_color.value = _clay
+                        g_src_color.value = _clay
+                        g_tgt_color.value = _clay
+                    except Exception:
+                        pass
             elif mode == "6-axis studio":
                 # Soft surround: 6 directional lights (±X, ±Y, ±Z), each lower
                 # intensity so combined ≈ ambient but with shape cues from each
