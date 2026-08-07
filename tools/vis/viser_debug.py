@@ -1575,30 +1575,55 @@ def _hide_clay_lights():
         except Exception: pass
 
 def _sync_clay_light(server, name, center):
-    """Clay mode: one point key-light per mesh, identical relative offset
-    (upper-front-left, close-in to limit spill onto neighbors). Handles don't
-    support live intensity -> recreate the light when intensity changes."""
+    """Clay mode: one SPOT key-light per mesh — positioned at the mesh center
+    plus a shared offset, aimed at the mesh center (identical relative angle
+    for every mesh). Cone/penumbra/distance bound the beam so neighbor meshes
+    get little to no spill. Handles lack live params -> recreate on change."""
     if _MAT.get("light_mode") != "clay":
         return
-    want = float(_MAT.get("clay_key_int", 4.0))
     _dx = float(_MAT.get("clay_dx", -0.45)); _dy = float(_MAT.get("clay_dy", 0.75)); _dz = float(_MAT.get("clay_dz", 1.25))
+    params = (
+        float(_MAT.get("clay_key_int", 4.0)),
+        float(_MAT.get("clay_angle", 50.0)),
+        float(_MAT.get("clay_penumbra", 0.4)),
+        float(_MAT.get("clay_distance", 3.5)),
+        round(_dx, 4), round(_dy, 4), round(_dz, 4),
+    )
     pos = (float(center[0]) + _dx, float(center[1]) + _dy, float(center[2]) + _dz)
+    dvec = np.array([-_dx, -_dy, -_dz], dtype=np.float64)   # aim back at mesh center
+    dvec = dvec / max(np.linalg.norm(dvec), 1e-9)
+    # mesh-group visibility: hidden mesh -> its light off too (no spill)
+    _grp = _mesh_group(name)
+    _mesh_visible = True
+    if _grp == "src":
+        _mesh_visible = bool(_VIS_FLAGS.get("src", True))
+    elif _grp == "neu":
+        _mesh_visible = bool(_VIS_FLAGS.get("neu", True))
+    elif _grp == "pred":
+        _mesh_visible = bool(_VIS_FLAGS.get("tgt", True))
     ent = _CLAY_PLIGHTS.get(name)
-    if ent is not None and abs(ent[1] - want) > 1e-6:
+    if ent is not None and ent[1] != params:
         try: ent[0].remove()
         except Exception: pass
         ent = None; _CLAY_PLIGHTS.pop(name, None)
     if ent is None:
         try:
-            h = server.scene.add_light_point(
-                "/lights/clay" + name, color=(255, 250, 244), intensity=want)
-            _CLAY_PLIGHTS[name] = (h, want)
-            ent = (h, want)
+            h = server.scene.add_light_spot(
+                "/lights/clay" + name, color=(255, 250, 244),
+                intensity=params[0],
+                angle=float(np.radians(params[1])),
+                penumbra=params[2],
+                distance=params[3],
+                direction=tuple(dvec),
+                cast_shadow=False,
+            )
+            _CLAY_PLIGHTS[name] = (h, params)
+            ent = (h, params)
         except Exception:
             return
     try:
         ent[0].position = pos
-        ent[0].visible = True
+        ent[0].visible = _mesh_visible
     except Exception:
         pass
 _BMASK_CACHE = {}
@@ -2078,6 +2103,15 @@ def main():
         g_clay_dx = server.gui.add_number("clay key dx", initial_value=-0.45, step=0.05)
         g_clay_dy = server.gui.add_number("clay key dy", initial_value=0.75, step=0.05)
         g_clay_dz = server.gui.add_number("clay key dz", initial_value=1.25, step=0.05)
+        g_clay_angle = server.gui.add_slider(
+            "clay key cone angle (deg)", min=10, max=90, step=2, initial_value=50,
+        )
+        g_clay_penumbra = server.gui.add_slider(
+            "clay key penumbra (soft edge)", min=0.0, max=1.0, step=0.05, initial_value=0.4,
+        )
+        g_clay_distance = server.gui.add_slider(
+            "clay key distance cutoff (0=inf)", min=0.0, max=10.0, step=0.25, initial_value=3.5,
+        )
 
     with server.gui.add_folder("Mesh display"):
         g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
@@ -3669,11 +3703,17 @@ def main():
         _MAT["clay_dx"] = float(g_clay_dx.value)
         _MAT["clay_dy"] = float(g_clay_dy.value)
         _MAT["clay_dz"] = float(g_clay_dz.value)
+        _MAT["clay_angle"] = float(g_clay_angle.value)
+        _MAT["clay_penumbra"] = float(g_clay_penumbra.value)
+        _MAT["clay_distance"] = float(g_clay_distance.value)
         render()   # lights are recreated/repositioned during render
     g_clay_key.on_update(_clay_key_upd)
     g_clay_dx.on_update(_clay_key_upd)
     g_clay_dy.on_update(_clay_key_upd)
     g_clay_dz.on_update(_clay_key_upd)
+    g_clay_angle.on_update(_clay_key_upd)
+    g_clay_penumbra.on_update(_clay_key_upd)
+    g_clay_distance.on_update(_clay_key_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
     g_env_intensity.on_update(_apply_lighting)
