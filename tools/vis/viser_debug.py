@@ -3259,7 +3259,11 @@ def main():
                         cast_shadow=_shadow,
                     )
                     _light_state["front_shadow_flag"] = _shadow
-                _light_state["front"].position = (-1.2, 2.2, 3.0)
+                _light_state["front"].position = (
+                    float(_MAT.get("clay_dx", -0.45)) * 2.4,
+                    float(_MAT.get("clay_dy", 0.75)) * 2.4,
+                    float(_MAT.get("clay_dz", 1.25)) * 2.4,
+                )
                 _light_state["front"].visible = True
                 try: _light_state["front"].intensity = float(_MAT.get("clay_key_int", 1.3))
                 except Exception: pass
@@ -3795,7 +3799,13 @@ def main():
     def _clay_key_upd(_e=None):
         _MAT["clay_key_int"] = float(g_clay_key.value)
         if _MAT.get("light_mode") == "clayv2" and _light_state.get("front") is not None:
-            try: _light_state["front"].intensity = float(g_clay_key.value)
+            try:
+                _light_state["front"].intensity = float(g_clay_key.value)
+                _light_state["front"].position = (
+                    float(g_clay_dx.value) * 2.4,
+                    float(g_clay_dy.value) * 2.4,
+                    float(g_clay_dz.value) * 2.4,
+                )
             except Exception: pass
         _MAT["clay_dx"] = float(g_clay_dx.value)
         _MAT["clay_dy"] = float(g_clay_dy.value)
