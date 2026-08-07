@@ -1770,7 +1770,11 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
     import trimesh
     from trimesh.visual.material import PBRMaterial
 
-    rgb_uint8 = _boost_saturation(rgb_uint8[:, :3], sat) if rgb_uint8.shape[1] >= 3 else rgb_uint8
+    # Uniform tints (color pickers) bypass the saturation boost — WYSIWYG;
+    # the boost only applies to per-vertex colors (weight/error heatmaps).
+    _uniform = rgb_uint8.shape[0] > 1 and bool(np.all(rgb_uint8[:1] == rgb_uint8))
+    if not _uniform and rgb_uint8.shape[1] >= 3:
+        rgb_uint8 = _boost_saturation(rgb_uint8[:, :3], sat)
     _grp = _mesh_group(name)
     if _grp == "src":
         opacity = float(_MAT.get("op_src", opacity))
