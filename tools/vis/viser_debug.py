@@ -1570,29 +1570,34 @@ _ERR_STATS = {}
 _CLAY_PLIGHTS = {}
 
 def _hide_clay_lights():
-    for _h in _CLAY_PLIGHTS.values():
-        try: _h.visible = False
+    for _e in _CLAY_PLIGHTS.values():
+        try: _e[0].visible = False
         except Exception: pass
 
 def _sync_clay_light(server, name, center):
     """Clay mode: one point key-light per mesh, identical relative offset
-    (upper-front-left of that mesh) so side-by-side meshes are lit alike."""
+    (upper-front-left, close-in to limit spill onto neighbors). Handles don't
+    support live intensity -> recreate the light when intensity changes."""
     if _MAT.get("light_mode") != "clay":
         return
-    pos = (float(center[0]) - 0.55, float(center[1]) + 1.0, float(center[2]) + 1.9)
-    h = _CLAY_PLIGHTS.get(name)
-    if h is None:
+    want = float(_MAT.get("clay_key_int", 4.0))
+    pos = (float(center[0]) - 0.45, float(center[1]) + 0.75, float(center[2]) + 1.25)
+    ent = _CLAY_PLIGHTS.get(name)
+    if ent is not None and abs(ent[1] - want) > 1e-6:
+        try: ent[0].remove()
+        except Exception: pass
+        ent = None; _CLAY_PLIGHTS.pop(name, None)
+    if ent is None:
         try:
             h = server.scene.add_light_point(
-                "/lights/clay" + name, color=(255, 250, 244),
-                intensity=float(_MAT.get("clay_key_int", 8.0)))
-            _CLAY_PLIGHTS[name] = h
+                "/lights/clay" + name, color=(255, 250, 244), intensity=want)
+            _CLAY_PLIGHTS[name] = (h, want)
+            ent = (h, want)
         except Exception:
             return
     try:
-        h.position = pos
-        h.intensity = float(_MAT.get("clay_key_int", 8.0))
-        h.visible = True
+        ent[0].position = pos
+        ent[0].visible = True
     except Exception:
         pass
 _BMASK_CACHE = {}
@@ -2108,7 +2113,7 @@ def main():
         "predicted mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
     )
     g_clay_key = server.gui.add_slider(
-        "clay key intensity", min=0.5, max=30.0, step=0.5, initial_value=8.0,
+        "clay key intensity", min=0.5, max=30.0, step=0.5, initial_value=4.0,
     )
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
@@ -2963,6 +2968,7 @@ def main():
         with render_lock:
             try:
                 _clear()
+                _hide_clay_lights()   # re-lit only for meshes drawn this frame
                 mode = g_mode.value
                 if mode == "bind_pose":
                     _render_bind_pose()
@@ -3652,9 +3658,7 @@ def main():
     g_op_pred.on_update(_vis_upd)
     def _clay_key_upd(_e=None):
         _MAT["clay_key_int"] = float(g_clay_key.value)
-        for _h in _CLAY_PLIGHTS.values():
-            try: _h.intensity = float(g_clay_key.value)
-            except Exception: pass
+        render()   # lights are recreated at the new intensity during render
     g_clay_key.on_update(_clay_key_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
