@@ -1567,6 +1567,34 @@ def _mesh_group(name):
 _MAT = {"roughness": 1.0, "trim_rings": 0, "err_absmax": 0.02}
 
 _ERR_STATS = {}
+_CLAY_PLIGHTS = {}
+
+def _hide_clay_lights():
+    for _h in _CLAY_PLIGHTS.values():
+        try: _h.visible = False
+        except Exception: pass
+
+def _sync_clay_light(server, name, center):
+    """Clay mode: one point key-light per mesh, identical relative offset
+    (upper-front-left of that mesh) so side-by-side meshes are lit alike."""
+    if _MAT.get("light_mode") != "clay":
+        return
+    pos = (float(center[0]) - 0.55, float(center[1]) + 1.0, float(center[2]) + 1.9)
+    h = _CLAY_PLIGHTS.get(name)
+    if h is None:
+        try:
+            h = server.scene.add_light_point(
+                "/lights/clay" + name, color=(255, 250, 244),
+                intensity=float(_MAT.get("clay_key_int", 8.0)))
+            _CLAY_PLIGHTS[name] = h
+        except Exception:
+            return
+    try:
+        h.position = pos
+        h.intensity = float(_MAT.get("clay_key_int", 8.0))
+        h.visible = True
+    except Exception:
+        pass
 _BMASK_CACHE = {}
 
 def _boundary_vert_mask(faces, n_rings, n_verts):
@@ -1642,15 +1670,22 @@ def _err_norm(err):
     den = cap if cap > 0 else max(float(np.max(err)), 1e-8)
     return np.clip(err / den, 0.0, 1.0)
 
-def _trim_boundary_faces(faces, n_rings):
-    """Drop faces touching the open-boundary vertices, n_rings times.
-    Kills ragged dark rim triangles on cropped scans (e.g. Multiface)."""
+def _trim_boundary_faces(faces, n_rings, verts=None):
+    """Drop faces touching BOTTOM open-boundary vertices, n_rings times.
+    Only the neck-bottom rim is trimmed (boundary verts in the lowest 30%
+    y-band) — eye/lip/nostril hole boundaries are left intact."""
     f = np.asarray(faces)
+    ythr = None
+    if verts is not None:
+        v = np.asarray(verts)
+        ythr = float(v[:, 1].min() + 0.30 * (v[:, 1].max() - v[:, 1].min()))
     for _ in range(int(n_rings)):
         e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], 0)
         e = np.sort(e, 1)
         _, idx, cnt = np.unique(e, axis=0, return_index=True, return_counts=True)
         bverts = np.unique(e[idx[cnt == 1]])
+        if ythr is not None and len(bverts):
+            bverts = bverts[np.asarray(verts)[bverts, 1] < ythr]
         if len(bverts) == 0:
             break
         bset = np.zeros(int(f.max()) + 1, dtype=bool)
@@ -1690,7 +1725,7 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
         rgba = rgb_uint8.copy()
         rgba[:, 3] = a_val
     if _MAT.get("trim_rings", 0) and name.startswith(("/mesh", "/anim/", "/cross/", "/feat/")):
-        faces = _trim_boundary_faces(faces, _MAT["trim_rings"])
+        faces = _trim_boundary_faces(faces, _MAT["trim_rings"], verts=verts)
     mesh = trimesh.Trimesh(
         vertices=verts.astype(np.float32),
         faces=faces.astype(np.uint32),
@@ -1720,6 +1755,7 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
         doubleSided=bool(double_sided),
     )
     _h = server.scene.add_mesh_trimesh(name, mesh)
+    _sync_clay_light(server, name, np.asarray(verts).mean(0))
     try:
         if _grp == "src":
             _h.visible = bool(_VIS_FLAGS.get("src", True))
@@ -2070,6 +2106,9 @@ def main():
     )
     g_op_pred = server.gui.add_slider(
         "predicted mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
+    )
+    g_clay_key = server.gui.add_slider(
+        "clay key intensity", min=0.5, max=30.0, step=0.5, initial_value=8.0,
     )
     # Global saturation boost for ALL displayed vertex colors (weight maps,
     # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
@@ -3041,6 +3080,9 @@ def main():
     def _apply_lighting(_e=None):
         try:
             mode = g_lighting.value
+            _MAT["light_mode"] = "clay" if mode == "clay (figure)" else "other"
+            if _MAT["light_mode"] != "clay":
+                _hide_clay_lights()
             # Always sync env from dropdowns first; modes may override.
             if mode == "hdri":
                 hdri = g_env_map.value
@@ -3104,16 +3146,10 @@ def main():
                 server.scene.configure_environment_map(hdri=None, environment_intensity=0.0)
                 server.scene.configure_default_lights(enabled=False, cast_shadow=False)
                 _hide_axis6()
-                if _light_state["front"] is None:
-                    _light_state["front"] = server.scene.add_light_directional(
-                        "/lights/front", color=(255, 250, 244), intensity=1.6,
-                        cast_shadow=False,
-                    )
-                _light_state["front"].position = (-0.9, 1.5, 3.0)
-                _light_state["front"].visible = True
-                _light_state["front"].intensity = 1.6
-                try: _light_state["front"].color = (255, 250, 244)
-                except Exception: pass
+                # key light is PER-MESH point lights (see _sync_clay_light);
+                # the global directional stays off in clay mode.
+                if _light_state["front"] is not None:
+                    _light_state["front"].visible = False
                 if _light_state["ambient"] is None:
                     _light_state["ambient"] = server.scene.add_light_ambient(
                         "/lights/ambient", color=(235, 240, 255), intensity=0.5,
@@ -3614,6 +3650,12 @@ def main():
     g_show_neu.on_update(_vis_upd)
     g_op_src.on_update(_vis_upd)
     g_op_pred.on_update(_vis_upd)
+    def _clay_key_upd(_e=None):
+        _MAT["clay_key_int"] = float(g_clay_key.value)
+        for _h in _CLAY_PLIGHTS.values():
+            try: _h.intensity = float(g_clay_key.value)
+            except Exception: pass
+    g_clay_key.on_update(_clay_key_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
     g_env_intensity.on_update(_apply_lighting)
