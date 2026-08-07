@@ -1581,7 +1581,8 @@ def _sync_clay_light(server, name, center):
     if _MAT.get("light_mode") != "clay":
         return
     want = float(_MAT.get("clay_key_int", 4.0))
-    pos = (float(center[0]) - 0.45, float(center[1]) + 0.75, float(center[2]) + 1.25)
+    _dx = float(_MAT.get("clay_dx", -0.45)); _dy = float(_MAT.get("clay_dy", 0.75)); _dz = float(_MAT.get("clay_dz", 1.25))
+    pos = (float(center[0]) + _dx, float(center[1]) + _dy, float(center[2]) + _dz)
     ent = _CLAY_PLIGHTS.get(name)
     if ent is not None and abs(ent[1] - want) > 1e-6:
         try: ent[0].remove()
@@ -2054,72 +2055,79 @@ def main():
                     _cam_fill_from(client.camera)
             except Exception:
                 pass
-    g_env_intensity = server.gui.add_slider(
-        "env light intensity", min=0.0, max=2.0, step=0.05, initial_value=0.4,
-    )
-    g_env_map = server.gui.add_dropdown(
-        "env HDRI",
-        options=["none", "warehouse", "studio", "apartment", "city",
-                 "dawn", "forest", "lobby", "night", "park", "sunset"],
-        initial_value="studio",
-    )
-    g_lighting = server.gui.add_dropdown(
-        "lighting mode",
-        options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "clay (figure)", "flat (no shadows)"],
-        initial_value="clay (figure)",
-    )
-    # Color pickers — used wherever the renderer needs a single tint
-    # (bind_pose mesh, anim neutral, mesh-only fallbacks, cross side meshes).
-    # Per-vertex modes (weight heatmap / anim error map) ignore these.
-    g_skel_style = server.gui.add_dropdown(
-        "skeleton style", options=["classic (lines)", "fancy (maya)"],
-        initial_value="classic (lines)",
-    )
-    g_fancy_joint = server.gui.add_slider(
-        "fancy joint size", min=0.002, max=0.08, step=0.002, initial_value=0.02,
-    )
-    g_fancy_bone = server.gui.add_slider(
-        "fancy bone thickness", min=0.002, max=0.05, step=0.002, initial_value=0.012,
-    )
-    g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
-    g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
-    g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
-    g_show_src = server.gui.add_checkbox("show source/GT mesh", True)
-    g_show_jlabels = server.gui.add_checkbox("show joint name labels", True)
-    g_mat_rough = server.gui.add_slider(
-        "mesh roughness (1=matte)", min=0.2, max=1.0, step=0.05, initial_value=1.0,
-    )
-    g_trim_rings = server.gui.add_slider(
-        "trim open boundary (rings)", min=0, max=6, step=1, initial_value=0,
-    )
-    g_err_scale_mode = server.gui.add_dropdown(
-        "error scale", options=["seq p95", "seq max", "fixed", "per-frame"],
-        initial_value="seq p95",
-    )
-    g_err_absmax = server.gui.add_number(
-        "error fixed max (for 'fixed')", initial_value=0.02, step=0.005,
-    )
-    g_err_face_rings = server.gui.add_slider(
-        "error: exclude boundary rings", min=0, max=8, step=1, initial_value=3,
-    )
-    g_err_face_only = server.gui.add_checkbox("error: face mask only", True)
-    g_err_reset = server.gui.add_button("reset seq error scale")
-    g_show_tgt = server.gui.add_checkbox("show predicted (deformed) mesh", True)
-    g_show_neu = server.gui.add_checkbox("show neutral mesh(es)", True)
-    g_op_src = server.gui.add_slider(
-        "source mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
-    )
-    g_op_pred = server.gui.add_slider(
-        "predicted mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
-    )
-    g_clay_key = server.gui.add_slider(
-        "clay key intensity", min=0.5, max=30.0, step=0.5, initial_value=4.0,
-    )
-    # Global saturation boost for ALL displayed vertex colors (weight maps,
-    # error heatmaps, tints). 1.0 = raw; 1.5 = nicer punch; 2.0+ = vivid.
-    g_global_sat = server.gui.add_slider(
-        "global saturation", min=0.5, max=3.0, step=0.1, initial_value=1.5,
-    )
+    with server.gui.add_folder("Lighting"):
+        g_lighting = server.gui.add_dropdown(
+            "lighting mode",
+            options=["hdri", "front only", "matplotlib (mild flat)", "6-axis studio", "clay (figure)", "flat (no shadows)"],
+            initial_value="clay (figure)",
+        )
+        g_env_intensity = server.gui.add_slider(
+            "env light intensity", min=0.0, max=2.0, step=0.05, initial_value=0.4,
+        )
+        g_env_map = server.gui.add_dropdown(
+            "env HDRI",
+            options=["none", "warehouse", "studio", "apartment", "city",
+                     "dawn", "forest", "lobby", "night", "park", "sunset"],
+            initial_value="studio",
+        )
+        g_clay_key = server.gui.add_slider(
+            "clay key intensity", min=0.5, max=30.0, step=0.5, initial_value=4.0,
+        )
+        # key offset relative to each mesh center; closer = stronger key +
+        # less spill onto neighbor meshes (inverse-square falloff)
+        g_clay_dx = server.gui.add_number("clay key dx", initial_value=-0.45, step=0.05)
+        g_clay_dy = server.gui.add_number("clay key dy", initial_value=0.75, step=0.05)
+        g_clay_dz = server.gui.add_number("clay key dz", initial_value=1.25, step=0.05)
+
+    with server.gui.add_folder("Mesh display"):
+        g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
+        g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
+        g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
+        g_mat_rough = server.gui.add_slider(
+            "mesh roughness (1=matte)", min=0.2, max=1.0, step=0.05, initial_value=1.0,
+        )
+        g_trim_rings = server.gui.add_slider(
+            "trim open boundary (rings)", min=0, max=6, step=1, initial_value=0,
+        )
+        g_global_sat = server.gui.add_slider(
+            "global saturation", min=0.5, max=3.0, step=0.1, initial_value=1.5,
+        )
+        g_show_src = server.gui.add_checkbox("show source/GT mesh", True)
+        g_show_tgt = server.gui.add_checkbox("show predicted (deformed) mesh", True)
+        g_show_neu = server.gui.add_checkbox("show neutral mesh(es)", True)
+        g_op_src = server.gui.add_slider(
+            "source mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
+        )
+        g_op_pred = server.gui.add_slider(
+            "predicted mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
+        )
+
+    with server.gui.add_folder("Skeleton"):
+        g_skel_style = server.gui.add_dropdown(
+            "skeleton style", options=["classic (lines)", "fancy (maya)"],
+            initial_value="classic (lines)",
+        )
+        g_fancy_joint = server.gui.add_slider(
+            "fancy joint size", min=0.002, max=0.08, step=0.002, initial_value=0.02,
+        )
+        g_fancy_bone = server.gui.add_slider(
+            "fancy bone thickness", min=0.002, max=0.05, step=0.002, initial_value=0.012,
+        )
+        g_show_jlabels = server.gui.add_checkbox("show joint name labels", True)
+
+    with server.gui.add_folder("Error vis"):
+        g_err_scale_mode = server.gui.add_dropdown(
+            "error scale", options=["seq p95", "seq max", "fixed", "per-frame"],
+            initial_value="seq p95",
+        )
+        g_err_absmax = server.gui.add_number(
+            "error fixed max (for 'fixed')", initial_value=0.02, step=0.005,
+        )
+        g_err_face_rings = server.gui.add_slider(
+            "error: exclude boundary rings", min=0, max=8, step=1, initial_value=3,
+        )
+        g_err_face_only = server.gui.add_checkbox("error: face mask only", True)
+        g_err_reset = server.gui.add_button("reset seq error scale")
 
     with server.gui.add_folder("Bind pose"):
         g_show_gt = server.gui.add_checkbox("show GT joints", True)
@@ -2595,7 +2603,7 @@ def main():
 
         if g_err_color.value:
             err = np.linalg.norm(pred_v - gt_v, axis=-1)             # [V]
-            err_n = _err_norm2(err, key=("anim", g_dataset.value, g_anim_seq.value, err.size), faces=cache.faces, verts=c["neu_v"])
+            err_n = _err_norm2(err, key=("anim", g_dataset.value, g_anim_seq.value, err.size), faces=cache.faces, verts=gt_v)
             # hot: black (err≈0) → red → yellow → white (err=max). At low err the
             # heat is black, alpha is also low → mesh_color shows through. At
             # high err alpha=1 → full white/yellow highlight.
@@ -3658,8 +3666,14 @@ def main():
     g_op_pred.on_update(_vis_upd)
     def _clay_key_upd(_e=None):
         _MAT["clay_key_int"] = float(g_clay_key.value)
-        render()   # lights are recreated at the new intensity during render
+        _MAT["clay_dx"] = float(g_clay_dx.value)
+        _MAT["clay_dy"] = float(g_clay_dy.value)
+        _MAT["clay_dz"] = float(g_clay_dz.value)
+        render()   # lights are recreated/repositioned during render
     g_clay_key.on_update(_clay_key_upd)
+    g_clay_dx.on_update(_clay_key_upd)
+    g_clay_dy.on_update(_clay_key_upd)
+    g_clay_dz.on_update(_clay_key_upd)
     g_w_show_joints.on_update(lambda _e: render())
     g_w_mark_joint.on_update(lambda _e: render())
     g_env_intensity.on_update(_apply_lighting)
