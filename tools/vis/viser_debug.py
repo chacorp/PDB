@@ -1564,7 +1564,9 @@ def _mesh_group(name):
     if name == "/mesh" or name.startswith(("/anim/pred", "/feat/tgt")): return "pred"
     if name.startswith("/cross/tgt"): return "pred"
     return None
-_MAT = {"roughness": 1.0, "trim_rings": 0, "err_absmax": 0.02}
+_MAT = {"roughness": 0.4, "trim_rings": 0, "err_absmax": 0.02,
+        "clay_key_int": 1.3, "clay_dx": 0.0, "clay_dy": 0.7, "clay_dz": 0.9,
+        "clay_ambient": 0.3}
 
 _ERR_STATS = {}
 _CLAY_PLIGHTS = {}
@@ -1607,7 +1609,7 @@ def _sync_clay_light(server, name, center):
     get little to no spill. Handles lack live params -> recreate on change."""
     if _MAT.get("light_mode") != "clay":
         return
-    _dx = float(_MAT.get("clay_dx", -0.45)); _dy = float(_MAT.get("clay_dy", 0.75)); _dz = float(_MAT.get("clay_dz", 1.25))
+    _dx = float(_MAT.get("clay_dx", 0.0)); _dy = float(_MAT.get("clay_dy", 0.7)); _dz = float(_MAT.get("clay_dz", 0.9))
     params = (
         float(_MAT.get("clay_key_int", 4.0)),
         float(_MAT.get("clay_angle", 50.0)),
@@ -2114,7 +2116,7 @@ def main():
             initial_value="clay v2 (reference)",
         )
         g_env_intensity = server.gui.add_slider(
-            "env light intensity", min=0.0, max=2.0, step=0.05, initial_value=0.4,
+            "env light intensity", min=0.0, max=2.0, step=0.05, initial_value=0.1,
         )
         g_env_map = server.gui.add_dropdown(
             "env HDRI",
@@ -2123,13 +2125,13 @@ def main():
             initial_value="studio",
         )
         g_clay_key = server.gui.add_slider(
-            "clay key intensity", min=0.5, max=30.0, step=0.5, initial_value=4.0,
+            "clay key intensity", min=0.5, max=30.0, step=0.5, initial_value=1.3,
         )
         # key offset relative to each mesh center; closer = stronger key +
         # less spill onto neighbor meshes (inverse-square falloff)
-        g_clay_dx = server.gui.add_number("clay key dx", initial_value=-0.45, step=0.05)
-        g_clay_dy = server.gui.add_number("clay key dy", initial_value=0.75, step=0.05)
-        g_clay_dz = server.gui.add_number("clay key dz", initial_value=1.25, step=0.05)
+        g_clay_dx = server.gui.add_number("clay key dx", initial_value=0.0, step=0.05)
+        g_clay_dy = server.gui.add_number("clay key dy", initial_value=0.7, step=0.05)
+        g_clay_dz = server.gui.add_number("clay key dz", initial_value=0.9, step=0.05)
         g_clay_angle = server.gui.add_slider(
             "clay key cone angle (deg)", min=10, max=90, step=2, initial_value=50,
         )
@@ -2140,17 +2142,17 @@ def main():
             "clay key distance cutoff (0=inf)", min=0.0, max=10.0, step=0.25, initial_value=3.5,
         )
         g_clay_ambient = server.gui.add_slider(
-            "clay ambient (global fill)", min=0.0, max=2.0, step=0.05, initial_value=0.5,
+            "clay ambient (global fill)", min=0.0, max=2.0, step=0.05, initial_value=0.3,
         )
         g_ground_shadow = server.gui.add_checkbox("ground + shadows", False)
         g_ground_y = server.gui.add_number("ground height (y)", initial_value=-1.75, step=0.05)
 
     with server.gui.add_folder("Mesh display"):
-        g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
-        g_src_color  = server.gui.add_rgb("cross src color",      (209, 159, 130))
-        g_tgt_color  = server.gui.add_rgb("cross tgt color",      (127, 174, 201))
+        g_mesh_color = server.gui.add_rgb("mesh color (default)", (89, 128, 212))
+        g_src_color  = server.gui.add_rgb("cross src color",      (89, 128, 212))
+        g_tgt_color  = server.gui.add_rgb("cross tgt color",      (89, 128, 212))
         g_mat_rough = server.gui.add_slider(
-            "mesh roughness (1=matte)", min=0.2, max=1.0, step=0.05, initial_value=1.0,
+            "mesh roughness (1=matte)", min=0.2, max=1.0, step=0.05, initial_value=0.4,
         )
         g_trim_rings = server.gui.add_slider(
             "trim open boundary (rings)", min=0, max=6, step=1, initial_value=0,
@@ -3245,7 +3247,7 @@ def main():
                         ground_color=(178, 184, 200), intensity=0.9,
                     )
                 _light_state["hemi"].visible = True
-                try: _light_state["hemi"].intensity = float(_MAT.get("clay_ambient", 0.9))
+                try: _light_state["hemi"].intensity = float(_MAT.get("clay_ambient", 0.3))
                 except Exception: pass
                 # directional key: recreate when shadow flag changes
                 if _light_state.get("front_shadow_flag") != _shadow and _light_state.get("front") is not None:
@@ -3260,9 +3262,9 @@ def main():
                     )
                     _light_state["front_shadow_flag"] = _shadow
                 _light_state["front"].position = (
-                    float(_MAT.get("clay_dx", -0.45)) * 2.4,
-                    float(_MAT.get("clay_dy", 0.75)) * 2.4,
-                    float(_MAT.get("clay_dz", 1.25)) * 2.4,
+                    float(_MAT.get("clay_dx", 0.0)) * 2.4,
+                    float(_MAT.get("clay_dy", 0.7)) * 2.4,
+                    float(_MAT.get("clay_dz", 0.9)) * 2.4,
                 )
                 _light_state["front"].visible = True
                 try: _light_state["front"].intensity = float(_MAT.get("clay_key_int", 1.3))
@@ -3275,9 +3277,9 @@ def main():
                 _light_state["ambient"].intensity = 0.25
                 if _entering:
                     try:
-                        g_mat_rough.value = 0.5
+                        g_mat_rough.value = 0.4
                         g_clay_key.value = 1.3
-                        _clay2 = (168, 180, 206)
+                        _clay2 = (89, 128, 212)
                         g_mesh_color.value = _clay2
                         g_src_color.value = _clay2
                         g_tgt_color.value = _clay2
