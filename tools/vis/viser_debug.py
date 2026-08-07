@@ -1568,6 +1568,32 @@ _MAT = {"roughness": 1.0, "trim_rings": 0, "err_absmax": 0.02}
 
 _ERR_STATS = {}
 _CLAY_PLIGHTS = {}
+_GROUND = {"h": None, "y": None}
+
+def _sync_ground(server):
+    on = bool(_MAT.get("ground_shadow", False))
+    y = float(_MAT.get("ground_y", -1.75))
+    if not on:
+        if _GROUND["h"] is not None:
+            try: _GROUND["h"].visible = False
+            except Exception: pass
+        return
+    if _GROUND["h"] is None or _GROUND["y"] != y:
+        if _GROUND["h"] is not None:
+            try: _GROUND["h"].remove()
+            except Exception: pass
+        S = 40.0
+        v = np.array([[-S, y, -S], [S, y, -S], [S, y, S], [-S, y, S]], dtype=np.float32)
+        f = np.array([[0, 2, 1], [0, 3, 2]], dtype=np.uint32)
+        try:
+            _GROUND["h"] = server.scene.add_mesh_simple(
+                "/ground", vertices=v, faces=f, color=(245, 245, 247),
+                side="double", cast_shadow=False, receive_shadow=True)
+            _GROUND["y"] = y
+        except Exception:
+            return
+    try: _GROUND["h"].visible = True
+    except Exception: pass
 
 def _hide_clay_lights():
     for _e in _CLAY_PLIGHTS.values():
@@ -1588,6 +1614,7 @@ def _sync_clay_light(server, name, center):
         float(_MAT.get("clay_penumbra", 0.4)),
         float(_MAT.get("clay_distance", 3.5)),
         round(_dx, 4), round(_dy, 4), round(_dz, 4),
+        bool(_MAT.get("ground_shadow", False)),
     )
     pos = (float(center[0]) + _dx, float(center[1]) + _dy, float(center[2]) + _dz)
     dvec = np.array([-_dx, -_dy, -_dz], dtype=np.float64)   # aim back at mesh center
@@ -1615,7 +1642,7 @@ def _sync_clay_light(server, name, center):
                 penumbra=params[2],
                 distance=params[3],
                 direction=tuple(dvec),
-                cast_shadow=False,
+                cast_shadow=bool(_MAT.get("ground_shadow", False)),
             )
             _CLAY_PLIGHTS[name] = (h, params)
             ent = (h, params)
@@ -2112,6 +2139,11 @@ def main():
         g_clay_distance = server.gui.add_slider(
             "clay key distance cutoff (0=inf)", min=0.0, max=10.0, step=0.25, initial_value=3.5,
         )
+        g_clay_ambient = server.gui.add_slider(
+            "clay ambient (global fill)", min=0.0, max=2.0, step=0.05, initial_value=0.5,
+        )
+        g_ground_shadow = server.gui.add_checkbox("ground + shadows", False)
+        g_ground_y = server.gui.add_number("ground height (y)", initial_value=-1.75, step=0.05)
 
     with server.gui.add_folder("Mesh display"):
         g_mesh_color = server.gui.add_rgb("mesh color (default)", (105, 105, 105))
@@ -3203,9 +3235,9 @@ def main():
                         "/lights/ambient", color=(235, 240, 255), intensity=0.5,
                     )
                 _light_state["ambient"].visible = True
-                _light_state["ambient"].intensity = 0.5
+                _light_state["ambient"].intensity = float(_MAT.get("clay_ambient", 0.5))
                 try:
-                    g_mat_rough.value = 0.45
+                    g_mat_rough.value = 0.42
                     _clay = (122, 138, 170)
                     g_mesh_color.value = _clay
                     g_src_color.value = _clay
@@ -3712,6 +3744,19 @@ def main():
     g_clay_dy.on_update(_clay_key_upd)
     g_clay_dz.on_update(_clay_key_upd)
     g_clay_angle.on_update(_clay_key_upd)
+    def _clay_amb_upd(_e=None):
+        _MAT["clay_ambient"] = float(g_clay_ambient.value)
+        if _light_state.get("ambient") is not None:
+            try: _light_state["ambient"].intensity = float(g_clay_ambient.value)
+            except Exception: pass
+    g_clay_ambient.on_update(_clay_amb_upd)
+    def _ground_upd(_e=None):
+        _MAT["ground_shadow"] = bool(g_ground_shadow.value)
+        _MAT["ground_y"] = float(g_ground_y.value)
+        _sync_ground(server)
+        render()   # spot lights recreated with/without cast_shadow
+    g_ground_shadow.on_update(_ground_upd)
+    g_ground_y.on_update(_ground_upd)
     g_clay_penumbra.on_update(_clay_key_upd)
     g_clay_distance.on_update(_clay_key_upd)
     g_w_show_joints.on_update(lambda _e: render())
