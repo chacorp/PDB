@@ -3516,32 +3516,56 @@ def main():
             orig = int(g_frame.value)
             saved = 0
             t0 = _t.time()
+            vid_path = out_dir / g_render_name.value
+            fps_int = int(g_render_fps.value)
+            encode_ok = False
+            _writer = None
+            try:
+                import imageio
+                _writer = imageio.get_writer(
+                    str(vid_path), fps=fps_int, codec="libx264",
+                    macro_block_size=1, quality=8,
+                )
+            except Exception:
+                _writer = None   # fall back to PNG+ffmpeg path below
+            _keep = bool(g_render_keep_pngs.value)
             for f in range(nf):
                 if g_mode.value in ("anim", "cross"):
                     g_frame.value = f
                     render()
-                _t.sleep(0.04)   # allow scene message to transmit + render
+                _t.sleep(0.02)
                 try:
+                    # JPEG transport: 2-3x faster encode+transfer than PNG,
+                    # visually lossless after H.264 anyway.
                     img = client.get_render(
-                        height=H, width=W, transport_format="png",
+                        height=H, width=W, transport_format="jpeg",
                     )
-                    _imwrite(out_dir / f"frame_{f:04d}.png", img)
+                    if _writer is not None:
+                        _writer.append_data(img)     # stream straight to video
+                    if _keep or _writer is None:
+                        _imwrite(out_dir / f"frame_{f:04d}.png", img)
                     saved += 1
                 except Exception as ex:
                     g_render_progress.value = f"frame {f} failed: {ex}"
                     break
                 if f % 5 == 0:
+                    _fps_now = (f + 1) / max(_t.time() - t0, 1e-6)
                     g_render_progress.value = (
                         f"rendering {f+1}/{nf} ({(f+1)/nf*100:.0f}%) "
-                        f"elapsed {_t.time()-t0:.1f}s"
+                        f"elapsed {_t.time()-t0:.1f}s ({_fps_now:.1f} fps)"
                     )
-            vid_path = out_dir / g_render_name.value
-            # Try imageio writer first (auto-uses imageio-ffmpeg plugin, which
-            # pip-installs its own ffmpeg binary on demand). Fall back to system
-            # ffmpeg subprocess. If both fail, PNGs remain on disk.
-            fps_int = int(g_render_fps.value)
-            encode_ok = False
-            try:
+            if _writer is not None:
+                try:
+                    _writer.close()
+                    encode_ok = saved > 0
+                    g_render_progress.value = (
+                        f"DONE  {saved} frames → {vid_path}  ({_t.time()-t0:.1f}s)"
+                    )
+                except Exception:
+                    encode_ok = False
+            ex_io = "streamed-writer unavailable"
+            if not encode_ok:
+              try:
                 import imageio
                 with imageio.get_writer(
                     str(vid_path), fps=fps_int, codec="libx264",
@@ -3553,7 +3577,7 @@ def main():
                 g_render_progress.value = (
                     f"DONE  {saved} frames → {vid_path}  ({_t.time()-t0:.1f}s)"
                 )
-            except Exception as ex_io:
+              except Exception as ex_io:
                 try:
                     cmd = ["ffmpeg", "-y", "-framerate", str(fps_int),
                            "-i", str(out_dir / "frame_%04d.png"),
