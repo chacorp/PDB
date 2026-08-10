@@ -2383,6 +2383,9 @@ def main():
         g_render_keep_pngs = server.gui.add_checkbox(
             "keep per-frame PNGs (uncheck = video only)", False,
         )
+        g_render_headless = server.gui.add_checkbox(
+            "headless capture client (server-side, faster over remote)", True,
+        )
         g_preview_btn = server.gui.add_button(
             "Preview (capture current frame @ chosen W/H)"
         )
@@ -3508,6 +3511,43 @@ def main():
                 g_render_progress.value = "no client connected — open the page first"
                 return
             client = clients[0]
+            _hbrowser = None; _hpw = None
+            if bool(g_render_headless.value):
+                try:
+                    from playwright.sync_api import sync_playwright
+                    g_render_progress.value = "starting headless capture client..."
+                    _pre = set(server.get_clients().keys())
+                    _hpw = sync_playwright().start()
+                    _hbrowser = _hpw.chromium.launch(headless=True, args=[
+                        "--no-sandbox", "--use-angle=swiftshader",
+                        "--enable-unsafe-swiftshader", "--disable-dev-shm-usage"])
+                    _hpage = _hbrowser.new_page(
+                        viewport={"width": int(g_render_w.value), "height": int(g_render_h.value)})
+                    _hpage.goto(f"http://localhost:{args.port}",
+                                wait_until="load", timeout=30000)
+                    _hcli = None
+                    for _ in range(120):
+                        _new = set(server.get_clients().keys()) - _pre
+                        if _new:
+                            _hcli = server.get_clients()[sorted(_new)[0]]
+                            break
+                        _t.sleep(0.25)
+                    if _hcli is not None:
+                        try:   # clone the user's camera pose onto the capture client
+                            _sc = client.camera
+                            _hcli.camera.position = tuple(_sc.position)
+                            _hcli.camera.look_at = tuple(_sc.look_at)
+                            _hcli.camera.fov = float(_sc.fov)
+                            _hcli.camera.up_direction = tuple(_sc.up_direction)
+                        except Exception:
+                            pass
+                        _t.sleep(1.0)
+                        client = _hcli
+                        g_render_progress.value = "headless capture client ready"
+                    else:
+                        g_render_progress.value = "headless client timeout — using your browser"
+                except Exception as _hex:
+                    g_render_progress.value = f"headless unavailable ({_hex}) — using your browser"
             out_dir = Path(g_render_dir.value).expanduser() / _compute_render_subpath()
             out_dir.mkdir(parents=True, exist_ok=True)
             g_render_subpath.value = _compute_render_subpath()
@@ -3602,6 +3642,12 @@ def main():
                 g_render_progress.value = (
                     g_render_progress.value + f"  (cleaned {deleted} PNGs)"
                 )
+            if _hbrowser is not None:
+                try: _hbrowser.close()
+                except Exception: pass
+            if _hpw is not None:
+                try: _hpw.stop()
+                except Exception: pass
             # Restore original frame (always — even on encode failure)
             if g_mode.value in ("anim", "cross"):
                 g_frame.value = orig
