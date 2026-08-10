@@ -2067,11 +2067,11 @@ def main():
     # ── Exact camera control: live readout + numeric set (reproducible renders)
     with server.gui.add_folder("Camera (exact)"):
         g_cam_live = server.gui.add_text("live pos|look", "-", disabled=True)
-        g_cam_px = server.gui.add_number("cam x", initial_value=0.0, step=0.01)
-        g_cam_py = server.gui.add_number("cam y", initial_value=0.05, step=0.01)
-        g_cam_pz = server.gui.add_number("cam z", initial_value=1.8, step=0.01)
-        g_cam_lx = server.gui.add_number("look x", initial_value=0.0, step=0.01)
-        g_cam_ly = server.gui.add_number("look y", initial_value=0.05, step=0.01)
+        g_cam_px = server.gui.add_number("cam x", initial_value=-1.35, step=0.01)
+        g_cam_py = server.gui.add_number("cam y", initial_value=-0.02, step=0.01)
+        g_cam_pz = server.gui.add_number("cam z", initial_value=52.47, step=0.01)
+        g_cam_lx = server.gui.add_number("look x", initial_value=-1.35, step=0.01)
+        g_cam_ly = server.gui.add_number("look y", initial_value=-0.02, step=0.01)
         g_cam_lz = server.gui.add_number("look z", initial_value=0.0, step=0.01)
         g_cam_read = server.gui.add_button("read current camera")
         g_cam_apply = server.gui.add_button("apply to camera")
@@ -2384,7 +2384,7 @@ def main():
             "keep per-frame PNGs (uncheck = video only)", False,
         )
         g_render_headless = server.gui.add_checkbox(
-            "headless capture client (server-side, faster over remote)", True,
+            "headless capture client (server-side, faster over remote)", False,
         )
         g_preview_btn = server.gui.add_button(
             "Preview (capture current frame @ chosen W/H)"
