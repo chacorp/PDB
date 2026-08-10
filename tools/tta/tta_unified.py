@@ -141,6 +141,12 @@ def load_target(kind,idn):
                 cn=os.path.basename(p).replace(".npy","")
                 if os.path.isdir(p): clips[cn]=sorted(glob.glob(os.path.join(p,"*.npy")))
                 else: clips.setdefault(cn,[]).append(p)
+        # ids without released motion data (e.g. M1/M2): synthesized clips via
+        # shared-topology displacement transfer (see tools/clips/gen_biwi_pseudo_clips.py)
+        for p in sorted(glob.glob(os.path.join("biwi_pseudo_clips",f"{idn}_*"))):
+            if os.path.isdir(p):
+                fr=sorted(glob.glob(os.path.join(p,"*.npy")))
+                if fr: clips[os.path.basename(p)]=fr
         align=False
     else:
         mesh=pickle.load(open(_resolve("VOCA-COMA/voca_templates.pkl"),"rb"))
