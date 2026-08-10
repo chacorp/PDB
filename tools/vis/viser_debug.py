@@ -2110,7 +2110,12 @@ def main():
                                     f"l({l[0]:+.3f},{l[1]:+.3f},{l[2]:+.3f})")
                 if not _first["done"]:
                     _first["done"] = True
-                    _cam_fill_from(client.camera)
+                    # apply the stored default pose to the new client
+                    try:
+                        client.camera.position = (float(g_cam_px.value), float(g_cam_py.value), float(g_cam_pz.value))
+                        client.camera.look_at = (float(g_cam_lx.value), float(g_cam_ly.value), float(g_cam_lz.value))
+                    except Exception:
+                        pass
             except Exception:
                 pass
     with server.gui.add_folder("Lighting"):
