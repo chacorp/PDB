@@ -3992,6 +3992,99 @@ def main():
     _refresh_clip_options()
     _apply_lighting()   # set initial env intensity so first paint isn't blown out
     render()
+
+    def _batch_capture():
+        """VISER_BATCH=<cfg.json>: unattended high-res capture of cross-mode
+        cases through a server-side headless client (real three.js render)."""
+        import json as _json, time as _t2, math as _m
+        cfg_path = os.environ.get("VISER_BATCH")
+        if not cfg_path:
+            return
+        try:
+            cfg = _json.load(open(cfg_path))
+            out_dir = Path(cfg.get("out", "batch_captures"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            W = int(cfg.get("width", 1600)); Hh = int(cfg.get("height", 1600))
+            fov_deg = float(cfg.get("fov", 10.0))
+            from playwright.sync_api import sync_playwright
+            _pre = set(server.get_clients().keys())
+            _pw = sync_playwright().start()
+            _br = _pw.chromium.launch(headless=True, args=[
+                "--no-sandbox", "--use-angle=swiftshader",
+                "--enable-unsafe-swiftshader", "--disable-dev-shm-usage"])
+            _pg = _br.new_page(viewport={"width": min(W, 1920), "height": min(Hh, 1080)})
+            _pg.goto(f"http://localhost:{args.port}", wait_until="load", timeout=60000)
+            cli = None
+            for _ in range(240):
+                _new = set(server.get_clients().keys()) - _pre
+                if _new:
+                    cli = server.get_clients()[sorted(_new)[0]]
+                    break
+                _t2.sleep(0.25)
+            if cli is None:
+                print("[batch] no headless client — abort", flush=True)
+                return
+            _t2.sleep(2.0)
+            g_mode.value = "cross"; _t2.sleep(0.5)
+            g_src_ds.value = cfg["src"]["ds"]; _t2.sleep(0.5)
+            g_src_id.value = int(cfg["src"]["id"]); _t2.sleep(0.8)
+            _refresh_clip_options(); _t2.sleep(0.5)
+            g_clip.value = cfg["src"]["clip"]; _t2.sleep(0.8)
+            g_frame.value = int(cfg["src"]["frame"]); _t2.sleep(0.5)
+            g_cross_err.value = False
+            g_cross_joints.value = "off"
+            g_show_tgt_neu.value = False
+            _t2.sleep(0.5)
+            for case in cfg["cases"]:
+                try:
+                    ds = case["ds"]; idx = int(case["id"])
+                    meth = case.get("method", "hlbs (ours)")
+                    only_src = bool(case.get("source_only", False))
+                    g_show_src.value = bool(only_src)
+                    g_tgt_ds.value = ds; _t2.sleep(0.4)
+                    g_tgt_id.value = idx; _t2.sleep(0.4)
+                    g_compare_method.value = meth; _t2.sleep(0.4)
+                    render(); _t2.sleep(1.5)
+                    src_td = topos[g_src_ds.value]; tgt_td = topos[ds]
+                    exp = (g_clip.value, int(g_frame.value))
+                    o = cache.retarget(src_td, int(g_src_id.value), exp, tgt_td, idx)
+                    if o["tgt_pred_v"] is None or o["src_def_v"] is None:
+                        print("[batch] SKIP (no pred)", case, flush=True); continue
+                    def _wd(v):
+                        return float(v[:, 0].max() - v[:, 0].min())
+                    src_w = max(_wd(o["src_neu_v"]), _wd(o["src_def_v"]))
+                    tgt_w = max(_wd(o["tgt_neu_v"]), _wd(o["tgt_pred_v"]))
+                    gap = max(src_w, tgt_w) * 0.20
+                    slot_w = max(src_w, tgt_w) + gap
+                    if only_src:
+                        v = o["src_def_v"].copy(); v[:, 0] += -1 * slot_w
+                    else:
+                        v = o["tgt_pred_v"].copy(); v[:, 0] += 1 * slot_w
+                    c = v.mean(0); half = float(np.abs(v - c).max()) * 1.12
+                    dist = half / _m.tan(_m.radians(fov_deg / 2))
+                    try: cli.camera.fov = _m.radians(fov_deg)
+                    except Exception: pass
+                    cli.camera.position = (float(c[0]), float(c[1]) + 0.02 * half,
+                                           float(c[2]) + dist)
+                    cli.camera.look_at = (float(c[0]), float(c[1]), float(c[2]))
+                    _t2.sleep(1.0)
+                    img = cli.get_render(height=Hh, width=W, transport_format="png")
+                    nm = case.get("name") or "%s_%s_%s" % (
+                        ds, tgt_td.id_names[idx], meth.split()[0])
+                    import imageio.v2 as _iio
+                    _iio.imwrite(str(out_dir / (nm + ".png")), img)
+                    print("[batch] SAVED", nm, flush=True)
+                except Exception:
+                    print("[batch] CASE_EXC:", traceback.format_exc(), flush=True)
+            print("[batch] BATCH_DONE", flush=True)
+            try:
+                _br.close(); _pw.stop()
+            except Exception:
+                pass
+        except Exception:
+            print("[batch] EXC:", traceback.format_exc(), flush=True)
+
+    threading.Thread(target=_batch_capture, daemon=True).start()
     print(f"[viser] http://localhost:{args.port}")
     print("[viser] (use ssh -L if remote: ssh -L {p}:localhost:{p} <host>)".format(p=args.port))
     while True:
