@@ -1776,11 +1776,14 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
     if not _uniform and rgb_uint8.shape[1] >= 3:
         rgb_uint8 = _boost_saturation(rgb_uint8[:, :3], sat)
     _grp = _mesh_group(name)
+    # global "mesh opacity" slider (passed in) composes multiplicatively with
+    # the per-group sliders — previously op_src/op_pred REPLACED the passed
+    # value once set, permanently disabling the global slider for src/pred.
     if _grp == "src":
-        opacity = float(_MAT.get("op_src", opacity))
+        opacity = float(opacity) * float(_MAT.get("op_src", 1.0))
     elif _grp == "pred":
-        opacity = float(_MAT.get("op_pred", opacity))
-    # neutrals keep the passed-in (legacy) opacity untouched
+        opacity = float(opacity) * float(_MAT.get("op_pred", 1.0))
+    # neutrals: global slider only
     a_val = int(np.clip(opacity, 0.05, 1.0) * 255)
     if rgb_uint8.shape[1] == 3:
         a = np.full((rgb_uint8.shape[0], 1), a_val, dtype=np.uint8)
@@ -2169,9 +2172,9 @@ def main():
         g_global_sat = server.gui.add_slider(
             "global saturation", min=0.5, max=3.0, step=0.1, initial_value=1.5,
         )
-        g_show_src = server.gui.add_checkbox("show source/GT mesh", True)
-        g_show_tgt = server.gui.add_checkbox("show predicted (deformed) mesh", True)
-        g_show_neu = server.gui.add_checkbox("show neutral mesh(es)", True)
+        g_vis_src = server.gui.add_checkbox("show source/GT mesh", True)
+        g_vis_tgt = server.gui.add_checkbox("show predicted (deformed) mesh", True)
+        g_vis_neu = server.gui.add_checkbox("show neutral mesh(es)", True)
         g_op_src = server.gui.add_slider(
             "source mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
         )
@@ -3836,13 +3839,13 @@ def main():
     g_feat_tgt_ds.on_update(_on_feat_tgt_ds)
     g_skel_style.on_update(lambda _e: render())
     def _vis_upd(_e=None):
-        _VIS_FLAGS["src"] = bool(g_show_src.value)
-        _VIS_FLAGS["tgt"] = bool(g_show_tgt.value)
-        _VIS_FLAGS["neu"] = bool(g_show_neu.value)
+        _VIS_FLAGS["src"] = bool(g_vis_src.value)
+        _VIS_FLAGS["tgt"] = bool(g_vis_tgt.value)
+        _VIS_FLAGS["neu"] = bool(g_vis_neu.value)
         _MAT["op_src"] = float(g_op_src.value)
         _MAT["op_pred"] = float(g_op_pred.value)
         render()
-    g_show_src.on_update(_vis_upd)
+    g_vis_src.on_update(_vis_upd)
     g_show_jlabels.on_update(lambda _e: render())
     g_fancy_joint.on_update(lambda _e: render())
     g_fancy_bone.on_update(lambda _e: render())
@@ -3873,8 +3876,8 @@ def main():
         _ERR_STATS.clear()
         render()
     g_err_reset.on_click(_err_reset)
-    g_show_tgt.on_update(_vis_upd)
-    g_show_neu.on_update(_vis_upd)
+    g_vis_tgt.on_update(_vis_upd)
+    g_vis_neu.on_update(_vis_upd)
     g_op_src.on_update(_vis_upd)
     g_op_pred.on_update(_vis_upd)
     def _clay_key_upd(_e=None):
@@ -4044,6 +4047,9 @@ def main():
                     g_tgt_ds.value = ds; _t2.sleep(0.4)
                     g_tgt_id.value = idx; _t2.sleep(0.4)
                     g_compare_method.value = meth; _t2.sleep(0.4)
+                    if case.get("tgt_color"):
+                        g_tgt_color.value = tuple(int(x) for x in case["tgt_color"])
+                        _t2.sleep(0.2)
                     render(); _t2.sleep(1.5)
                     src_td = topos[g_src_ds.value]; tgt_td = topos[ds]
                     exp = (g_clip.value, int(g_frame.value))
