@@ -1,0 +1,8 @@
+{
+ "version": 4,
+ "description": "v3 (2026-07-08) \u2014 36 helpers / J=82. Leaf-level parenting: mouth helpers as siblings of lip leaves (Mouth_Center_Top/Bottom); NEW L/R_Brow_Root helper above GT-supervised eyebrow leaves + 2 fine/side; +2/side eye (eyelid level); +2/side lower-cheek (L/R_Cheek, nasolabial); +1 pair nose (Nose_Base_Rotate level). Nose_Base_Position restored to base. Over-provision now, prune by influence later. [helper0: emptied 2026-08-13]",
+ "default_sigma": 0.4,
+ "default_init_anchor_lambda": 0.1,
+ "helpers": [],
+ "mirror_pairs": []
+}
