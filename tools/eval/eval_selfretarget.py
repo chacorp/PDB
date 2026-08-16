@@ -29,6 +29,7 @@ _REPO = '/source/inyup/NeuralFacialAnimation'
 os.chdir(_REPO)
 sys.path.insert(0, _REPO)
 sys.path.insert(0, f'{_REPO}/tools/vis')
+sys.path.insert(0, f'{_REPO}/tools/eval')
 import viser_debug as vd
 from scipy.spatial import cKDTree
 
@@ -49,7 +50,7 @@ def main():
     ap.add_argument('--targets', nargs='+', required=True,
                     help='ds:id  (mf:12 | biwi:M3 | coma:FaceTalk_...)')
     ap.add_argument('--methods', nargs='+', default=['hlbs'],
-                    choices=['hlbs', 'nfr', 'nfs'])
+                    choices=['hlbs', 'nfr', 'nfs', 'dt'])
     ap.add_argument('--clips', type=int, default=0, help='max clips per target (0=all)')
     ap.add_argument('--frames-per-clip', type=int, default=10)
     ap.add_argument('--out', default='eval_out/selfretarget')
@@ -79,7 +80,7 @@ def main():
 
         # face mask (model's own plateau mask if available)
         try:
-            fmask = vd._face_vert_mask(neu)
+            fmask = vd._face_vert_mask(neu, model)   # may not exist under this name
         except Exception:
             fmask = np.ones(len(neu), bool)
 
@@ -113,6 +114,13 @@ def main():
                 preds = {}
                 if 'hlbs' in args.methods:
                     preds['hlbs'] = o['tgt_pred_v']
+                if 'dt' in args.methods:
+                    try:
+                        from baseline_dt import dt_self_transfer
+                        preds['dt'] = dt_self_transfer((ds, id_name), o['src_neu_v'], gt,
+                                                       o['tgt_neu_v'], td.faces)
+                    except Exception as ex:
+                        print('dt EXC', str(ex)[:120]); preds['dt'] = None
                 for meth in ('nfr', 'nfs'):
                     if meth in args.methods:
                         try:
