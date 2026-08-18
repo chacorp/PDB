@@ -724,6 +724,8 @@ def _fancy_skel_mesh(jp, parent, helper_set=None, bone_col=(200, 205, 214),
         p = int(parent[j])
         if p < 0:
             continue
+        if not (_skel_vis_j(j, helper_set) and _skel_vis_j(p, helper_set)):
+            continue
         a, b = jp[p], jp[j]
         d = b - a
         L = float(np.linalg.norm(d))
@@ -746,10 +748,15 @@ def _fancy_skel_mesh(jp, parent, helper_set=None, bone_col=(200, 205, 214),
     iv = np.asarray(ico.vertices, dtype=np.float32)
     ifc = np.asarray(ico.faces)
     for j in range(Jn):
+        if not _skel_vis_j(j, helper_set):
+            continue
         Vs.append(iv * ball_r + jp[j])
         Fs.append(ifc + off); off += iv.shape[0]
         col = helper_col if (helper_set and j in helper_set) else joint_col
         Cs.append(np.tile(col, (iv.shape[0], 1)))
+    if not Vs:   # everything filtered out
+        return (np.zeros((1, 3), np.float32), np.zeros((1, 3), np.int64),
+                np.zeros((1, 3), np.uint8))
     V = np.concatenate(Vs, 0)
     F = np.concatenate(Fs, 0).astype(np.int64)
     C = np.concatenate(Cs, 0).astype(np.uint8)
@@ -1571,6 +1578,15 @@ _MAT = {"roughness": 0.4, "trim_rings": 0, "err_absmax": 0.02,
 _ERR_STATS = {}
 _CLAY_PLIGHTS = {}
 _GROUND = {"h": None, "y": None}
+_SKEL_VIS = {"primary": True, "helper": True}
+_WF = {}
+
+
+def _skel_vis_j(j, helper_set):
+    """Per-joint visibility by group (primary vs helper)."""
+    if helper_set and j in helper_set:
+        return _SKEL_VIS["helper"]
+    return _SKEL_VIS["primary"]
 
 def _sync_ground(server):
     on = bool(_MAT.get("ground_shadow", False))
@@ -1822,6 +1838,23 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
         doubleSided=bool(double_sided),
     )
     _h = server.scene.add_mesh_trimesh(name, mesh)
+    # wireframe overlay (figure aid): separate wireframe-only mesh per node name
+    try:
+        _oldwf = _WF.pop(name, None)
+        if _oldwf is not None:
+            _oldwf.remove()
+    except Exception:
+        pass
+    if _MAT.get("wireframe") and name.startswith(("/mesh", "/anim/", "/cross/", "/feat/")) \
+            and "skel" not in name and "bones" not in name:
+        try:
+            _wfh = server.scene.add_mesh_simple(
+                name + "_wf", vertices=np.asarray(verts, np.float32),
+                faces=np.asarray(faces, np.uint32), color=(30, 30, 34),
+                wireframe=True, cast_shadow=False)
+            _WF[name] = _wfh
+        except Exception:
+            pass
     _sync_clay_light(server, name, np.asarray(verts).mean(0))
     try:
         if _grp == "src":
@@ -1830,6 +1863,9 @@ def _add_per_vertex_color_mesh(server, name, verts, faces, rgb_uint8,
             _h.visible = bool(_VIS_FLAGS.get("neu", True))
         elif _grp == "pred":
             _h.visible = bool(_VIS_FLAGS.get("tgt", True))
+        if name in _WF:
+            try: _WF[name].visible = _h.visible
+            except Exception: pass
     except Exception:
         pass
     return _h
@@ -2181,8 +2217,11 @@ def main():
         g_op_pred = server.gui.add_slider(
             "predicted mesh opacity", min=0.05, max=1.0, step=0.05, initial_value=1.0,
         )
+        g_wireframe = server.gui.add_checkbox("wireframe overlay", False)
 
     with server.gui.add_folder("Skeleton"):
+        g_skel_primary = server.gui.add_checkbox("show primary joints", True)
+        g_skel_helper_vis = server.gui.add_checkbox("show helper joints", True)
         g_skel_style = server.gui.add_dropdown(
             "skeleton style", options=["classic (lines)", "fancy (maya)"],
             initial_value="classic (lines)",
@@ -2394,6 +2433,40 @@ def main():
         g_render_headless = server.gui.add_checkbox(
             "headless capture client (server-side, faster over remote)", False,
         )
+        g_shot_fmt = server.gui.add_dropdown(
+            "screenshot format",
+            options=["png (transparent)", "jpg (white bg)"],
+            initial_value="png (transparent)",
+        )
+        g_shot_btn = server.gui.add_button("Screenshot -> file (frame-numbered)")
+
+        @g_shot_btn.on_click
+        def _do_screenshot(_e=None):
+            clients = list(server.get_clients().values())
+            if not clients:
+                print("[shot] no client connected"); return
+            client = clients[0]
+            import imageio.v2 as _iio
+            W = int(g_render_w.value); H = int(g_render_h.value)
+            img = client.get_render(height=H, width=W, transport_format="png")
+            sub = str(g_render_subpath.value)
+            if not sub or sub.startswith("("):
+                sub = "screenshots"
+            out = Path(str(g_render_dir.value)) / sub
+            out.mkdir(parents=True, exist_ok=True)
+            stem = f"shot_{g_mode.value}_f{int(g_frame.value):04d}"
+            if str(g_shot_fmt.value).startswith("png"):
+                p = out / f"{stem}.png"
+                _iio.imwrite(str(p), img)
+            else:
+                rgb = img[..., :3].astype(np.float32)
+                if img.shape[-1] == 4:
+                    a = img[..., 3:4].astype(np.float32) / 255.0
+                    rgb = rgb * a + 255.0 * (1.0 - a)
+                p = out / f"{stem}.jpg"
+                _iio.imwrite(str(p), rgb.astype(np.uint8), quality=95)
+            print(f"[shot] saved {p}", flush=True)
+
         g_preview_btn = server.gui.add_button(
             "Preview (capture current frame @ chosen W/H)"
         )
@@ -2468,8 +2541,9 @@ def main():
                 for j in helper_set:
                     if 0 <= j < J:
                         cols_pred[j] = [255, 80, 200]
+            _kp = [j for j in range(J) if _skel_vis_j(j, helper_set)]
             h = server.scene.add_point_cloud(
-                "/joints/pred", points=pred, colors=cols_pred, point_size=0.012
+                "/joints/pred", points=pred[_kp], colors=cols_pred[_kp], point_size=0.012
             )
             nodes.append(h)
             if g_show_helpers.value and g_show_jlabels.value:
@@ -2482,7 +2556,7 @@ def main():
                         except Exception:
                             pass
             if g_bind_bones.value:
-                _bsegs = [[pred[int(parent_idx[j])], pred[j]] for j in range(J) if int(parent_idx[j]) >= 0]
+                _bsegs = [[pred[int(parent_idx[j])], pred[j]] for j in range(J) if int(parent_idx[j]) >= 0 and _skel_vis_j(j, helper_set) and _skel_vis_j(int(parent_idx[j]), helper_set)]
                 if _bsegs:
                     _bpts = np.array(_bsegs, dtype=np.float32)
                     _bcols = np.broadcast_to(np.array([80, 220, 180], dtype=np.uint8), (_bpts.shape[0], 2, 3)).copy()
@@ -2494,8 +2568,9 @@ def main():
                 for j in helper_set:
                     if 0 <= j < J:
                         cols_gt[j] = [60, 200, 255]
+            _kg = [j for j in range(J) if _skel_vis_j(j, helper_set)]
             h = server.scene.add_point_cloud(
-                "/joints/gt", points=gt, colors=cols_gt, point_size=0.014
+                "/joints/gt", points=gt[_kg], colors=cols_gt[_kg], point_size=0.014
             )
             nodes.append(h)
 
@@ -2736,10 +2811,11 @@ def main():
                 server, "/anim/skel_fancy", _fv, _ff, _fc,
                 opacity=1.0, shading=g_shading.value, double_sided=False, sat=1.0))
         if (not _fancy) and g_show_joints.value:
+            _ka = [j for j in range(J) if _skel_vis_j(j, helper_set)]
             h3 = server.scene.add_point_cloud(
                 "/anim/joints",
-                points=jp,
-                colors=np.full((J, 3), 255, dtype=np.uint8),
+                points=jp[_ka],
+                colors=np.full((len(_ka), 3), 255, dtype=np.uint8),
                 point_size=0.008,
             )
             nodes.append(h3)
@@ -2748,7 +2824,7 @@ def main():
             segs = []
             for j in range(J):
                 p = int(parent_idx[j])
-                if p >= 0:
+                if p >= 0 and _skel_vis_j(j, helper_set) and _skel_vis_j(p, helper_set):
                     segs.append([jp[p], jp[j]])
             if segs:
                 pts = np.array(segs, dtype=np.float32)            # [E, 2, 3]
@@ -2940,9 +3016,10 @@ def main():
                 if jp is None or x_off is None:
                     return
                 jp = jp.copy(); jp[:, 0] += x_off
+                _kc = [j for j in range(len(jp)) if _skel_vis_j(j, helper_set)]
                 nodes.append(server.scene.add_point_cloud(
-                    prefix + "/pts", points=jp.astype(np.float32),
-                    colors=np.tile(np.array([255, 255, 255], dtype=np.uint8), (len(jp), 1)),
+                    prefix + "/pts", points=jp[_kc].astype(np.float32),
+                    colors=np.tile(np.array([255, 255, 255], dtype=np.uint8), (len(_kc), 1)),
                     point_size=0.009))
                 if bones:
                     if g_skel_style.value.startswith("fancy"):
@@ -2951,7 +3028,7 @@ def main():
                             server, prefix + "/bones_fancy", _fv, _ff, _fc,
                             shading="smooth", sat=1.0))
                     else:
-                        _seg = [[jp[int(parent_idx[j])], jp[j]] for j in range(len(jp)) if int(parent_idx[j]) >= 0]
+                        _seg = [[jp[int(parent_idx[j])], jp[j]] for j in range(len(jp)) if int(parent_idx[j]) >= 0 and _skel_vis_j(j, helper_set) and _skel_vis_j(int(parent_idx[j]), helper_set)]
                         if _seg:
                             _p = np.array(_seg, dtype=np.float32)
                             _c = np.broadcast_to(np.array([80, 220, 180], dtype=np.uint8), (_p.shape[0], 2, 3)).copy()
@@ -3838,6 +3915,12 @@ def main():
         render()
     g_feat_tgt_ds.on_update(_on_feat_tgt_ds)
     g_skel_style.on_update(lambda _e: render())
+    def _skelvis_upd(_e=None):
+        _SKEL_VIS["primary"] = bool(g_skel_primary.value)
+        _SKEL_VIS["helper"] = bool(g_skel_helper_vis.value)
+        render()
+    g_skel_primary.on_update(_skelvis_upd)
+    g_skel_helper_vis.on_update(_skelvis_upd)
     def _vis_upd(_e=None):
         _VIS_FLAGS["src"] = bool(g_vis_src.value)
         _VIS_FLAGS["tgt"] = bool(g_vis_tgt.value)
@@ -3880,6 +3963,10 @@ def main():
     g_vis_neu.on_update(_vis_upd)
     g_op_src.on_update(_vis_upd)
     g_op_pred.on_update(_vis_upd)
+    def _wf_upd(_e=None):
+        _MAT["wireframe"] = int(bool(g_wireframe.value))
+        render()
+    g_wireframe.on_update(_wf_upd)
     def _clay_key_upd(_e=None):
         _MAT["clay_key_int"] = float(g_clay_key.value)
         if _MAT.get("light_mode") == "clayv2" and _light_state.get("front") is not None:
