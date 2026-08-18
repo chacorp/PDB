@@ -664,6 +664,8 @@ class LinearEncoder(nn.Module):
                  tau=1e-2, use_K=False, K_dim=8,
                  adain_in_dim=None,
                  stn_full=False,
+                 affine_scale_only=False,
+                 id_pool='mean',
                 ):
         super().__init__()
         
@@ -713,6 +715,8 @@ class LinearEncoder(nn.Module):
         ])
 
         self.stn_full = stn_full
+        self.affine_scale_only = affine_scale_only
+        self.id_pool = id_pool
         self._hid = hid_dim
         if stn_full:
             # PointNet-style full feature STN per layer: y = T x, T in R^{F x F}
@@ -831,7 +835,11 @@ class LinearEncoder(nn.Module):
 
         if id_in is None:
             _adain_src = adain_input if adain_input is not None else x_in
-            id_in = self.adain_in(_adain_src).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
+            if getattr(self, 'id_pool', 'mean') == 'max':
+                id_in = (self.adain_in(_adain_src).max(-2, keepdims=True).values
+                         + out.max(-2, keepdims=True).values)
+            else:
+                id_in = self.adain_in(_adain_src).mean(-2, keepdims=True) + out.mean(-2, keepdims=True)
         
         for _li, layer in enumerate(self.layers):
             l_out = layer(out)
@@ -839,7 +847,10 @@ class LinearEncoder(nn.Module):
                 _T = self.stns[_li](id_in).reshape(id_in.shape[0], self._hid, self._hid)
                 l_out = torch.einsum('bvf,bfg->bvg', l_out, _T)
             else:
-                l_out = l_out * self.adains_s[_li](id_in) + self.adains_m[_li](id_in)
+                if getattr(self, 'affine_scale_only', False):
+                    l_out = l_out * self.adains_s[_li](id_in)
+                else:
+                    l_out = l_out * self.adains_s[_li](id_in) + self.adains_m[_li](id_in)
             
             if self.use_residual:
                 out = l_out + out

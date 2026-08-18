@@ -204,6 +204,10 @@ def Options():
                              'With --per_id_bind_pose_dir set, uses per-id v3 GT '
                              'instead (Stage-2: bind pose = oracle GT).')
     parser.set_defaults(freeze_bind_pose=False)
+    parser.add_argument("--affine_scale_only", action="store_true",
+                        help='A9: drop the bias term of the per-layer channel affine (scale-only)')
+    parser.add_argument("--id_pool", type=str, default='mean', choices=['mean', 'max'],
+                        help='A10: pooling for the identity nets global code')
     parser.add_argument("--stn_full_identity", action="store_true",
                         help="ablation: PointNet-style FULL feature STN (y=Tx) in identity "
                              "nets instead of element-wise affine (y=a*x+b).")
@@ -1794,6 +1798,8 @@ class HLBSTrainer:
                               and self._helper_joint_idx else None),
             bind_pose_base_residual=bool(getattr(opts, 'bind_pose_base_residual', 0)),
             stn_full_identity=bool(getattr(opts, 'stn_full_identity', False)),
+            affine_scale_only=bool(getattr(opts, 'affine_scale_only', False)),
+            id_pool=str(getattr(opts, 'id_pool', 'mean')),
         ).to(self.device)
         print(f"[HLBS FullPred] {sum(p.numel() for p in self.model.parameters()):,} params")
 
