@@ -69,7 +69,7 @@ def Options():
     parser.add_argument("--in_type",      type=int,   default=1,
                         help='input type (0: position, 1: position + normal')
     parser.add_argument("--out_type",      type=int,   default=1,      
-                        help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
+                        help='output type (0: cage delta_v`, 1: cage v, 2: cage delta_T mat, 3: vertex T mat')
     
     parser.add_argument("--save_interval",type=int,   default=50,     help='save interval epoch')
     parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
@@ -110,6 +110,15 @@ def Options():
     parser.set_defaults(use_dist_loss=False)
     parser.add_argument("--use_cage_consistency_loss",dest='use_cage_consistency_loss', action='store_true')
     parser.set_defaults(use_cage_consistency_loss=False)
+    parser.add_argument("--mask_cage_consist",dest='mask_cage_consist', action='store_true',
+                         help='cage-consistency loss: only penalize control points the sampled '
+                              'input actually has evidence for (nonzero key_weight column)')
+    parser.set_defaults(mask_cage_consist=False)
+    parser.add_argument("--use_cyclic_loss",dest='use_cyclic_loss', action='store_true',
+                         help='cross-identity factor cycle: W_t sg(v_s) re-encoded should recover sg(v_s)')
+    parser.set_defaults(use_cyclic_loss=False)
+    parser.add_argument("--lambda_cage_consist", type=float, default=0.5, help='weight for cage-consistency loss')
+    parser.add_argument("--lambda_cyclic",       type=float, default=0.5, help='weight for cyclic loss')
     parser.add_argument("--use_segment_weight",dest='use_segment_weight', action='store_true')
     parser.set_defaults(use_segment_weight=False)
     parser.add_argument("--use_laplacian",dest='use_laplacian', action='store_true')
@@ -1111,7 +1120,44 @@ class Trainer():
         ## -----------------------------------------------------------------------------
         
         return template, vertices, scale, trans
-    
+
+    def log_active_losses_v5(self):
+        """
+        Per-loss on/off status + lambda weight for train_v5, mirroring the gating used
+        when loss_dict is actually built in the training loop below (self.loss_lambda
+        alone isn't enough since cage-consist/cyclic are always present in that dict
+        regardless of whether their opts flag is on).
+        """
+        def _line(key, note=""):
+            return f"[{key}]: \tlambda={self.loss_lambda[key]}{note}\n"
+
+        log_txt = "========< Active losses (train_v5) >========\n"
+        log_txt += _line('recon-def')
+        if self.model.use_full_vertex:
+            log_txt += _line('recon-neu')
+        if self.opts.align_latent:
+            log_txt += _line('exp-z')
+        if self.model.use_exp_recon:
+            log_txt += _line('exp-v')
+        if self.model.use_shp_recon:
+            log_txt += _line('shape')
+        if self.opts.use_cage_consistency_loss:
+            note = " (masked)" if self.opts.mask_cage_consist else " (naive)"
+            log_txt += _line('cage-consist', note)
+        if self.opts.use_cyclic_loss:
+            log_txt += _line('cyclic')
+        if self.opts.use_dist_loss:
+            log_txt += _line('dist')
+        if self.opts.pou_loss:
+            log_txt += _line('pou')
+        if self.opts.use_laplacian:
+            log_txt += _line('lap')
+        if self.opts.use_normal_loss:
+            log_txt += _line('norm-def')
+            log_txt += _line('norm-neu')
+        log_txt += "=============================================="
+        return log_txt
+
     def train_v5(self, epochs):
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -1220,6 +1266,43 @@ class Trainer():
         self.logger.write(self.valid_dataset.get_data_config())
         self.logger.write(valid_sampler.get_sampler_config())
         self.logger.write(self.model.log_parameter_num())
+
+        # fixed reference templates for stable "cage vertex usage" logging ---------------------------------------
+        # (id-0 neutral template mesh per active sub-dataset, instead of whatever mesh happens to land in the
+        #  current random training batch, so the metric is comparable across log points / training runs)
+        self.fixed_ref_templates = {}
+
+        def _add_ref(name, template_np, faces_np):
+            template_np = np.asarray(template_np)
+            faces_np = np.asarray(faces_np)
+            normal_np = igl.per_vertex_normals(template_np, faces_np)
+            self.fixed_ref_templates[name] = (
+                torch.tensor(template_np).float().to(self.device),
+                torch.tensor(normal_np).float().to(self.device),
+            )
+
+        ds = self.train_dataset
+        if getattr(ds, 'use_voca', False):
+            id_name = ds.voca_id_list[0]
+            _add_ref('voca', ds.voca_mesh[id_name], ds.voca_mesh['face'])
+        if getattr(ds, 'use_coma', False):
+            id_name = ds.coma_id_list[0]
+            _add_ref('coma', ds.coma_mesh[id_name], ds.coma_mesh['face'])
+        if getattr(ds, 'use_biwi', False):
+            id_name = ds.biwi_id_list[0]
+            _add_ref('biwi', ds.biwi_mesh[id_name], ds.biwi_mesh['face'])
+        if getattr(ds, 'use_mf_SEN', False):
+            id_name = ds.mf_SEN_id_list[0]
+            _add_ref('mf', ds.mf_SEN_mesh[id_name], ds.mf_SEN_mesh['face'])
+        elif getattr(ds, 'use_mf_ROM', False):
+            id_name = ds.mf_ROM_id_list[0]
+            _add_ref('mf', ds.mf_ROM_mesh[id_name], ds.mf_ROM_mesh['face'])
+        if getattr(ds, 'use_ict', False):
+            id_coeff = ds.iden_vecs[0]
+            _, template, _ = ds.ict_face_model.apply_coeffs(
+                id_coeff, np.zeros(53), return_all=True
+            )
+            _add_ref('ict', template[0], ds.ict_face_model.faces)
         #---------------------------------------------------------------------------------------------------------
         ##########################################################################################################
         
@@ -1238,7 +1321,8 @@ class Trainer():
             "exp-z": self.opts.lambda_vert * 0.5,
             "exp-v": self.opts.lambda_vert,
             "shape": self.opts.lambda_vert,
-            "cage-consist": 0.5,
+            "cage-consist": self.opts.lambda_cage_consist,
+            "cyclic": self.opts.lambda_cyclic,
             # "pou": self.opts.lambda_vert,
             # symm
         }
@@ -1251,7 +1335,15 @@ class Trainer():
         if self.opts.use_normal_loss:
             self.loss_lambda['norm-def']=0.1
             self.loss_lambda['norm-neu']=0.1
-        
+
+        # log which losses are actually active this run, and their lambda weight, next to the
+        # parameter count above -- self.loss_lambda holds weights for keys that may not be
+        # active (e.g. cage-consist/cyclic are always in the dict but only used when their
+        # opts flag is on), so this mirrors the same gating used when loss_dict is built below.
+        active_loss_log = self.log_active_losses_v5()
+        print(active_loss_log)
+        self.logger.write(active_loss_log)
+
         check_usage = False
         
         len_train_data = len(self.train_dataloader)
@@ -1272,6 +1364,8 @@ class Trainer():
             }
             if self.opts.use_cage_consistency_loss:
                 running_losses['cage-consist']=0.0
+            if self.opts.use_cyclic_loss:
+                running_losses['cyclic']=0.0
             if self.opts.use_dist_loss:
                 running_losses['dist']=0.0
             if self.opts.pou_loss:
@@ -1391,13 +1485,64 @@ class Trainer():
                     )
 
                 # if mesh_data =='ict':
-                # cage consistency: full-mesh vs. subsampled-mesh cage predictions should agree
+                # cage consistency: full-mesh vs. subsampled-mesh cage predictions should agree.
+                # with mask_cage_consist, only control points the sampled input has nonzero
+                # key_weight evidence for are compared (see masked_cage_consistency_loss).
                 if self.opts.use_cage_consistency_loss:
-                    loss_dict['cage-consist'] = F.mse_loss(
-                        pred_cage_s_full, pred_cage_s
-                    ) + F.mse_loss(
-                        pred_cage_d_full, pred_cage_d
+                    if self.opts.mask_cage_consist:
+                        loss_dict['cage-consist'] = masked_cage_consistency_loss(
+                            pred_cage_s_full, pred_cage_s, pred_key_weight
+                        ) + masked_cage_consistency_loss(
+                            pred_cage_d_full, pred_cage_d, pred_key_weight
+                        )
+                    else:
+                        loss_dict['cage-consist'] = F.mse_loss(
+                            pred_cage_s_full, pred_cage_s
+                        ) + F.mse_loss(
+                            pred_cage_d_full, pred_cage_d
+                        )
+
+                # cross-identity factor cycle: v_s=key_d from this batch's own identity/expression,
+                # W_t=ψ(a *different* identity's neutral, drawn straight from the dataset -- batches
+                # are single-identity, so this can't come from within the batch). Re-encoding the
+                # pseudo target W_t·sg(v_s) through φ should recover sg(v_s). Unlike cage-consist,
+                # this sends gradient into key_weight_model (ψ) via a genuinely different identity.
+                if self.opts.use_cyclic_loss:
+                    tgt_template, tgt_template_normal, _ = self.train_dataset.sample_other_identity_neutral(
+                        exclude_id_name=batch.id_name
                     )
+                    if tgt_template is not None:
+                        Bc = batch_template_v.shape[0]
+                        tgt_neu = tgt_template.to(self.device)[None].expand(Bc, -1, -1)
+                        tgt_norm = tgt_template_normal.to(self.device)[None].expand(Bc, -1, -1)
+
+                        # in_type==2 (hat_mask) not handled here -- current configs use in_type<=1
+                        tgt_in = tgt_neu
+                        if self.model.in_type > 0:
+                            tgt_in = torch.cat([tgt_neu, tgt_norm], dim=-1)
+
+                        key_weight_t = self.model.key_weight_model(tgt_in, N=self.model.NZ)  # W_t
+                        key_weight_t=key_weight_t.detach()
+                        v_s = pred_cage_d.detach()  # sg(v_s)
+                        pseudo_target = torch.einsum('bnc,bci->bni', key_weight_t, v_s)
+                        if not self.model.use_full_vertex:
+                            pseudo_target = pseudo_target + tgt_neu
+
+                        deform_in_t = pseudo_target - tgt_neu
+                        if self.model.in_type > 0:
+                            deform_in_t = torch.cat([deform_in_t, tgt_norm], dim=-1)
+                        deform_in_t = torch.cat([deform_in_t, tgt_in], dim=-1)
+
+                        if self.model.use_shp:
+                            z_ID_t = self.model.shape_model(tgt_in)
+                            exp_z_t = self.model.exp_z_model(deform_in_t, z_ID_t)
+                            key_d_t = self.model.key_d_model(exp_z_t, z_ID_t)
+                        else:
+                            exp_z_t = self.model.exp_z_model(deform_in_t)
+                            key_d_t = self.model.key_d_model(exp_z_t)
+                        v_t = self.model.reshape_key_d(key_d_t, Bc)
+
+                        loss_dict['cyclic'] = F.mse_loss(v_s, v_t)
 
                 # directly hanging mesh vertex position ----------------------------------------------------------
                 if self.model.use_full_vertex:
@@ -1544,9 +1689,17 @@ class Trainer():
                         log_text += f"{key}: {value*__idx__:.6e} "
 
                     if not is_stts_added:
-                        log_text+='\n>>> Sum across vertex weights on each cage: '
-                        log_text+=f'(max: {key_weight[0].sum(0).max().item():.5e}, min: {key_weight[0].sum(0).min().item():.5e})\n'
-                        log_text+=f'>>> Num actually used cage vertex: {torch.count_nonzero(key_weight[0].sum(0))} / {key_weight.shape[-1]}'
+                        log_text+='\n>>> Num actually used cage vertex (fixed id-0 template per dataset):'
+                        for ref_name, (ref_v, ref_n) in self.fixed_ref_templates.items():
+                            ref_key_weight = self.model.predict_coordinate(
+                                ref_v.unsqueeze(0), ref_n.unsqueeze(0)
+                            )
+                            ref_weight_sum = ref_key_weight[0].sum(0)
+                            ref_used = torch.count_nonzero(ref_weight_sum)
+                            log_text += (
+                                f'\n>>>   [{ref_name}] {ref_used} / {ref_key_weight.shape[-1]} '
+                                f'(max: {ref_weight_sum.max().item():.5e}, min: {ref_weight_sum.min().item():.5e})'
+                            )
                         is_stts_added=True
                     self.logger.write(log_text+"\n")
                     
