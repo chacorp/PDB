@@ -1,5 +1,6 @@
 import os
 import glob
+import gc
 import json
 import yaml
 import random
@@ -167,11 +168,9 @@ class Pipeline():
                     mesh = pickle.load(f)
                     
             elif selection=='biwi':
-                biwi_trimesh = trimesh.load(f'./test-mesh/BIWI.ply')
-                with open(f'./test-mesh/biwi_templates.pkl', 'rb') as f:
+                with open('/data/sihun/pca/BIWI_align_deci/templates_align_deci.pkl', 'rb') as f:
                     mesh = pickle.load(f)
-                mesh['face'] = biwi_trimesh.faces
-                
+
             elif selection=='mf_SEN' or selection=='mf_ROM':
                 with open('/data/sihun/pca/multiface_align/mf_templates.pkl', 'rb') as f:
                     mesh = pickle.load(f)
@@ -180,9 +179,6 @@ class Pipeline():
             mesh_id = mesh_list[SELECT_MESH]
             mesh_v = mesh[mesh_id]
 
-            if selection=='biwi':
-                m_align = np.load(f'./utils/biwi/align.npy')
-                mesh_v = np.concatenate((mesh_v,np.ones((mesh_v.shape[0],1))), axis=1) @ m_align.T
             return mesh_v, mesh['face'], mesh_id
         
     def save_test_frames(self):
@@ -294,6 +290,9 @@ class Pipeline():
         for src_tgt_set in src_tgt_set_list:
             print('selection: ',*src_tgt_set)
             self.save_vis_data(*src_tgt_set)
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
     def save_vis_data(self, SRC_SELECT_DATA, SRC_SELECT_MESH, TGT_SELECT_DATA, TGT_SELECT_mesh, EXP_NUM):
         """
@@ -417,7 +416,7 @@ class Pipeline():
             file_name = f'{src_selection}-ID_{SRC_SELECT_MESH:03d}_test-to-{tgt_selection}-ID_{TGT_SELECT_mesh:03d}_test_{EXP_NUM:02d}'
         else:
             if 'ict' in  tgt_selection:
-                file_name = f'{src_selection}_test-to-{tgt_selection}_test-ID_{TGT_SELECT_mesh:03d}'
+                file_name = f'{src_selection}-src{SRC_SELECT_MESH:03d}_test-to-{tgt_selection}_test-ID_{TGT_SELECT_mesh:03d}'
             else:
                 if 'mf' in tgt_selection:
                     if TGT_SELECT_mesh==12:
@@ -604,7 +603,7 @@ class Pipeline():
                             pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
                             None, tgt_verts[None], tgt_faces, tgt_operators
                         )
-                        pred_outputs_tgt, _ = self.model.decode(inputs_tgt, batch_process=True)
+                        pred_outputs_tgt = self.model.decode(inputs_tgt, batch_process=True)
 
 
                         ###### tgt-to-src ######
@@ -628,7 +627,7 @@ class Pipeline():
                             pred_exp_coeff_tgt, pred_id_coeff_src, pred_seg_coeff_src,
                             None, batch.template, batch.faces[0], src_operators
                         )
-                        pred_outputs_src, _ = self.model.decode(inputs_src, batch_process=True)
+                        pred_outputs_src = self.model.decode(inputs_src, batch_process=True)
 
                         losses_val = stack_mse(batch, pred_outputs_src, losses_val, denom, src_L)
 
@@ -790,7 +789,7 @@ class Pipeline():
                                 pred_exp_coeff, pred_id_coeff, None,
                                 None, tgt_verts[None], tgt_faces, tgt_operators
                             )
-                            pred_outputs_tgt, _ = self.model.decode(inputs_tgt, batch_process=True)
+                            pred_outputs_tgt = self.model.decode(inputs_tgt, batch_process=True)
                             
                             ###### tgt-to-src ######
                             vert_feat_exp_tgt = []
@@ -807,7 +806,7 @@ class Pipeline():
                                 pred_exp_coeff_tgt, pred_id_coeff_tgt, None,
                                 None, batch.template, batch.faces, src_operators
                             )
-                            pred_outputs_src, _ = self.model.decode(inputs_src, batch_process=True)
+                            pred_outputs_src = self.model.decode(inputs_src, batch_process=True)
 
                             pred_outputs_np = pred_outputs_tgt.detach().cpu().numpy()
                             pred_outputs_src_np = pred_outputs_src.detach().cpu().numpy()
@@ -847,13 +846,24 @@ class Pipeline():
                     pred_outputs, _ = self.model.retarget(
                         batch.template, batch.vertices, tgt_v_th
                     )
-                    
+                    # cyclic round-trip: retarget the cross output back onto the source identity,
+                    # so it's directly comparable to batch.vertices (mirrors the version==5 path).
+                    pred_outputs_src, _ = self.model.retarget(
+                        tgt_v_th, pred_outputs, batch.template
+                    )
+                    losses_val = stack_mse(batch, pred_outputs_src, losses_val, denom, src_L)
+
                     pred_outputs_np = pred_outputs.detach().cpu().numpy()
+                    pred_outputs_src_np = pred_outputs_src.detach().cpu().numpy()
 
                     CurrBS=pred_outputs_np.shape[0]
                     for b_idx in range(CurrBS):
                         save_out_name = self.opts.log_dir_vert+f'/{index*CurrBS+b_idx:06d}.npy'
                         np.save(save_out_name, pred_outputs_np[b_idx])
+
+                        save_out_name_cyc = self.opts.log_dir_vert_cyc+f'/{index*CurrBS+b_idx:06d}.npy'
+                        np.save(save_out_name_cyc, pred_outputs_src_np[b_idx])
+
                         if self.opts.save_gt:
                             save_gt_name = GT_log_dir+f'/{index*CurrBS+b_idx:06d}.npy'
                             np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())

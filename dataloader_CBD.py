@@ -465,12 +465,10 @@ class EvalDataset(data.Dataset):
         
         template_np = self.mf_ROM_mesh[id_name]
         template = torch.tensor(template_np).float()
-        
-        # vertices_np = np.load(file_path)
-        # vertices = torch.tensor(vertices_np).float()
+
         vertices_np = np.load(file_path)
-        # R, t, _ = procrustes_LDM(vertices_np, template_np)
-        # vertices_np = vertices_np @ R.T + t
+        R, t, _ = procrustes_LDM(vertices_np, template_np)
+        vertices_np = vertices_np @ R.T + t
         vertices = torch.tensor(vertices_np).float()
         
         # faces_np = self.mf_ROM_std['new_f']
@@ -543,7 +541,7 @@ class CBDDataset(data.Dataset):
             use_mf_SEN=True
             use_mf_ROM=True
             use_ict=True
-            use_ict_narrow=False
+            use_ict_narrow=True
         elif self.opts.use_data3:
             use_voca=True
             use_coma=True
@@ -1223,7 +1221,42 @@ class CBDDataset(data.Dataset):
         
         return (template, deformed, faces, template_normal, deformed_normal, self.mf_ROM_seg, torch.zeros(128), id_name)
 
-        
+    def sample_other_identity_neutral(self, exclude_id_name=None, max_tries=5):
+        """Cross-identity factor cycle loss (train_CBD.py --use_cyclic_loss): pick one
+        random identity's neutral template+normal from any currently-enabled dataset,
+        retrying up to max_tries to avoid returning exclude_id_name itself.
+
+        Args:
+            exclude_id_name (str): identity name to avoid re-picking (the current batch's).
+            max_tries (int): number of resample attempts before giving up on avoidance.
+
+        Returns:
+            (template [V,3], template_normal [V,3], id_name) or (None, None, None)
+            if no dataset is currently enabled.
+        """
+        pools = []
+        if self.use_voca:
+            pools.append((self.get_voca, len(self.voca_id_list)))
+        if self.use_coma:
+            pools.append((self.get_coma, len(self.coma_id_list)))
+        if self.use_biwi:
+            pools.append((self.get_biwi, len(self.biwi_id_list)))
+        if self.use_mf_SEN:
+            pools.append((self.get_multiface_SEN, len(self.mf_SEN_id_list)))
+        if self.use_mf_ROM:
+            pools.append((self.get_multiface_ROM, len(self.mf_ROM_id_list)))
+        if not pools:
+            return None, None, None
+
+        template = template_normal = id_name = None
+        for _ in range(max_tries):
+            get_fn, n_id = pools[random.randrange(len(pools))]
+            datas = get_fn(0, random.randrange(n_id))
+            template, template_normal, id_name = datas[0], datas[3], datas[7]
+            if exclude_id_name is None or id_name != exclude_id_name:
+                break
+        return template, template_normal, id_name
+
     def random_rotation_matrix(self, randgen=None):
         """
         Borrowed from https://github.com/nmwsharp/diffusion-net/blob/master/src/diffusion_net/utils.py

@@ -596,7 +596,7 @@ def plot_image_array(Vs,
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             C = np.clip(C, 0, 1) if False else C * 0.5 + 0.5
             collection = PolyCollection(T, closed=False, linewidth=linewidth, facecolor=C, edgecolor=C)
@@ -606,7 +606,7 @@ def plot_image_array(Vs,
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             
             C = (C @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
@@ -619,7 +619,7 @@ def plot_image_array(Vs,
             
             ### curling by normal
             C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
-            NI = np.argwhere(C[:,2] > 0.0).squeeze()
+            NI = np.argwhere(C[:,2] > 0.0)[:,0]
             V, F, vidx = get_new_mesh(V, F, NI, invert=True)
             #F = np.flip(F, 1)#F[:,::-1]
             C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
@@ -1950,7 +1950,7 @@ def render_wo_audio(#basedir="tmp",
             I = np.argsort(Z) # -----------------------> depth sorting
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze() # --> culling w/ normal
+            NI = np.argwhere(C[:,2] > 0)[:,0] # --> culling w/ normal
             T, C = T[NI, :], C[NI, :]
             
             C = np.clip((C @ light_dir), 0, 1) # ------> cliping range 0 - 1
@@ -1973,7 +1973,7 @@ def render_wo_audio(#basedir="tmp",
             T, C = T[I, :], C[I, :]
             diff = diff[I]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             diff = diff[NI]
 
@@ -1994,7 +1994,7 @@ def render_wo_audio(#basedir="tmp",
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
             
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             collection = PolyCollection(T, closed=False, linewidth=0.23, facecolor=C, edgecolor="black")
         ax.add_collection(collection)
@@ -2076,7 +2076,7 @@ def render_w_audio(#basedir="tmp",
             I = np.argsort(Z) # -----------------------> depth sorting
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze() # --> culling w/ normal
+            NI = np.argwhere(C[:,2] > 0)[:,0] # --> culling w/ normal
             T, C = T[NI, :], C[NI, :]
             
             C = np.clip((C @ light_dir), 0, 1) # ------> cliping range 0 - 1
@@ -2091,7 +2091,7 @@ def render_w_audio(#basedir="tmp",
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
             
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             collection = PolyCollection(T, closed=False, linewidth=0.23, facecolor=C, edgecolor="black")
         ax.add_collection(collection)

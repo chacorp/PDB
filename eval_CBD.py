@@ -372,9 +372,9 @@ class Trainer():
             is_valid=False,
         )
         self.dataloader = torch.utils.data.DataLoader(
-            self.dataset, 
+            self.dataset,
             batch_sampler=data_sampler,
-            collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
+            collate_fn=partial(CBD_collate_wrapper, device=opts.device),
             num_workers=0,
         )
         ##########################################################################################################
@@ -734,7 +734,7 @@ class Trainer():
                                 pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
                                 None, batch.template[0][None], batch.faces[0], src_operators
                             )
-                            pred_vertices, _ = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
+                            pred_vertices = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
                     ##############################################################################
                     else:
                         if index==0:
@@ -1152,7 +1152,7 @@ class Trainer():
                             pred_exp_coeff, pred_id_coeff, pred_seg_coeff,
                             None, batch.template[0][None], batch.faces[0], src_operators
                         )
-                        pred_vertices, _ = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
+                        pred_vertices = self.model.decode(inputs, tgt_mesh=src_mesh, batch_process=True)
 
                     # pred_vertices = self.model.inference(
                     #     gt_vertices=batch.vertices, 

@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -44,51 +45,208 @@ def weight_entropy_loss(
         return entropy.sum()
     return entropy
 
-def distance_loss(
-        mesh_vertices, 
-        cage_vertices, 
-        coordinate_weight, 
-        tau=0.01
-    ):
+def weight_column_consistency_loss(
+    vertices_a: torch.Tensor,
+    weights_a: torch.Tensor,
+    vertices_b: torch.Tensor,
+    weights_b: torch.Tensor,
+    vertex_areas_a: torch.Tensor = None,
+    vertex_areas_b: torch.Tensor = None,
+    temperature: float = 0.1,
+    min_column_mass: float = 1e-6,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Encourage the same weight-column index to cover the same facial region.
+
+    Args:
+        vertices_a: Vertex positions of shape ``(B, N_a, 3)``.
+        weights_a: Nonnegative weights of shape ``(B, N_a, K)``.
+        vertices_b: Vertex positions of shape ``(B, N_b, 3)``.
+        weights_b: Nonnegative weights of shape ``(B, N_b, K)``.
+        vertex_areas_a: Optional vertex areas of shape ``(B, N_a)`` or
+            ``(B, N_a, 1)``. Uniform areas are used when omitted.
+        vertex_areas_b: Optional vertex areas of shape ``(B, N_b)`` or
+            ``(B, N_b, 1)``. Uniform areas are used when omitted.
+        temperature: Contrastive softmax temperature.
+        min_column_mass: Columns whose normalized area-weighted mass is below
+            this value on either mesh are excluded.
+        eps: Numerical stability constant.
+
+    Returns:
+        Scalar symmetric contrastive loss.
+    """
+    if vertices_a.ndim != 3 or vertices_b.ndim != 3:
+        raise ValueError("vertices must have shape (B, N, 3)")
+    if weights_a.ndim != 3 or weights_b.ndim != 3:
+        raise ValueError("weights must have shape (B, N, K)")
+    if vertices_a.shape[0] != vertices_b.shape[0]:
+        raise ValueError("the two inputs must have the same batch size")
+    if weights_a.shape[0] != vertices_a.shape[0] or weights_b.shape[0] != vertices_b.shape[0]:
+        raise ValueError("vertices and weights must have matching batch sizes")
+    if weights_a.shape[1] != vertices_a.shape[1] or weights_b.shape[1] != vertices_b.shape[1]:
+        raise ValueError("vertices and weights must have matching vertex counts")
+    if weights_a.shape[2] != weights_b.shape[2]:
+        raise ValueError("the two weight tensors must have the same number of columns")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+
+    def column_centroids(vertices, weights, vertex_areas):
+        if vertex_areas is None:
+            areas = torch.ones_like(vertices[..., 0])
+        else:
+            areas = vertex_areas
+            if areas.ndim == 3 and areas.shape[-1] == 1:
+                areas = areas.squeeze(-1)
+            if areas.shape != vertices.shape[:2]:
+                raise ValueError("vertex areas must have shape (B, N) or (B, N, 1)")
+            areas = areas.to(device=vertices.device, dtype=vertices.dtype)
+
+        areas = areas.clamp_min(0)
+        areas = areas / areas.sum(dim=1, keepdim=True).clamp_min(eps)
+
+        mesh_centroid = (areas[..., None] * vertices).sum(dim=1, keepdim=True)
+        centered = vertices - mesh_centroid
+        rms_scale = torch.sqrt(
+            (areas * centered.square().sum(dim=-1)).sum(dim=1, keepdim=True)
+            + eps
+        )
+        normalized_vertices = centered / rms_scale[..., None]
+
+        column_measure = areas[..., None] * weights
+        column_mass = column_measure.sum(dim=1)
+        centroids = torch.einsum(
+            "bnk,bnd->bkd", column_measure, normalized_vertices
+        )
+        centroids = centroids / column_mass.clamp_min(eps)[..., None]
+        return centroids, column_mass
+
+    centroids_a, mass_a = column_centroids(vertices_a, weights_a, vertex_areas_a)
+    centroids_b, mass_b = column_centroids(vertices_b, weights_b, vertex_areas_b)
+    distance = torch.cdist(centroids_a, centroids_b, p=2).square()
+
+    losses = []
+    for batch_idx in range(distance.shape[0]):
+        active = (
+            (mass_a[batch_idx] > min_column_mass)
+            & (mass_b[batch_idx] > min_column_mass)
+        )
+        active_idx = torch.nonzero(active, as_tuple=False).squeeze(-1)
+        if active_idx.numel() < 2:
+            continue
+
+        pair_distance = distance[batch_idx][active_idx][:, active_idx]
+        labels = torch.arange(active_idx.numel(), device=distance.device)
+        losses.append(F.cross_entropy(-pair_distance / temperature, labels))
+        losses.append(F.cross_entropy(-pair_distance.transpose(0, 1) / temperature, labels))
+
+    if not losses:
+        return (weights_a.sum() + weights_b.sum()) * 0.0
+    return torch.stack(losses).mean()
+    
+def _distance_loss_v1_hinge(mesh_vertices, cage_vertices, coordinate_weight, tau=0.01):
+    """Original tau-margin hinge version: distances within tau are free."""
+    dist = torch.sqrt(((mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]) ** 2).sum(dim=-1) + 1e-8)
+    penalty = torch.relu(dist - tau) ** 2
+    loss = (coordinate_weight * penalty).sum(dim=-1).mean()
+    return loss
+
+
+def _distance_loss_v2_buggy(mesh_vertices, cage_vertices, coordinate_weight, tau=0.02):
+    """Kept only for the record: crashes whenever N != K due to the stray unsqueeze(-1)."""
+    _, C, _ = cage_vertices.shape
+    mesh_vertices_expand = mesh_vertices[:, :, None].repeat(1, 1, C, 1)
+    cage_vertices_expand = cage_vertices[:, None]
+    mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand).sum(dim=-1)
+    w = coordinate_weight
+    return (mesh_vertices_dist * w.unsqueeze(-1)).mean()
+
+
+def _distance_loss_v3_percage(mesh_vertices, cage_vertices, coordinate_weight, eps=1e-8):
+    """Per-cage normalized mean squared distance, averaged only over cages with nonzero weight mass."""
+    squared_dist = (
+        mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]
+    ).square().sum(dim=-1)  # (B, N, K)
+
+    w = coordinate_weight
+    weight_sum = w.sum(dim=1)  # (B, K)
+
+    loss_per_cage = (
+        (w * squared_dist).sum(dim=1) / weight_sum.clamp_min(eps)
+    )  # (B, K)
+
+    valid = weight_sum > eps
+
+    return loss_per_cage[valid].mean()
+
+
+def _distance_loss_v4_global(mesh_vertices, cage_vertices, coordinate_weight, eps=1e-8):
+    """Single global weighted-mean squared distance across the whole (B, N, K) tensor."""
+    squared_dist = (
+        mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]
+    ).square().sum(dim=-1)  # (B, N, K)
+
+    w = coordinate_weight
+    return (w * squared_dist).sum() / (w.sum() + eps)
+
+
+def masked_cage_consistency_loss(cage_full, cage_sampled, key_weight, eps=1e-8):
+    """
+    Cage-consistency MSE, restricted to the control points the sampled input
+    actually has evidence for.
+
+    key_weight (B, N, K) maps the K control points (cage vertices) to the N
+    sampled mesh vertices used to produce cage_sampled; a control point whose
+    column is all-zero was never referenced by any sampled vertex, so its
+    predicted position in cage_sampled carries no information from the input
+    and shouldn't be forced to match cage_full.
+
+    Args:
+        cage_full: (B, K, 3) cage predicted from the full mesh
+        cage_sampled: (B, K, 3) cage predicted from the subsampled mesh
+        key_weight: (B, N, K) coordinate weights from the subsampled forward pass
+    Returns:
+        scalar loss: per-sample mean squared error (averaged over xyz, matching
+        F.mse_loss units) over used control points, averaged over the batch
+    """
+    with torch.no_grad():
+        used = (key_weight.detach() > 0).any(dim=1).float()  # (B, K)
+        count = used.sum(dim=-1).clamp(min=1.0)  # (B,)
+
+    se = (cage_full - cage_sampled).square().mean(dim=-1)  # (B, K), mean over xyz like F.mse_loss
+    per_sample = (se * used).sum(dim=-1) / count  # (B,)
+    return per_sample.mean()
+
+
+def distance_loss(mesh_vertices, cage_vertices, coordinate_weight, eps=1e-8, tau=0.02):
     """
     Args:
         mesh_vertices: (B, N, 3)
         cage_vertices: (B, K, 3)
         coordinate_weight: (B, N, K)
-        tau: (scalar) threshold
     Returns:
         loss
+
+    Dispatches to a specific historical implementation via the DIST_LOSS_VARIANT
+    env var (v1 / v2buggy / v3 / v4 / dl2 / dl3), for the convergence sweep in
+    tmp_CBD/. Defaults to v4, the implementation active before the sweep.
     """
-    dist = torch.sqrt(((mesh_vertices[:, :, None, :] - cage_vertices[:, None, :, :]) ** 2).sum(dim=-1) + 1e-8)
-    penalty = torch.relu(dist - tau) ** 2
-    loss = (coordinate_weight * penalty).sum(dim=-1).mean()
-    return loss
-    
-# def distance_loss(
-#         mesh_vertices,
-#         cage_vertices,
-#         coordinate_weight,
-#         tau=0.02,
-#         return_e=False
-#     ):
+    variant = os.environ.get("DIST_LOSS_VARIANT", "v4")
+    if variant == "v1":
+        v1_tau = float(os.environ.get("DIST_LOSS_TAU", "0.01"))
+        return _distance_loss_v1_hinge(mesh_vertices, cage_vertices, coordinate_weight, tau=v1_tau)
+    elif variant == "v2buggy":
+        return _distance_loss_v2_buggy(mesh_vertices, cage_vertices, coordinate_weight, tau=tau)
+    elif variant == "v3":
+        return _distance_loss_v3_percage(mesh_vertices, cage_vertices, coordinate_weight, eps=eps)
+    elif variant == "v4":
+        return _distance_loss_v4_global(mesh_vertices, cage_vertices, coordinate_weight, eps=eps)
+    elif variant == "dl2":
+        return distance_loss2(mesh_vertices, cage_vertices, coordinate_weight, tau=tau)
+    elif variant == "dl3":
+        return distance_loss3(mesh_vertices, cage_vertices, coordinate_weight, tau=tau)
+    else:
+        raise ValueError(f"unknown DIST_LOSS_VARIANT: {variant!r}")
 
-#     """
-#     Args:
-#         mesh_vertices: (B, N, 3)
-#         cage_vertices: (B, K, 3)
-#         coordinate_weight: (B, N, K)
-#     Returns:
-#         loss
-#     """
-#     _,C,_=cage_vertices.shape
-    
-#     mesh_vertices_expand = mesh_vertices[:,:,None].repeat(1,1,C,1)
-#     cage_vertices_expand = cage_vertices[:,None]
-    
-#     mesh_vertices_dist = torch.square(mesh_vertices_expand - cage_vertices_expand).sum(dim=-1)
-
-#     w = coordinate_weight
-#     return (mesh_vertices_dist * w.unsqueeze(-1)).mean()
 
 def distance_loss2(
         mesh_vertices,
