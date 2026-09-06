@@ -208,7 +208,7 @@ class Trainer():
                 no_activation=last_act_list[4],
                 use_least_N_on_V=False,
                 is_train=True,
-                use_pou = ~self.opts.no_pou,
+                use_pou = not self.opts.no_pou,
                 device=self.device,
                 #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
                 hid_dim=128 if self.opts.align_latent else 256,
@@ -1508,41 +1508,23 @@ class Trainer():
                 # pseudo target W_t·sg(v_s) through φ should recover sg(v_s). Unlike cage-consist,
                 # this sends gradient into key_weight_model (ψ) via a genuinely different identity.
                 if self.opts.use_cyclic_loss:
+                    Bc = batch_template_v.shape[0]
                     tgt_template, tgt_template_normal, _ = self.train_dataset.sample_other_identity_neutral(
                         exclude_id_name=batch.id_name
                     )
                     if tgt_template is not None:
-                        Bc = batch_template_v.shape[0]
-                        tgt_neu = tgt_template.to(self.device)[None].expand(Bc, -1, -1)
-                        tgt_norm = tgt_template_normal.to(self.device)[None].expand(Bc, -1, -1)
-
-                        # in_type==2 (hat_mask) not handled here -- current configs use in_type<=1
-                        tgt_in = tgt_neu
-                        if self.model.in_type > 0:
-                            tgt_in = torch.cat([tgt_neu, tgt_norm], dim=-1)
-
-                        key_weight_t = self.model.key_weight_model(tgt_in, N=self.model.NZ)  # W_t
-                        key_weight_t=key_weight_t.detach()
-                        v_s = pred_cage_d.detach()  # sg(v_s)
-                        pseudo_target = torch.einsum('bnc,bci->bni', key_weight_t, v_s)
-                        if not self.model.use_full_vertex:
-                            pseudo_target = pseudo_target + tgt_neu
-
-                        deform_in_t = pseudo_target - tgt_neu
-                        if self.model.in_type > 0:
-                            deform_in_t = torch.cat([deform_in_t, tgt_norm], dim=-1)
-                        deform_in_t = torch.cat([deform_in_t, tgt_in], dim=-1)
-
-                        if self.model.use_shp:
-                            z_ID_t = self.model.shape_model(tgt_in)
-                            exp_z_t = self.model.exp_z_model(deform_in_t, z_ID_t)
-                            key_d_t = self.model.key_d_model(exp_z_t, z_ID_t)
-                        else:
-                            exp_z_t = self.model.exp_z_model(deform_in_t)
-                            key_d_t = self.model.key_d_model(exp_z_t)
-                        v_t = self.model.reshape_key_d(key_d_t, Bc)
-
-                        loss_dict['cyclic'] = F.mse_loss(v_s, v_t)
+                        batch_tgt_neu_v = tgt_template.to(self.device)[None].expand(Bc, -1, -1)
+                        batch_tgt_neu_n = tgt_template_normal.to(self.device)[None].expand(Bc, -1, -1)
+                        
+                        loss_cyclic, pred_cyclic_def, pred_cyclic_neu = self.model.cyclic_loss(
+                            batch_tgt_neu_v, 
+                            batch_vertices_v, 
+                            batch_tgt_neu_n, 
+                            batch_vertices_n,
+                            pred_cage_d.detach(),
+                            pred_cage_s.detach()
+                        )
+                        loss_dict['cyclic'] = loss_cyclic
 
                 # directly hanging mesh vertex position ----------------------------------------------------------
                 if self.model.use_full_vertex:
