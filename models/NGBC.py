@@ -338,9 +338,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
 
     def cyclic_loss(self, 
             source_vert, 
-            deform_vert, 
             source_norm, 
-            deform_norm, 
             pred_cage_d, 
             pred_cage_s, 
             hat_mask=None,
@@ -349,10 +347,21 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         """
         cyclic loss
         """
-        B, N, _ = deform_vert.shape
+        B = source_vert.shape[0]
+
+        # source_vert (target identity) and deform_vert (this batch's own identity) can have
+        # different vertex counts -- unlike forward()/process_input(), we can't build a
+        # source-vs-deform delta here. deform_vert/deform_norm are only used for B above;
+        # source_in (target identity only) is all key_weight_model needs.
+        source_in = source_vert
 
         hat_mask = plateau_hat_points(source_vert)
-        source_in, deform_in = self.process_input(source_vert, deform_vert, source_norm, deform_norm, hat_mask)
+
+        if self.in_type > 0:
+            source_in = torch.cat([source_in, source_norm], dim=-1)
+
+        if self.in_type==2:
+            source_in = torch.cat([source_in, hat_mask], dim=-1)
 
         key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
         key_weight = key_weight.detach()
@@ -368,8 +377,13 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             pred_deformed = def_v + source_vert
             pred_source = neu_v + source_vert
 
-        _, deform_in_td = self.process_input(source_vert, pred_deformed, source_norm, source_norm, hat_mask)
-        _, deform_in_ts = self.process_input(source_vert, source_vert, source_norm, source_norm, hat_mask)
+        deform_in_td = pred_deformed - source_vert
+        deform_in_ts = source_vert - source_vert
+        if self.in_type > 0:
+            deform_in_td = torch.cat([deform_in_td, source_norm], dim=-1)
+            deform_in_ts = torch.cat([deform_in_ts, source_norm], dim=-1)
+        deform_in_td = torch.cat([deform_in_td, source_in], dim=-1)
+        deform_in_ts = torch.cat([deform_in_ts, source_in], dim=-1)
 
         exp_z_td = self.exp_z_model(deform_in_td)
         key_d_td = self.key_d_model(exp_z_td)
