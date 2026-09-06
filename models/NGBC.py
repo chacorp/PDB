@@ -45,8 +45,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
                  tau=0.05,
                  device='cpu',
                  use_exp_recon=False, # was not necessary
-                 use_shp_recon=True, # necessary for training, but not needed for inference
-                 use_shp=True,
+                 use_shp_recon=False, # necessary for training, but not needed for inference
+                 use_shp=False,
                  use_pou=True,
                  use_full_vertex=False, # default: false (= delta form)
                  no_activation=False,
@@ -242,6 +242,22 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         log_txt += "============================================================\n"
         return log_txt
 
+    def process_input(self, source_vert, deform_vert, source_norm, deform_norm, hat_mask):
+        source_in = source_vert
+        deform_in = deform_vert - source_vert # as a delta
+        # deform_in = deform_vert # as a vertex
+            
+        if self.in_type > 0:
+            source_in = torch.cat([source_in, source_norm], dim=-1)
+            deform_in = torch.cat([deform_in, deform_norm], dim=-1)
+            
+        deform_in = torch.cat([deform_in, source_in], dim=-1)
+        
+        if self.in_type==2:
+            source_in = torch.cat([source_in, hat_mask], dim=-1)
+            deform_in = torch.cat([deform_in, hat_mask], dim=-1)
+        return source_in, deform_in
+    
     def forward(self, source_vert, deform_vert, source_norm, deform_norm, mesh_data, hat_mask=None, epoch=0, out_kw=False):
         """
         Args:
@@ -258,22 +274,9 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             reconstructed source mesh
         """
         B, N, _ = deform_vert.shape
-        
-        source_in = source_vert
-        deform_in = deform_vert-source_vert # as a delta
-        # deform_in = deform_vert # as a vertex
-        
+
         hat_mask = plateau_hat_points(source_vert)
-            
-        if self.in_type > 0:
-            source_in = torch.cat([source_in, source_norm], dim=-1)
-            deform_in = torch.cat([deform_in, deform_norm], dim=-1)
-            
-        deform_in = torch.cat([deform_in, source_in], dim=-1)
-        
-        if self.in_type==2:
-            source_in = torch.cat([source_in, hat_mask], dim=-1)
-            deform_in = torch.cat([deform_in, hat_mask], dim=-1)
+        source_in, deform_in = self.process_input(source_vert, deform_vert, source_norm, deform_norm, hat_mask)
         
         
         if self.use_shp:
@@ -316,19 +319,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         ## through the same exp/key predictors to get the cage at rest. Computed
         ## unconditionally (not just for use_full_vertex/out_type==1) since it's
         ## needed for cage-consistency and distance losses regardless of out_type.
-        source_in_s = source_vert
-        deform_in_s = source_vert-source_vert # as a delta
-        # deform_in_s = source_vert # as a vertex
-
-        if self.in_type > 0:
-            source_in_s = torch.cat([source_in_s, source_norm], dim=-1)
-            deform_in_s = torch.cat([deform_in_s, deform_norm], dim=-1)
-
-        deform_in_s = torch.cat([deform_in_s, source_in_s], dim=-1)
-
-        if self.in_type == 2:
-            source_in_s = torch.cat([source_in_s, hat_mask], dim=-1)
-            deform_in_s = torch.cat([deform_in_s, hat_mask], dim=-1)
+        source_in_s, deform_in_s = self.process_input(source_vert, source_vert, source_norm, deform_norm, hat_mask)
 
         if self.use_shp:
             exp_z_s = self.exp_z_model(deform_in_s, z_ID_B) # (B, 1, L)
@@ -344,6 +335,57 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
             
         return pred_deformed, recon_deformed, recon_source, exp_z, pred_source, hat_mask, key_weight, key_s, key_d
+
+    def cyclic_loss(self, 
+            source_vert, 
+            deform_vert, 
+            source_norm, 
+            deform_norm, 
+            pred_cage_d, 
+            pred_cage_s, 
+            hat_mask=None,
+            mode=1,
+        ):
+        """
+        cyclic loss
+        """
+        B, N, _ = deform_vert.shape
+
+        hat_mask = plateau_hat_points(source_vert)
+        source_in, deform_in = self.process_input(source_vert, deform_vert, source_norm, deform_norm, hat_mask)
+
+        key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
+        key_weight = key_weight.detach()
+        # --> (B, N, 4M) if self.opts.out_type == 2
+        
+        def_v = torch.einsum('bnc,bci->bni',key_weight,pred_cage_d)
+        neu_v = torch.einsum('bnc,bci->bni',key_weight,pred_cage_s)
+
+        if self.use_full_vertex:
+            pred_deformed = def_v
+            pred_source = neu_v
+        else:
+            pred_deformed = def_v + source_vert
+            pred_source = neu_v + source_vert
+
+        _, deform_in_td = self.process_input(source_vert, pred_deformed, source_norm, source_norm, hat_mask)
+        _, deform_in_ts = self.process_input(source_vert, source_vert, source_norm, source_norm, hat_mask)
+
+        exp_z_td = self.exp_z_model(deform_in_td)
+        key_d_td = self.key_d_model(exp_z_td)
+        v_td = self.reshape_key_d(key_d_td, B)
+        
+        exp_z_ts = self.exp_z_model(deform_in_ts)
+        key_d_ts = self.key_d_model(exp_z_ts)
+        v_ts = self.reshape_key_d(key_d_ts, B)
+
+        loss_neu = torch.nn.functional.mse_loss(v_ts, pred_cage_s)
+        loss_def = torch.nn.functional.mse_loss(v_td, pred_cage_d)
+        loss = loss_neu + loss_def
+        if mode == 2:
+            loss_recon = torch.nn.functional.mse_loss(pred_source, source_vert) # newly added
+            loss = loss + loss_recon
+        return loss, pred_deformed, pred_source
 
     def retarget(self, 
                  src_neu_vert, src_neu_norm, src_def_vert, src_def_norm, tgt_neu_vert, tgt_neu_norm,
