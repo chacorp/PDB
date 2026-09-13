@@ -1528,18 +1528,21 @@ class Trainer():
                         loss_dict['cyclic'] = loss_cyclic
 
                 # directly hanging mesh vertex position ----------------------------------------------------------
-                if self.model.use_full_vertex:
-                    if self.opts.no_t_mask:
-                        loss_dict['recon-neu'] = F.mse_loss(
-                            batch_template_v, pred_source
-                        )
-                    else:
-                        loss_dict['recon-neu'] = F.mse_loss(
-                            batch_template_v*t_mask, pred_source*t_mask
-                        )
-                        loss_dict['recon-neu'] += F.mse_loss(
-                            batch_template_v*inv_t_mask, pred_source*inv_t_mask
-                        )
+                # pred_source is delta-form (relative to batch_template_v) when out_type != 1
+                # (use_full_vertex False); ground it to absolute vertex space before comparing
+                # against batch_template_v, mirroring how pred_deformed is grounded above.
+                pred_source_v = pred_source if self.model.use_full_vertex else pred_source + batch_template_v
+                if self.opts.no_t_mask:
+                    loss_dict['recon-neu'] = F.mse_loss(
+                        batch_template_v, pred_source_v
+                    )
+                else:
+                    loss_dict['recon-neu'] = F.mse_loss(
+                        batch_template_v*t_mask, pred_source_v*t_mask
+                    )
+                    loss_dict['recon-neu'] += F.mse_loss(
+                        batch_template_v*inv_t_mask, pred_source_v*inv_t_mask
+                    )
                 #-------------------------------------------------------------------------------------------------
 
                 #-------( not used )------------------------------------------------------------------------------
@@ -1598,12 +1601,11 @@ class Trainer():
                             )
                         )
                     
-                    if self.model.use_full_vertex:
-                        pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
+                    pred_template_norm = calc_norm_torch(pred_source_v, batch.faces, at='verts')   # [1, V, 3]
 
-                        loss_dict['norm-neu'] = F.mse_loss(
-                            batch_template_n, pred_template_norm
-                        )
+                    loss_dict['norm-neu'] = F.mse_loss(
+                        batch_template_n, pred_template_norm
+                    )
                 #-------------------------------------------------------------------------------------------------
                 
                 # latent alignment loss --------------------------------------------------------------------------
@@ -1807,9 +1809,8 @@ class Trainer():
                         HB = batch.vertices.shape[0] // 2
                     
                         loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
-                        if self.model.use_full_vertex:
-                            loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source)
-
+                        pred_source_v = pred_source if self.model.use_full_vertex else pred_source + batch.template
+                        loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source_v)
 
                         if self.model.use_shp_recon:
                             loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
