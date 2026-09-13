@@ -36,42 +36,65 @@ class CageNet(nn.Module):
         Simple implementation of 'Neural Cages for Detail-preserving 3d Deformations'
         for Facial Animation Retargeting
     """
-    def __init__(self, 
+    def __init__(self,
                  in_dim=3,
-                 out_dim=3, 
+                 out_dim=3,
                  hid_dim=512,
                  device='cpu',
                  optim_cage=False,
+                 use_legacy=True,
                 ):
         super(CageNet, self).__init__()
-        
+
         # pointnet encoder
         self.device=device
         self.optim_cage = optim_cage
-        
-        
+        self.use_legacy = use_legacy
+
+
         # self.cage_v = nn.Parameter(torch.rand(128, 3))
         test_cage = trimesh.load(f'{__abs_path__}/test_cage.obj') # 512 vertices, 1020 faces, y-up aligned
         ## may need a better mesh!
         self.C = test_cage.vertices.shape[0]
 
-        self.cage_v = torch.tensor(test_cage.vertices).float().to(device)
-        self.cage_f = torch.tensor(test_cage.faces).long().to(device)
-        # if self.optim_cage:
-        #     self.cage_v = nn.Parameter(self.cage_v)
+        if use_legacy:
+            # pre-2aca4cb architecture (matches checkpoints trained before the [Feature] neuralcage
+            # update, e.g. ckpts_CBD/2025-10-20-00-15-40-CBD) -- default, since the newer architecture
+            # below hasn't trained successfully either.
+            self.cage_v = torch.tensor(test_cage.vertices+np.array([0,0.1,0])).float().to(device)
+            self.cage_f = torch.tensor(test_cage.faces).long().to(device)
 
-        ## pointnet encoder (deep_cage style: no STN, no normalization)
-        self.encoder = PointNetFeatSimple(in_dim, hid_dim).to(device)
+            self.encoder = PointNet_small(
+                in_dim, hid_dim, out_type='global',
+                no_norm_layer=True
+            ).to(device)
 
-        ## MLP decoder (deep_cage MLPDeformer style: bottleneck -> 512 -> 256 -> out)
-        self.nc_decoder = MLP(
-            [hid_dim, hid_dim, 256, out_dim*self.C],
-            act='lrelu', nrm='none',
-        ).to(device)
-        self.nd_decoder = MLP(
-            [hid_dim+hid_dim, hid_dim, 256, out_dim*self.C],
-            act='lrelu', nrm='none',
-        ).to(device)
+            self.nc_decoder = MLP(
+                [hid_dim]+[hid_dim]*2+[out_dim*self.C],
+                act='lrelu', nrm='none',
+            ).to(device)
+            self.nd_decoder = MLP(
+                [hid_dim+hid_dim]+[hid_dim]*2+[out_dim*self.C],
+                act='lrelu', nrm='none',
+            ).to(device)
+        else:
+            self.cage_v = torch.tensor(test_cage.vertices).float().to(device)
+            self.cage_f = torch.tensor(test_cage.faces).long().to(device)
+            # if self.optim_cage:
+            #     self.cage_v = nn.Parameter(self.cage_v)
+
+            ## pointnet encoder (deep_cage style: no STN, no normalization)
+            self.encoder = PointNetFeatSimple(in_dim, hid_dim).to(device)
+
+            ## MLP decoder (deep_cage MLPDeformer style: bottleneck -> 512 -> 256 -> out)
+            self.nc_decoder = MLP(
+                [hid_dim, hid_dim, 256, out_dim*self.C],
+                act='lrelu', nrm='none',
+            ).to(device)
+            self.nd_decoder = MLP(
+                [hid_dim+hid_dim, hid_dim, 256, out_dim*self.C],
+                act='lrelu', nrm='none',
+            ).to(device)
 
     @staticmethod
     def count_parameters(module):
