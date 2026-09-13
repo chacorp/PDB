@@ -1133,8 +1133,7 @@ class Trainer():
 
         log_txt = "========< Active losses (train_v5) >========\n"
         log_txt += _line('recon-def')
-        if self.model.use_full_vertex:
-            log_txt += _line('recon-neu')
+        log_txt += _line('recon-neu')
         if self.opts.align_latent:
             log_txt += _line('exp-z')
         if self.model.use_exp_recon:
