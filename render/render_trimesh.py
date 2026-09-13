@@ -149,7 +149,7 @@ def get_mesh(selection, SELECT_MESH=0):
                 mesh = pickle.load(f)
         if selection=='biwi':
             biwi_trimesh = trimesh.load(f'{abs_path}/test-mesh/BIWI.ply')
-            with open(f'{__abs_path__}/test-mesh/biwi_templates.pkl', 'rb') as f:
+            with open(f'{abs_path}/test-mesh/biwi_templates.pkl', 'rb') as f:
                 mesh = pickle.load(f)
             mesh['face']=biwi_trimesh.faces
         elif selection=='mf_SEN' or selection=='mf_ROM' or selection=='mf':
