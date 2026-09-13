@@ -966,24 +966,31 @@ def plot_image_array_VC(V,
         plt.show()
         plt.close()
         
-def plot_image_array_diff(Vs, 
-                     Fs, 
+def plot_image_array_diff(Vs,
+                     Fs,
                      Ds,
-                     rot_list=None, 
-                     size=6, 
-                     norm=False, 
-                     mode='mesh', 
-                     linewidth=1, 
-                     linestyle='solid', 
+                     rot_list=None,
+                     size=6,
+                     norm=False,
+                     mode='mesh',
+                     linewidth=1,
+                     linestyle='solid',
                      light_dir=np.array([0,0,1]),
                      bg_black = True,
-                    logdir='.', 
-                    name='000', 
+                    logdir='.',
+                    name='000',
                      save=False,
                     draw_base=True,
+                    vmin=None,
+                    vmax=None,
                     ):
     """
     Renders displacement for each mesh: requires vertices for each mesh sequence
+
+    vmin/vmax: if given, use this fixed displacement range (in mesh units, before
+    the [0,1] normalization) instead of each panel's own min/max, so displacement
+    color is directly comparable across panels/images. Default (None) preserves
+    the original per-panel auto-normalization behavior.
     """
     num_meshes = len(Vs)
     if bg_black:
@@ -1070,9 +1077,11 @@ def plot_image_array_diff(Vs,
         diff = np.linalg.norm(diff, axis=1) # N 3
         diff = np.linalg.norm(diff, axis=1) # N
         
-        diff_min, diff_max = diff.min(), diff.max()
-        if diff_max > 0:
-            diff = (diff - diff_min) / (diff_max - diff_min)    
+        diff_min, diff_max = (0.0, vmax) if vmax is not None else (diff.min(), diff.max())
+        if vmin is not None:
+            diff_min = vmin
+        if diff_max > diff_min:
+            diff = np.clip((diff - diff_min) / (diff_max - diff_min), 0, 1)
 
         C = calc_face_norm(V,F) @ model[:3,:3].T
 
