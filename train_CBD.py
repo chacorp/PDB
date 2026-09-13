@@ -1237,6 +1237,9 @@ class Trainer():
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
+        if self.opts.use_cyclic_loss:
+            os.makedirs(f"{self.opts.log_dir}/img/train/cyclic", exist_ok=True)
+            os.makedirs(f"{self.opts.log_dir}/img/valid/cyclic", exist_ok=True)
         
         # save options as json -----------------------------------------------------------------------------------
         with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
@@ -1509,7 +1512,7 @@ class Trainer():
                 # this sends gradient into key_weight_model (ψ) via a genuinely different identity.
                 if self.opts.use_cyclic_loss:
                     Bc = batch_template_v.shape[0]
-                    tgt_template, tgt_template_normal, _ = self.train_dataset.sample_other_identity_neutral(
+                    tgt_template, tgt_template_normal, tgt_faces, _ = self.train_dataset.sample_other_identity_neutral(
                         exclude_id_name=batch.id_name
                     )
                     if tgt_template is not None:
@@ -1517,10 +1520,8 @@ class Trainer():
                         batch_tgt_neu_n = tgt_template_normal.to(self.device)[None].expand(Bc, -1, -1)
                         
                         loss_cyclic, pred_cyclic_def, pred_cyclic_neu = self.model.cyclic_loss(
-                            batch_tgt_neu_v, 
-                            batch_vertices_v, 
-                            batch_tgt_neu_n, 
-                            batch_vertices_n,
+                            batch_tgt_neu_v,
+                            batch_tgt_neu_n,
                             pred_cage_d.detach(),
                             pred_cage_s.detach()
                         )
@@ -1599,7 +1600,7 @@ class Trainer():
                     
                     if self.model.use_full_vertex:
                         pred_template_norm = calc_norm_torch(pred_source, batch.faces, at='verts')   # [1, V, 3]
-                        
+
                         loss_dict['norm-neu'] = F.mse_loss(
                             batch_template_n, pred_template_norm
                         )
@@ -1709,6 +1710,33 @@ class Trainer():
                         logdir=save_logdir,
                         name=save_img_name, save=True
                     )
+
+                    # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
+                    # retargeted expression, saved as its own image (mirrors the validation version).
+                    if self.opts.use_cyclic_loss and tgt_template is not None:
+                        cyc_faces = tgt_faces.cpu()
+                        cyc_v_list = [
+                            batch_tgt_neu_v[0].cpu().detach(),
+                            pred_cyclic_neu[0].cpu().detach(),
+                            pred_cyclic_def[0].cpu().detach(),
+                            pred_cyclic_neu[1].cpu().detach(),
+                            pred_cyclic_def[1].cpu().detach(),
+                            pred_cyclic_neu[HB].cpu().detach(),
+                            pred_cyclic_def[HB].cpu().detach(),
+                            pred_cyclic_neu[BS-1].cpu().detach(),
+                            pred_cyclic_def[BS-1].cpu().detach(),
+                        ]
+                        cyc_len_v = len(cyc_v_list)
+                        cyc_f_list = [cyc_faces] * cyc_len_v
+                        save_logdir_cyc = f"{self.opts.log_dir}/img/train/cyclic"
+
+                        plot_image_array(
+                            cyc_v_list, cyc_f_list,
+                            rot_list=[[0,0,0]]*cyc_len_v,
+                            size=1, bg_black=False, mode='shade',
+                            logdir=save_logdir_cyc,
+                            name=save_img_name, save=True
+                        )
                 
                 if self.opts.debug:
                     break
@@ -1751,7 +1779,9 @@ class Trainer():
                     "shape": 0.0,
                     "total": 0.0
                 }
-            
+                if self.opts.use_cyclic_loss:
+                    running_losses_val['cyclic'] = 0.0
+
                 counter = 0
                 pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
                 for index, batch in pbar:
@@ -1760,8 +1790,8 @@ class Trainer():
                     # model validation -------------------------------------------------------------------------------
                     with torch.no_grad():
                         pred_vertices, recon_vertices, recon_source, exp_z, \
-                        pred_source, _, _, _, _ = self.model(
-                            batch.template, batch.vertices, 
+                        pred_source, _, _, pred_cage_s, pred_cage_d = self.model(
+                            batch.template, batch.vertices,
                             batch.template_normal, batch.vertices_normal,
                             batch.mesh_data, epoch=epoch
                         )
@@ -1779,13 +1809,31 @@ class Trainer():
                         loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
                         if self.model.use_full_vertex:
                             loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source)
-                        
+
+
                         if self.model.use_shp_recon:
                             loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
                         if self.model.use_exp_recon:
                             loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
                         # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
-                    
+
+                        if self.opts.use_cyclic_loss:
+                            tgt_template, tgt_template_normal, tgt_faces, _ = self.valid_dataset.sample_other_identity_neutral(
+                                exclude_id_name=batch.id_name
+                            )
+                            if tgt_template is not None:
+                                Bc = batch.vertices.shape[0]
+                                batch_tgt_neu_v = tgt_template.to(self.device)[None].expand(Bc, -1, -1)
+                                batch_tgt_neu_n = tgt_template_normal.to(self.device)[None].expand(Bc, -1, -1)
+
+                                loss_cyclic, pred_cyclic_def, pred_cyclic_neu = self.model.cyclic_loss(
+                                    batch_tgt_neu_v,
+                                    batch_tgt_neu_n,
+                                    pred_cage_d,
+                                    pred_cage_s
+                                )
+                                loss_dict['cyclic'] = loss_cyclic
+
                         # get total loss
                         loss = 0
                         for key, value in loss_dict.items():
@@ -1828,15 +1876,42 @@ class Trainer():
                         f_list=[faces] * len_v
                         save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
                         save_img_name = f"{epoch:03d}_{counter:04d}"
-                    
+
                         plot_image_array(
-                            v_list, f_list, 
+                            v_list, f_list,
                             rot_list=[[0,0,0]]*len_v,
-                            size=1, bg_black=False, mode='shade', 
-                            logdir=save_logdir, 
+                            size=1, bg_black=False, mode='shade',
+                            logdir=save_logdir,
                             name=save_img_name, save=True
                         )
-                    
+
+                        # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
+                        # retargeted expression, saved as its own image so it's comparable side by side.
+                        if self.opts.use_cyclic_loss and tgt_template is not None:
+                            cyc_faces = tgt_faces.cpu()
+                            cyc_v_list = [
+                                batch_tgt_neu_v[0].cpu().detach(),
+                                pred_cyclic_neu[0].cpu().detach(),
+                                pred_cyclic_def[0].cpu().detach(),
+                                pred_cyclic_neu[1].cpu().detach(),
+                                pred_cyclic_def[1].cpu().detach(),
+                                pred_cyclic_neu[HB].cpu().detach(),
+                                pred_cyclic_def[HB].cpu().detach(),
+                                pred_cyclic_neu[BS-1].cpu().detach(),
+                                pred_cyclic_def[BS-1].cpu().detach(),
+                            ]
+                            cyc_len_v = len(cyc_v_list)
+                            cyc_f_list = [cyc_faces] * cyc_len_v
+                            save_logdir_cyc = f"{self.opts.log_dir}/img/valid/cyclic"
+
+                            plot_image_array(
+                                cyc_v_list, cyc_f_list,
+                                rot_list=[[0,0,0]]*cyc_len_v,
+                                size=1, bg_black=False, mode='shade',
+                                logdir=save_logdir_cyc,
+                                name=save_img_name, save=True
+                            )
+
                     # ------------------------------------------------------------------------------------------------
                     if self.opts.debug:
                         break

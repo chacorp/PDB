@@ -1231,8 +1231,8 @@ class CBDDataset(data.Dataset):
             max_tries (int): number of resample attempts before giving up on avoidance.
 
         Returns:
-            (template [V,3], template_normal [V,3], id_name) or (None, None, None)
-            if no dataset is currently enabled.
+            (template [V,3], template_normal [V,3], faces [F,3], id_name) or
+            (None, None, None, None) if no dataset is currently enabled.
         """
         pools = []
         if self.use_voca:
@@ -1246,16 +1246,16 @@ class CBDDataset(data.Dataset):
         if self.use_mf_ROM:
             pools.append((self.get_multiface_ROM, len(self.mf_ROM_id_list)))
         if not pools:
-            return None, None, None
+            return None, None, None, None
 
-        template = template_normal = id_name = None
+        template = template_normal = faces = id_name = None
         for _ in range(max_tries):
             get_fn, n_id = pools[random.randrange(len(pools))]
             datas = get_fn(0, random.randrange(n_id))
-            template, template_normal, id_name = datas[0], datas[3], datas[7]
+            template, template_normal, faces, id_name = datas[0], datas[3], datas[2], datas[7]
             if exclude_id_name is None or id_name != exclude_id_name:
                 break
-        return template, template_normal, id_name
+        return template, template_normal, faces, id_name
 
     def random_rotation_matrix(self, randgen=None):
         """
