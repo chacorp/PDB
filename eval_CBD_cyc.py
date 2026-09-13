@@ -69,12 +69,12 @@ def Options():
 #     parser.add_argument("--out_type",      type=int,   default=1,      
 #                         help='output type (0: cage v, 1: cage delta_v, 2: cage delta_T mat, 3: vertex T mat')
     #### Choose a last layer activation for key_weight_model()
-#     parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none"],
-#         help="Choose a last layer activation for NGBC.key_weight_model()"
-#     )
+    parser.add_argument("--last_activation", default="relu", choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"],
+        help="Choose a last layer activation for NGBC.key_weight_model()"
+    )
 
-#     parser.add_argument("--no_pou",dest='no_pou', action='store_true')
-#     parser.set_defaults(no_pou=False)
+    parser.add_argument("--no_pou",dest='no_pou', action='store_true')
+    parser.set_defaults(no_pou=False)
 
 #     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
 
