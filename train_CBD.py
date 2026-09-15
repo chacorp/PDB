@@ -63,7 +63,7 @@ def Options():
     
     parser.add_argument("--log_dir",      type=str,   default="ckpts_CBD")
 
-    parser.add_argument("--version",      type=int,   default=1,      help='train method (1: baseline, 2: ours)')
+    parser.add_argument("--version",      type=int,   default=1,      help='train model (1: baseline, 5: NGBC, 6: PDBplus)')
     parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
     
     parser.add_argument("--in_type",      type=int,   default=1,
@@ -173,6 +173,16 @@ class Trainer():
     def __init__(self, opts):
         # set opts
         self.opts = opts
+        if opts.version == 6:
+            if opts.out_type != 0:
+                raise ValueError('PDBplus requires --version 6 --out_type 0.')
+            if opts.use_cyclic_loss:
+                raise ValueError('PDBplus cyclic loss is not implemented; omit --use_cyclic_loss.')
+            if opts.use_dist_loss:
+                raise ValueError('PDBplus returns canonical displacements, not cage positions; '
+                                 'omit --use_dist_loss.')
+            if opts.last_activation is None:
+                opts.last_activation = 'relu'
         self.set_seed(self.opts)
         self.device = opts.device
 
@@ -194,8 +204,12 @@ class Trainer():
         #         is_train=True, 
         #         device=self.device,
         #     )
-        elif opts.version==5:
-            self.model = NeuralGeneralizedBarycentricCoordinate(
+        elif opts.version in (5, 6):
+            model_cls = NeuralGeneralizedBarycentricCoordinate
+            if opts.version == 6:
+                from models.PDBplus import PDBplus
+                model_cls = PDBplus
+            self.model = model_cls(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False, # not used yet
@@ -1121,6 +1135,12 @@ class Trainer():
         
         return template, vertices, scale, trans
 
+    def _neutral_prediction_vertices(self, pred_source, template):
+        """NGBC delta outputs need grounding; PDBplus already returns positions."""
+        if self.opts.version == 6 or self.model.use_full_vertex:
+            return pred_source
+        return pred_source + template
+
     def log_active_losses_v5(self):
         """
         Per-loss on/off status + lambda weight for train_v5, mirroring the gating used
@@ -1227,7 +1247,8 @@ class Trainer():
         now = datetime.datetime.now()
         now = now.strftime("%Y-%m-%d-%H-%M-%S")
         
-        tag = f"-NGBCv{self.opts.version}"
+        model_label = 'PDBplus' if self.opts.version == 6 else 'NGBC'
+        tag = f"-{model_label}v{self.opts.version}"
         if self.opts.optim_cage:
             tag += "-optim_cage"
         self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
@@ -1527,10 +1548,9 @@ class Trainer():
                         loss_dict['cyclic'] = loss_cyclic
 
                 # directly hanging mesh vertex position ----------------------------------------------------------
-                # pred_source is delta-form (relative to batch_template_v) when out_type != 1
-                # (use_full_vertex False); ground it to absolute vertex space before comparing
-                # against batch_template_v, mirroring how pred_deformed is grounded above.
-                pred_source_v = pred_source if self.model.use_full_vertex else pred_source + batch_template_v
+                # Resolve the model-specific neutral output convention once,
+                # shared by neutral position loss and neutral normal loss.
+                pred_source_v = self._neutral_prediction_vertices(pred_source, batch_template_v)
                 if self.opts.no_t_mask:
                     loss_dict['recon-neu'] = F.mse_loss(
                         batch_template_v, pred_source_v
@@ -1808,7 +1828,7 @@ class Trainer():
                         HB = batch.vertices.shape[0] // 2
                     
                         loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
-                        pred_source_v = pred_source if self.model.use_full_vertex else pred_source + batch.template
+                        pred_source_v = self._neutral_prediction_vertices(pred_source, batch.template)
                         loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source_v)
 
                         if self.model.use_shp_recon:
@@ -2561,7 +2581,7 @@ if __name__ == "__main__":
         trainer.train_v1(epochs=opts.max_epoch)
     elif opts.version==2:
         trainer.train_v2(epochs=opts.max_epoch)
-    elif opts.version==5 or opts.version==8 or opts.version==55:
+    elif opts.version in (5, 6, 8, 55):
         trainer.train_v5(epochs=opts.max_epoch)
         # trainer.train_v6(epochs=opts.max_epoch)
     else:
