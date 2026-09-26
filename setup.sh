@@ -30,9 +30,14 @@ elif [[ $MODE == "1" ]]; then
     # ## change Makefile:L7 -> @pip install --no-deps --verbose --no-cache-dir .
     # ## comment out requirements.txt -> # numpy pyopengl opencv-python
     # cd mesh && make all && cd ..
-    ## For the case when you have error installing pytorch3d ...
-    cp cpp_extension.py /usr/local/lib/python3.8/dist-packages/torch/utils/cpp_extension.py
-    pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.6"
+    ## ------------------ For the case when you have error installing pytorch3d ... ------------------
+    # cp cpp_extension.py /usr/local/lib/python3.8/dist-packages/torch/utils/cpp_extension.py
+    # pip install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.6"
+
+    curl -sL -o _tmp/pytorch3d_wheel/pytorch3d-0.7.5-cp310-cp310-linux_x86_64.whl \
+    "https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt210/pytorch3d-0.7.5-cp310-cp310-linux_x86_64.whl"
+    pip install --force-reinstall --no-deps _tmp/pytorch3d_wheel/pytorch3d-0.7.5-cp310-cp310-linux_x86_64.whl
+    ## ------------------------------------------------------------------------------------------
     pip install easydict h5py protobuf==3.20.0
 elif [[ $MODE == "3" ]]; then
     pip install h5py
