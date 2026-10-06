@@ -1,6 +1,6 @@
 """
 Self / cross / cyclic retargeting of the MF test identity and ICT m00
-animations with the aligned stylized meshes (test-mesh/test-*-aligned.obj) as
+animations with the aligned stylized meshes (test-mesh/, see TARGETS) as
 targets, for the NC / NFS / PDB models:
   self   : source expression -> source neutral (reconstruction)
   cross  : source expression -> target neutral
@@ -38,7 +38,19 @@ from vis_CBD_retarget_fig import Pipeline  # noqa: E402
 from eval_CBD_cyc import Options  # noqa: E402
 from eval_CBD import Trainer  # noqa: E402
 
-TARGETS = ['aura', 'bowen', 'jupiter', 'proteus']
+# target name -> aligned mesh under test-mesh/
+TARGETS = {
+    'aura': 'test-aura-aligned.obj',
+    'bowen': 'test-bowen-aligned.obj',
+    'jupiter': 'test-jupiter-aligned.obj',
+    'proteus': 'test-proteus-aligned.obj',
+    'bonnie': 'bonnie-bald-align.obj',
+    'malcolm': 'malcolm-align.obj',
+    'mary': 'mary-align.obj',
+    'morphy': 'morphy-bald-align.obj',
+    'piers': 'piers-align.obj',
+    'girl': 'girl-align.obj',
+}
 MF_TEST_IDX = 12
 ICT_ID_M00 = 0
 ICT_EXP_924 = 1
@@ -87,8 +99,8 @@ def build_opts(ckpt, version):
 
 def load_targets():
     out = {}
-    for n in TARGETS:
-        m = trimesh.load(f'test-mesh/test-{n}-aligned.obj', process=False, maintain_order=True)
+    for n, fn in TARGETS.items():
+        m = trimesh.load(f'test-mesh/{fn}', process=False, maintain_order=True)
         out[n] = (np.asarray(m.vertices, float), np.asarray(m.faces, np.int64))
     return out
 
@@ -244,6 +256,7 @@ def save_cache(cache, targets, srcs):
     for tname, (tv, tf) in targets.items():
         d[f'tgt/{tname}/v'] = tv
         d[f'tgt/{tname}/f'] = tf
+        d[f'tgt/{tname}/file'] = np.array(TARGETS[tname])
     for sname, s in srcs.items():
         d[f'src/{sname}/v'] = s['neutral_v']
         d[f'src/{sname}/f'] = s['faces']

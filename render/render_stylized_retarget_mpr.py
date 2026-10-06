@@ -194,7 +194,7 @@ HTML_HEAD = """<!doctype html>
 def write_html(targets, sources, models, c):
     parts = [HTML_HEAD,
              '<h1>stylized mesh retargeting (' + ' / '.join(models) + '): self / cross / cyclic</h1>',
-             '<p class="legend">Targets: aligned stylized meshes (test-mesh/test-*-aligned.obj). '
+             '<p class="legend">Targets: aligned stylized meshes under test-mesh/. '
              'Left: Source Neutral (plain) / Source Expression (diff vs source neutral, own scale) / '
              'Target Neutral (plain). Right: self = source expression reconstructed on the source neutral, '
              'cross = source expression on the target neutral, cyclic = source &rarr; target &rarr; source. '
@@ -210,7 +210,7 @@ def write_html(targets, sources, models, c):
     parts.append('<section class="figure-section">')
     for s, t in scen:
         parts.append(f'<h2 id="{s}_to_{t}">{s} &rarr; {t} &mdash; source: {SRC_LABEL.get(s, s)}, '
-                     f'target: test-{t}-aligned</h2>')
+                     f'target: {c[f"tgt/{t}/file"]}</h2>')
         for fidx in c[f'src/{s}/idx']:
             d = FIG_ROOT / f'{s}_to_{t}' / f'frame_{fidx:06d}'
             parts.append(f'<h3>frame {fidx}</h3>')
