@@ -59,7 +59,7 @@ def main():
                 faces = [sf, tf] + [tf] * len(models)
                 for view, rot in VIEWS:
                     mpr.plot_mesh_image(
-                        panels, faces, rot_list=[rot] * len(panels), size=5, norm=False,
+                        panels, faces, rot_list=[rot] * len(panels), size=8, norm=False,
                         mode='shade', savedir=str(d), name=f'frame_{fidx:06d}_{view}', save=True,
                     )
                 print(f'  saved {tname} {sname} frame {fidx}', flush=True)
@@ -80,8 +80,8 @@ def write_html(targets, sources, models, c):
              '<style>body{font-family:-apple-system,sans-serif;margin:24px;color:#111}'
              'h2{border-bottom:1px solid #ddd;padding-bottom:6px}h3{margin-top:24px}'
              '.row{display:flex;gap:8px;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap}'
-             '.cell{display:flex;flex-direction:column;align-items:center;font-size:12px}'
-             '.cell img{max-width:300px;border:1px solid #ddd}.missing{color:#999;font-size:11px;padding:8px}'
+             '.cell{display:flex;flex-direction:column;align-items:center;font-size:12px;max-width:100%}'
+             '.cell img{max-width:100%;border:1px solid #ddd}.missing{color:#999;font-size:11px;padding:8px}'
              '</style></head><body>',
              '<h1>stylized mesh cross retargeting (' + ' / '.join(models) + ')</h1>',
              '<p>columns: ' + ' | '.join(cols) + '. front and side per frame.</p>']
