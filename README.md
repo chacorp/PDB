@@ -1,17 +1,17 @@
-# PDF: Point-Based Deformation Factorization for Facial Animation Retargeting
+# PDB: Point-Based Deformation Blending for Facial Animation Retargeting
 
 <img src="assets/multi_scene_6faces.gif" alt="teaser" width="100%"/>
 
 <!-- <a href=""><img src="https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg" height=22.5></a> -->
-<a href="https://chacorp.github.io/NeuralFacialAnimation/"><img src="https://img.shields.io/static/v1?label=Project&message=Page&color=red" height=22.5></a>
+<a href="https://chacorp.github.io/PDB/"><img src="https://img.shields.io/static/v1?label=Project&message=Page&color=red" height=22.5></a>
 
-This is the official implementation of the paper **"PDF: Point-Based Deformation Factorization for Facial Animation Retargeting"**.
+This is the official implementation
 
 ## TODOs
 - [x] Installation
 - [x] Inference
 - [x] Train code
-- [x] Evaluation code
+- [ ] Evaluation code
 - [ ] Pretrained model
 - [ ] Dataloader for custom data
     - [x] Preparation code `utils/data_prepare.py`
