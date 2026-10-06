@@ -116,7 +116,24 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             self.out_dim = 6 # (6D + translation 3) will be reshaped into 3x4 matrix
             M_ = num_cage_vertices
             num_cage_vertices = num_cage_vertices * 4
-            
+
+            from utils.exp_utils import create_BN
+            self._6D_to_rot_ = create_BN
+        elif self.out_type == 4: # transform matrix, LBS-corrected version of out_type=2
+            # unlike out_type=2, num_cage_vertices is NOT expanded x4 here -- key_weight_model
+            # stays sized at the original M (one weight per cage point, applied to the whole
+            # [R|t] transform via apply_key_d), instead of one independent weight per R-column/t.
+            self.use_full_vertex = True
+            self.out_dim = 9 # (6D + translation 3) will be reshaped into 3x4 matrix
+            M_ = num_cage_vertices
+
+            from utils.exp_utils import from_6D_to_rotation_matrix_torch as _6D_to_rot_
+            self._6D_to_rot_ = _6D_to_rot_
+        elif self.out_type == 5: # transform matrix (compskin setting), LBS-corrected version of out_type=3
+            self.use_full_vertex = True
+            self.out_dim = 6 # (6D + translation 3) will be reshaped into 3x4 matrix
+            M_ = num_cage_vertices
+
             from utils.exp_utils import create_BN
             self._6D_to_rot_ = create_BN
         else:
@@ -172,15 +189,15 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             self.key_d_model = Model_mk2_1(
                 in_dim=L,
                 style_dim=L,
-                out_dim= M_*self.out_dim if (self.out_type == 2) or (self.out_type == 3) else M*self.out_dim,
-                num_layers=self.num_layers, 
+                out_dim= M_*self.out_dim if (self.out_type in (2, 3, 4, 5)) else M*self.out_dim,
+                num_layers=self.num_layers,
                 use_style=True, out_type='global'
             ).to(device)
         else:
             self.key_d_model = LinearEncoder(
                 in_dim=L,
-                out_dim= M_*self.out_dim if (self.out_type == 2) or (self.out_type == 3) else M*self.out_dim,
-                num_layers=self.num_layers, 
+                out_dim= M_*self.out_dim if (self.out_type in (2, 3, 4, 5)) else M*self.out_dim,
+                num_layers=self.num_layers,
                 out_type='global'
             ).to(device)
 
@@ -214,12 +231,52 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             key_d = self._6D_to_rot_(key_d)# (B, M, 3, 4)
             key_d = key_d.permute(0,1,3,2).reshape(B, -1, 3) # (B, M4, 3)
             #key_d = key_d.permute(0,3,1,2).reshape(B, -1, 3) # (B, 4M, 3)
-        
+
+        elif self.out_type == 4:
+            # LBS-corrected version of out_type=2: keep [R|t] as (B, M, 4, 3) instead of
+            # flattening M and the 4 rows (R's 3 columns + t) together -- apply_key_d needs
+            # the per-cage-point structure intact to apply R/t to the actual vertex position.
+            key_d = key_d.reshape(B,self.num_cage_vertices, 9)
+            tmp_R, tmp_t = key_d[...,:6], key_d[...,6:]
+
+            tmp_R = self._6D_to_rot_(tmp_R).reshape(B, -1, 3, 3)
+            key_d = torch.cat([tmp_R, tmp_t[..., None]], dim=-1) # (B, M, 3, 4)
+            key_d = key_d.permute(0,1,3,2) # (B, M, 4, 3) -- NOT flattened, unlike out_type=2
+
+        elif self.out_type == 5:
+            # LBS-corrected version of out_type=3
+            key_d = key_d.reshape(B,self.num_cage_vertices, 6)
+            key_d = self._6D_to_rot_(key_d) # (B, M, 3, 4)
+            key_d = key_d.permute(0,1,3,2) # (B, M, 4, 3) -- NOT flattened, unlike out_type=3
+
         else:
             key_d = key_d.reshape(B, self.num_cage_vertices, 3)
             # key_v = self.key_d_model(exp_z_v, z_ID_B).reshape(B, M, 3)
-        
+
         return key_d
+
+    def apply_key_d(self, key_weight, key_d, v):
+        """
+        Blend key_d (per-cage-point predicted quantity) via key_weight to produce a
+        per-vertex output.
+
+        out_type 0/1/2/3 (legacy): key_d is (B, M, 3) or the flattened (B, 4M, 3) transform
+        form: a plain weighted sum, unchanged from the original implementation.
+
+        out_type 4/5 (LBS-corrected transform form): key_d is (B, M, 4, 3), holding a
+        [R|t] 4x3 affine block per cage point (rows: R's 3 columns, then t). v is padded
+        to homogeneous [v;1] and multiplied through per (vertex, cage-point) pair to get
+        the actual R_m @ v_n + t_m, which is then blended by key_weight (B, N, M) and
+        summed over cage points -- this is what makes out_type=4/5 genuine LBS, unlike
+        out_type=2/3 where key_weight independently weights R's raw columns/t instead of
+        the transform applied to v.
+        """
+        if key_d.dim() == 3:
+            return torch.einsum('bnc,bci->bni', key_weight, key_d)
+
+        v_hom = torch.cat([v, torch.ones_like(v[..., :1])], dim=-1)      # (B, N, 4)
+        transformed = torch.einsum('bnk,bmkj->bnmj', v_hom, key_d)       # (B, N, M, 3) = R_m@v_n + t_m
+        return (transformed * key_weight.unsqueeze(-1)).sum(dim=2)       # (B, N, 3)
 
     @staticmethod
     def count_parameters(module):
@@ -291,8 +348,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         key_d = self.reshape_key_d(key_d, B)
             
         key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
-        # --> (B, N, 4M) if self.opts.out_type == 2
-        delta_v = torch.einsum('bnc,bci->bni',key_weight,key_d)
+        # --> (B, N, 4M) if self.opts.out_type in (2, 3) (legacy, non-LBS transform form)
+        delta_v = self.apply_key_d(key_weight, key_d, source_vert)
 
         
         if self.use_full_vertex:
@@ -329,7 +386,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             key_s = self.key_d_model(exp_z_s)
         key_s = self.reshape_key_d(key_s, B)
 
-        pred_source = torch.einsum('bnc,bci->bni',key_weight,key_s)
+        pred_source = self.apply_key_d(key_weight, key_s, source_vert)
         
         if out_kw:
             return pred_deformed, recon_deformed, recon_source, exp_z, key_d, key_weight
@@ -339,8 +396,9 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
     def cyclic_loss(self, 
             source_vert, 
             source_norm, 
-            pred_cage_d, 
-            pred_cage_s, 
+            pred_cage_d, # detached
+            pred_cage_s, # detached
+            pred_key_weight, # detached
             hat_mask=None,
             mode=1,
         ):
@@ -365,10 +423,10 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
 
         key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, N, M)
         key_weight = key_weight.detach()
-        # --> (B, N, 4M) if self.opts.out_type == 2
-        
-        def_v = torch.einsum('bnc,bci->bni',key_weight,pred_cage_d)
-        neu_v = torch.einsum('bnc,bci->bni',key_weight,pred_cage_s)
+        # --> (B, N, 4M) if self.opts.out_type in (2, 3) (legacy, non-LBS transform form)
+
+        def_v = self.apply_key_d(key_weight, pred_cage_d, source_vert)
+        neu_v = self.apply_key_d(key_weight, pred_cage_s, source_vert)
 
         if self.use_full_vertex:
             pred_deformed = def_v
@@ -393,8 +451,24 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
         key_d_ts = self.key_d_model(exp_z_ts)
         v_ts = self.reshape_key_d(key_d_ts, B)
 
-        loss_neu = torch.nn.functional.mse_loss(v_ts, pred_cage_s)
-        loss_def = torch.nn.functional.mse_loss(v_td, pred_cage_d)
+        with torch.no_grad():
+            used_ori_w = (pred_key_weight.detach() > 0).any(dim=1).float()  # (B, K)
+            used_cyc_w = (key_weight.detach() > 0).any(dim=1).float()  # (B, K)
+            used = used_ori_w * used_cyc_w
+            lambda_used = 1 / used.sum(dim=-1).clamp(min=1.0)  # (B,)
+            
+        #loss_neu = torch.nn.functional.mse_loss(v_ts, pred_cage_s)
+        #loss_def = torch.nn.functional.mse_loss(v_td, pred_cage_d)
+        # flatten(2).mean(-1) instead of a plain mean(dim=-1): out_type 4/5's key_d is
+        # (B, M, 4, 3) (unflattened [R|t] block per cage point, see reshape_key_d), so this
+        # must average over both the 4-row and 3-coord dims to get back to (B, M) matching
+        # `used`. For out_type 0/1/2/3 (key_d is (B, M, 3)) this is equivalent to the
+        # original mean(dim=-1).
+        loss_neu = (v_ts - pred_cage_s).square().flatten(2).mean(dim=-1)
+        loss_neu = ((loss_neu * used).sum(dim=-1) * lambda_used).mean()
+        loss_def = (v_td - pred_cage_d).square().flatten(2).mean(dim=-1)
+        loss_def = ((loss_def * used).sum(dim=-1) * lambda_used).mean()
+        
         loss = loss_neu + loss_def
         if mode == 2:
             loss_recon = torch.nn.functional.mse_loss(pred_source, source_vert) # newly added
@@ -467,10 +541,10 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             key_s = self.reshape_key_d(key_s, B)
                 
             key_weight = self.key_weight_model(tgt_in, N=self.NZ) # (B, N, K)
-            # --> (B, N, 4K) if self.opts.out_type == 2
-            
-            delta_dv = torch.einsum('bnc,bci->bni',key_weight,key_d)
-            delta_sv = torch.einsum('bnc,bci->bni',key_weight,key_s)
+            # --> (B, N, 4K) if self.opts.out_type in (2, 3) (legacy, non-LBS transform form)
+
+            delta_dv = self.apply_key_d(key_weight, key_d, tgt_neu_vert)
+            delta_sv = self.apply_key_d(key_weight, key_s, tgt_neu_vert)
         
         
         if self.use_full_vertex:
@@ -581,8 +655,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             src_key_d = self.key_d_model(src_exp_z) # (B, 3K)
         
         src_key_d = self.reshape_key_d(src_key_d, B) # (B, K, 3)
-        
-        tgt_def_v = torch.einsum('bnc,bci->bni', key_weight, src_key_d)
+
+        tgt_def_v = self.apply_key_d(key_weight, src_key_d, tgt_neu_vert)
         
         if self.use_full_vertex:
             # absolute position
@@ -640,8 +714,8 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             key_d = self.key_d_model(exp_z) # (B, 3K)
         
         key_d = self.reshape_key_d(key_d, B) # (B, K, 3)
-        
-        cage_v = torch.einsum('bnc,bci->bni', key_weight, key_d)
+
+        cage_v = self.apply_key_d(key_weight, key_d, tgt_neu_vert)
         
         if self.use_full_vertex:
             pred_deformed = cage_v

@@ -1543,7 +1543,8 @@ class Trainer():
                             batch_tgt_neu_v,
                             batch_tgt_neu_n,
                             pred_cage_d.detach(),
-                            pred_cage_s.detach()
+                            pred_cage_s.detach(),
+                            pred_key_weight.detach(),
                         )
                         loss_dict['cyclic'] = loss_cyclic
 
@@ -1585,7 +1586,10 @@ class Trainer():
                         pred_key_weight_sum, 
                     )
                 #-------------------------------------------------------------------------------------------------
-                
+
+                if False:
+                    loss_sparse = torch.nn.functional.l1_loss(pred_key_weight, torch.zeros_like(pred_key_weight))
+                    
                 # Laplacian smoothing ----------------------------------------------------------------------------
                 if not use_perm and self.opts.use_laplacian:
                     loss_dict['lap'] = laplacian_loss(
@@ -1811,7 +1815,7 @@ class Trainer():
                     # model validation -------------------------------------------------------------------------------
                     with torch.no_grad():
                         pred_vertices, recon_vertices, recon_source, exp_z, \
-                        pred_source, _, _, pred_cage_s, pred_cage_d = self.model(
+                        pred_source, _, pred_weight, pred_cage_s, pred_cage_d = self.model(
                             batch.template, batch.vertices,
                             batch.template_normal, batch.vertices_normal,
                             batch.mesh_data, epoch=epoch
@@ -1849,8 +1853,9 @@ class Trainer():
                                 loss_cyclic, pred_cyclic_def, pred_cyclic_neu = self.model.cyclic_loss(
                                     batch_tgt_neu_v,
                                     batch_tgt_neu_n,
-                                    pred_cage_d,
-                                    pred_cage_s
+                                    pred_cage_d.detach(),
+                                    pred_cage_s.detach(),
+                                    pred_weight.detach(),
                                 )
                                 loss_dict['cyclic'] = loss_cyclic
 

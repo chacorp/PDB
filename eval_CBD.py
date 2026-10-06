@@ -648,8 +648,8 @@ class Trainer():
                                 )
                                 
                             ## common routine
-                            if batch.mesh_data in [2, 4, 5]:
-                            # if False:
+                            # if batch.mesh_data in [2, 4, 5]:
+                            if False:
                                 if batch.mesh_data == 2 or batch.mesh_data == 4:
                                     precompute_path = self.mf_precompute_path
                                 else: # elif batch.mesh_data == 5:
@@ -699,7 +699,30 @@ class Trainer():
                                     torch.FloatTensor(tmp_L.data).to(device),
                                     tmp_L.shape
                                 )
-                                
+
+                                ## common routine
+                                # if batch.mesh_data in [2, 4, 5]:
+                                if False:
+                                    if batch.mesh_data == 2 or batch.mesh_data == 4:
+                                        precompute_path = self.mf_precompute_path
+                                    else: # elif batch.mesh_data == 5:
+                                        precompute_path = self.ict_precompute_path
+                                        
+                                    src_mesh_id = batch.id_name
+                                    src_dfn_info  = pickle.load(open(os.path.join(
+                                        precompute_path, f"{src_mesh_id}_dfn_info.pkl"
+                                    ), 'rb'))
+                                    src_operators = pickle.load(open(os.path.join(
+                                        precompute_path, f"{src_mesh_id}_operators.pkl"
+                                    ), mode='rb'))
+                                    src_img = np.load(
+                                        os.path.join(precompute_path, f"{src_mesh_id}_img.npy")
+                                    )
+                                    src_img = torch.from_numpy(src_img)[0].float().to(self.device)
+                                else:
+                                    src_dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
+                                    src_operators = self.get_mesh_operators(src_mesh)
+                                    src_img = self.model.renderer.render_img(src_mesh).float().to(self.device)
                                 ## common routine
                                 # src_dfn_info = self.get_dfn_info(src_mesh, map_location=self.device)
                                 # src_operators = self.get_mesh_operators(src_mesh)

@@ -553,6 +553,7 @@ class Pipeline():
                     pred_seg_coeff = self.model.encode_seg(tgt_vert_feat, tgt_dfn_info)# [1, V, Seg]
                     pred_id_coeff  = self.model.encode_id(tgt_vert_feat, tgt_dfn_info)
 
+                interv_val = max(1, round(len_data / 5))
                 pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                 for index, batch in pbar:
                     if index==0:
@@ -593,7 +594,7 @@ class Pipeline():
                         for b_v in batch.vertices:
                             _tmp_ = self.model.get_local_feature(b_v[None], batch.faces[0], src_img_feat).float()
                             vert_feat_exp.append(_tmp_)
-                        vert_feat_exp = torch.vstack(vert_feat_exp) * 1.3
+                        vert_feat_exp = torch.vstack(vert_feat_exp) * (1.3 if self.opts.dec_type != 'jacob' else 1.0)
                         pred_exp_coeff = self.model.encode_exp(
                             vert_feat_exp, src_dfn_info, batch_process=True, verbose=False
                         )# [W, Rig]
@@ -605,13 +606,12 @@ class Pipeline():
                         )
                         pred_outputs_tgt = self.model.decode(inputs_tgt, batch_process=True)
 
-
                         ###### tgt-to-src ######
                         vert_feat_exp_tgt = []
                         for b_v in pred_outputs_tgt:
                             _tmp_ = self.model.get_local_feature(b_v[None], tgt_faces, tgt_img_feat).float()
                             vert_feat_exp_tgt.append(_tmp_)
-                        vert_feat_exp_tgt = torch.vstack(vert_feat_exp_tgt) * 1.3
+                        vert_feat_exp_tgt = torch.vstack(vert_feat_exp_tgt) * (1.3 if self.opts.dec_type != 'jacob' else 1.0)
                         pred_exp_coeff_tgt = self.model.encode_exp(
                             vert_feat_exp_tgt, tgt_dfn_info, batch_process=True, verbose=False
                         )# [W, Rig]
@@ -628,8 +628,34 @@ class Pipeline():
                             None, batch.template, batch.faces[0], src_operators
                         )
                         pred_outputs_src = self.model.decode(inputs_src, batch_process=True)
+                        dims = tuple(range(pred_outputs_src.dim() - 1))
+                        pred_outputs_src = pred_outputs_src - pred_outputs_src.mean(dim=dims, keepdim=True)
+                        if index == 0:
+                            print(f"[VERIFY-SRC-RECENTER-ACTIVE] index=0 post-recenter mean={pred_outputs_src.mean().item():.8e}", flush=True)
 
                         losses_val = stack_mse(batch, pred_outputs_src, losses_val, denom, src_L)
+
+                        if index % interv_val == 0:
+                            # visual check: GT (src) -> pred on tgt identity -> pred back on src identity
+                            v_list = [
+                                batch.vertices[0].cpu().detach(),
+                                pred_outputs_tgt[0].cpu().detach(),
+                                pred_outputs_src[0].cpu().detach(),
+                            ]
+                            f_list = [
+                                batch.faces[0].cpu(),
+                                tgt_faces.cpu(),
+                                batch.faces[0].cpu(),
+                            ]
+                            save_logdir = f"{self.opts.log_dir}/img"
+                            save_img_name = f"{index:04d}"
+                            plot_image_array(
+                                v_list, f_list,
+                                rot_list=[[0, 0, 0]] * len(v_list),
+                                size=1, bg_black=False, mode='shade',
+                                logdir=save_logdir,
+                                name=save_img_name, save=True
+                            )
 
                         pred_outputs_np = pred_outputs_tgt.detach().cpu().numpy()
                         pred_outputs_src_np = pred_outputs_src.detach().cpu().numpy()
@@ -824,6 +850,14 @@ class Pipeline():
                 print('self-retargeting! (src == tgt)')
                 pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                 for index, batch in pbar:
+                    if index == 0 and self.opts.laplacian:
+                        tmp_L = igl.cotmatrix(batch.template[0].cpu().numpy(), batch.faces[0].cpu().numpy())
+                        src_L = torch.sparse_csc_tensor(
+                            torch.LongTensor(tmp_L.indptr).to(device),
+                            torch.LongTensor(tmp_L.indices).to(device),
+                            torch.FloatTensor(tmp_L.data).to(device),
+                            tmp_L.shape
+                        )
                     pred_outputs, _ = self.model.retarget(
                         batch.template, batch.vertices, batch.template
                     )
@@ -843,6 +877,14 @@ class Pipeline():
                 print('cross-retargeting! (src != tgt)')
                 pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
                 for index, batch in pbar:
+                    if index == 0 and self.opts.laplacian:
+                        tmp_L = igl.cotmatrix(batch.template[0].cpu().numpy(), batch.faces[0].cpu().numpy())
+                        src_L = torch.sparse_csc_tensor(
+                            torch.LongTensor(tmp_L.indptr).to(device),
+                            torch.LongTensor(tmp_L.indices).to(device),
+                            torch.FloatTensor(tmp_L.data).to(device),
+                            tmp_L.shape
+                        )
                     pred_outputs, _ = self.model.retarget(
                         batch.template, batch.vertices, tgt_v_th
                     )
@@ -868,7 +910,7 @@ class Pipeline():
                             save_gt_name = GT_log_dir+f'/{index*CurrBS+b_idx:06d}.npy'
                             np.save(save_gt_name, batch.vertices[b_idx].cpu().numpy())
         # Ours
-        elif self.opts.version==5 or self.opts.version==8 or self.opts.version==55:            
+        elif self.opts.version==5 or self.opts.version==6 or self.opts.version==8 or self.opts.version==55:
             if SELF_RETARGET:
                 print('self-retargeting! (src == tgt)')
                 pbar = tqdm(enumerate(src_dataloader), total=len_dataloader, ncols=100)
@@ -905,11 +947,16 @@ class Pipeline():
                                 key_weight = self.model.predict_coordinate(src_template, src_template_normal)
 
                     with torch.no_grad():
+                        # version==5 (NGBC): key_weight alone is enough to reconstruct on the
+                        # target. version==6 (PDBplus): it also needs the target's own neutral
+                        # normal to predict that target's control rotation/scale.
+                        extra_kwargs = {'tgt_neu_norm': src_template_normal} if self.opts.version == 6 else {}
                         pred_outputs, key_d = self.model.retarget_animation(
                             src_template, src_template_normal,
-                            batch.vertices, batch.vertices_normal, 
+                            batch.vertices, batch.vertices_normal,
                             key_weight,
-                            src_template
+                            src_template,
+                            **extra_kwargs
                         )
                     
                     # losses_val = stack_mse(batch, pred_outputs, losses_val, denom, src_L)
@@ -963,20 +1010,27 @@ class Pipeline():
                                     src_key_weight = self.model.predict_coordinate(src_template, src_template_normal)
 
                         with torch.no_grad():
+                            # version==6 (PDBplus) needs the target's own neutral normal in
+                            # addition to key_weight; version==5 (NGBC) ignores it entirely.
+                            fwd_kwargs = {'tgt_neu_norm': tgt_n_th} if self.opts.version == 6 else {}
                             pred_outputs, key_d_src = self.model.retarget_animation(
                                 batch.template, batch.template_normal,
                                 batch.vertices, batch.vertices_normal,
                                 key_weight,
                                 tgt_v_th,
+                                **fwd_kwargs
                             )
                             pred_verts_nrm = calc_norm_torch(pred_outputs, tgt_f_th, at='verts')
 
                             CurrBS = pred_outputs.shape[0]
+                            src_n_th_batched = src_n_th.expand(CurrBS, -1, -1)
+                            bwd_kwargs = {'tgt_neu_norm': src_n_th_batched} if self.opts.version == 6 else {}
                             pred_outputs_src, key_d_tgt = self.model.retarget_animation(
                                 tgt_v_th.expand(CurrBS, -1, -1), tgt_n_th.expand(CurrBS, -1, -1),
                                 pred_outputs, pred_verts_nrm,
                                 src_key_weight.expand(CurrBS, -1, -1),
                                 src_v_th.expand(CurrBS, -1, -1),
+                                **bwd_kwargs
                             )
 
                             losses_val = stack_mse(batch, pred_outputs_src, losses_val, denom, src_L)

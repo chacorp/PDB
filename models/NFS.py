@@ -879,7 +879,18 @@ class NFS(nn.Module):
             
             pred_jacobians = self.normalizer.inv_normalize(pred_outputs)
             pred_jacobians = self.reconstruct_jacobians(pred_jacobians, repr='matrix')
-            
+
+            if os.environ.get('DEBUG_JACOB_SCALE'):
+                with torch.no_grad():
+                    svals = LA.svdvals(pred_jacobians.reshape(-1, 3, 3).float())
+                    dets = torch.linalg.det(pred_jacobians.reshape(-1, 3, 3).float())
+                    print(
+                        f"[JACOB-SCALE-DEBUG] singular values: mean={svals.mean().item():.4f} "
+                        f"median={svals.median().item():.4f} min={svals.min().item():.4f} max={svals.max().item():.4f} "
+                        f"| det^(1/3) mean={dets.clamp_min(1e-9).pow(1/3).mean().item():.4f}",
+                        flush=True
+                    )
+
             with torch.no_grad():
                 pred_outputs = self.calc_vert(pred_jacobians, self.myfunc, operators)
         else:

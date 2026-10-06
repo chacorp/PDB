@@ -14,6 +14,7 @@ import trimesh
 from copy import deepcopy
 from torch_scatter import scatter_add
 from torch_sparse import coalesce, transpose
+import cupy
 from cupyx.scipy.sparse.linalg import SuperLU
 
 import pytorch3d
@@ -306,6 +307,11 @@ def get_mesh_operators(mesh):
     N_VERTEX = mesh.vertices.shape[0]
     transf = Transfer(mesh, deepcopy(mesh))
     lu_solver = SuperLU(transf.lu)
+    # transf.idxs/vals are built on CuPy's stream inside Transfer.__init__; sync
+    # before handing them to PyTorch via DLPack (see deformation_gradient.forward
+    # for why this matters). Called once per identity switch, not per frame, so
+    # the sync cost here is negligible.
+    cupy.cuda.get_current_stream().synchronize()
     idxs, vals = coalesce(torch.from_dlpack(transf.idxs).long(), torch.from_dlpack(transf.vals), m=N_FACE *3, n=N_VERTEX)
     idxs, vals = transpose(idxs, vals, m=N_FACE *3, n=N_VERTEX)
     rhs = transf.cupy_A.T
