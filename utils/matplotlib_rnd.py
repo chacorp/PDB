@@ -292,8 +292,8 @@ def vis_mesh_key_weight(
     V = normalize_homogeneous(verts)
     
     view  = translate(0, 0, -4.5)
-    proj  = perspective(55, 1.0, 1.0, 100.0)
-#     proj = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
+#     proj  = perspective(55, 1.0, 1.0, 100.0)
+    proj = ortho(-1, 1, -1, 1, 1, 100) # Use ortho instead of perspective
     MV   = proj @ view
     
     
@@ -511,20 +511,24 @@ def vis_mesh_all_cage_weights(
         plt.show()
         plt.close(fig)
 
-def plot_image_array(Vs, 
-                     Fs, 
-                     rot_list=None, 
-                     size=6, 
-                     norm=False, 
-                     mode='mesh', 
-                     linewidth=1, 
-                     linestyle='solid', 
+def plot_image_array(Vs,
+                     Fs,
+                     rot_list=None,
+                     size=6,
+                     norm=False,
+                     mode='mesh',
+                     linewidth=1,
+                     linestyle='solid',
                      light_dir=np.array([0,0,1]),
                      bg_black = True,
-                     logdir='.', 
-                     name='000', 
+                     logdir='.',
+                     name='000',
                      use_persp=False,
                      save=False,
+                     is_diff=False,
+                     diff_base=None,  # list of arrays, one per mesh in Vs, or a single array broadcast to all
+                     vmin=None,
+                     vmax=None,
                     ):
     """
     Args:
@@ -541,7 +545,23 @@ def plot_image_array(Vs,
         logdir (str): directory for saved image
         name (str): name for saved image
         save (bool): if True, save the plot as image
+        is_diff (bool): if True, color each mesh by per-face displacement magnitude
+            from diff_base (YlOrRd, blended onto the same lit-shading base as
+            mode='shade') instead of plain shading -- goes through the exact
+            same camera/projection/rotation code as every other mode, so an
+            is_diff=True render is directly comparable (same framing) to a
+            plain render of the same Vs/Fs/rot_list.
+        diff_base: required if is_diff. Either one array (broadcast to all
+            meshes) or a list the same length as Vs (one base mesh per entry --
+            e.g. each mesh's own neutral/rest template).
+        vmin, vmax: fixed displacement range for the color scale (before the
+            [0,1] normalization). Default (None) auto-scales per mesh.
     """
+    if is_diff and diff_base is None:
+        raise ValueError('diff_base is None!')
+    diff_bases = None
+    if is_diff:
+        diff_bases = diff_base if isinstance(diff_base, (list, tuple)) else [diff_base] * len(Vs)
     if mode=='gouraud':
         print("currently WIP!: need to curl by z")
         
@@ -590,13 +610,37 @@ def plot_image_array(Vs,
         zmin, zmax = Z.min(), Z.max()
         Z = (Z - zmin) / (zmax - zmin)
 
-        if mode=='normal':
+        if is_diff:
+            D = diff_bases[idx]
+            diff = np.abs(D - V)[F]           # [num_faces, 3, 3]
+            diff = np.linalg.norm(diff, axis=1)  # [num_faces, 3]
+            diff = np.linalg.norm(diff, axis=1)  # [num_faces]
+
             C = calc_face_norm(V, F) @ model[:3,:3].T
-            
+            I = np.argsort(Z)
+            T, C, diff = T[I, :], C[I, :], diff[I]
+
+            NI = np.argwhere(C[:,2] > 0)[:,0]
+            T, C, diff = T[NI, :], C[NI, :], diff[NI]
+
+            lit = (C @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
+            lit = np.clip(lit, 0, 1)
+            lit = lit*0.7+0.2
+
+            lo = diff.min() if vmin is None else vmin
+            hi = diff.max() if vmax is None else vmax
+            dn = np.clip((diff - lo) / (hi - lo), 0, 1) if hi > lo else np.zeros_like(diff)
+            Dc = plt.get_cmap("YlOrRd")(dn)[:, :3]
+            mask = dn[:, np.newaxis]
+            C = lit * (1 - mask) + Dc * mask
+            collection = PolyCollection(T, closed=False, linewidth=linewidth, facecolor=C, edgecolor=C)
+        elif mode=='normal':
+            C = calc_face_norm(V, F) @ model[:3,:3].T
+
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             C = np.clip(C, 0, 1) if False else C * 0.5 + 0.5
             collection = PolyCollection(T, closed=False, linewidth=linewidth, facecolor=C, edgecolor=C)
@@ -606,7 +650,7 @@ def plot_image_array(Vs,
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             
             C = (C @ light_dir)[:,np.newaxis].repeat(3, axis=-1)
@@ -619,7 +663,7 @@ def plot_image_array(Vs,
             
             ### curling by normal
             C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
-            NI = np.argwhere(C[:,2] > 0.0).squeeze()
+            NI = np.argwhere(C[:,2] > 0.0)[:,0]
             V, F, vidx = get_new_mesh(V, F, NI, invert=True)
             #F = np.flip(F, 1)#F[:,::-1]
             C = calc_face_norm(V, F, mode='v') #@ model[:3,:3].T
@@ -966,24 +1010,31 @@ def plot_image_array_VC(V,
         plt.show()
         plt.close()
         
-def plot_image_array_diff(Vs, 
-                     Fs, 
+def plot_image_array_diff(Vs,
+                     Fs,
                      Ds,
-                     rot_list=None, 
-                     size=6, 
-                     norm=False, 
-                     mode='mesh', 
-                     linewidth=1, 
-                     linestyle='solid', 
+                     rot_list=None,
+                     size=6,
+                     norm=False,
+                     mode='mesh',
+                     linewidth=1,
+                     linestyle='solid',
                      light_dir=np.array([0,0,1]),
                      bg_black = True,
-                    logdir='.', 
-                    name='000', 
+                    logdir='.',
+                    name='000',
                      save=False,
                     draw_base=True,
+                    vmin=None,
+                    vmax=None,
                     ):
     """
     Renders displacement for each mesh: requires vertices for each mesh sequence
+
+    vmin/vmax: if given, use this fixed displacement range (in mesh units, before
+    the [0,1] normalization) instead of each panel's own min/max, so displacement
+    color is directly comparable across panels/images. Default (None) preserves
+    the original per-panel auto-normalization behavior.
     """
     num_meshes = len(Vs)
     if bg_black:
@@ -1070,9 +1121,11 @@ def plot_image_array_diff(Vs,
         diff = np.linalg.norm(diff, axis=1) # N 3
         diff = np.linalg.norm(diff, axis=1) # N
         
-        diff_min, diff_max = diff.min(), diff.max()
-        if diff_max > 0:
-            diff = (diff - diff_min) / (diff_max - diff_min)    
+        diff_min, diff_max = (0.0, vmax) if vmax is not None else (diff.min(), diff.max())
+        if vmin is not None:
+            diff_min = vmin
+        if diff_max > diff_min:
+            diff = np.clip((diff - diff_min) / (diff_max - diff_min), 0, 1)
 
         C = calc_face_norm(V,F) @ model[:3,:3].T
 
@@ -1950,7 +2003,7 @@ def render_wo_audio(#basedir="tmp",
             I = np.argsort(Z) # -----------------------> depth sorting
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze() # --> culling w/ normal
+            NI = np.argwhere(C[:,2] > 0)[:,0] # --> culling w/ normal
             T, C = T[NI, :], C[NI, :]
             
             C = np.clip((C @ light_dir), 0, 1) # ------> cliping range 0 - 1
@@ -1973,7 +2026,7 @@ def render_wo_audio(#basedir="tmp",
             T, C = T[I, :], C[I, :]
             diff = diff[I]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             diff = diff[NI]
 
@@ -1994,7 +2047,7 @@ def render_wo_audio(#basedir="tmp",
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
             
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             collection = PolyCollection(T, closed=False, linewidth=0.23, facecolor=C, edgecolor="black")
         ax.add_collection(collection)
@@ -2076,7 +2129,7 @@ def render_w_audio(#basedir="tmp",
             I = np.argsort(Z) # -----------------------> depth sorting
             T, C = T[I, :], C[I, :]
 
-            NI = np.argwhere(C[:,2] > 0).squeeze() # --> culling w/ normal
+            NI = np.argwhere(C[:,2] > 0)[:,0] # --> culling w/ normal
             T, C = T[NI, :], C[NI, :]
             
             C = np.clip((C @ light_dir), 0, 1) # ------> cliping range 0 - 1
@@ -2091,7 +2144,7 @@ def render_w_audio(#basedir="tmp",
             I = np.argsort(Z)
             T, C = T[I, :], C[I, :]
             
-            NI = np.argwhere(C[:,2] > 0).squeeze()
+            NI = np.argwhere(C[:,2] > 0)[:,0]
             T, C = T[NI, :], C[NI, :]
             collection = PolyCollection(T, closed=False, linewidth=0.23, facecolor=C, edgecolor="black")
         ax.add_collection(collection)

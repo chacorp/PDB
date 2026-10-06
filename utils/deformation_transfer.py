@@ -203,9 +203,24 @@ class deformation_gradient(torch.autograd.Function):
         # ctx.grad = from_dlpack(ctx.solver.solve(ctx.rhs.toarray()).toDlpack())
         # cupy_input = cupy.from_dlpack(to_dlpack(input))
         b = spmm(idxs, vals, m=shape[0], n=shape[1], matrix=input)
-        b = cupy.from_dlpack(to_dlpack(b))
-        cupy_output = ctx.solver.solve(b)
-        output = from_dlpack(cupy_output.toDlpack())
+        # PyTorch and CuPy can run on different CUDA streams; without an explicit
+        # sync at each DLPack handoff, the receiving framework can start reading/
+        # writing memory before the sending framework's kernel has actually
+        # finished, causing an intermittent CUDA_ERROR_ILLEGAL_ADDRESS (crash point
+        # varies run to run since it's a race, not a deterministic bug). Syncing on
+        # every single call is correct but ~5x slower, so we stay on the fast
+        # unsynced path and only pay for sync on the (rare) retry after a failure.
+        try:
+            b_cupy = cupy.from_dlpack(to_dlpack(b))
+            cupy_output = ctx.solver.solve(b_cupy)
+            output = torch.from_dlpack(cupy_output)
+        except Exception as e:
+            print(f'[deformation_gradient.forward] retrying with explicit stream sync after: {e!r}')
+            torch.cuda.synchronize()
+            b_cupy = cupy.from_dlpack(to_dlpack(b))
+            cupy_output = ctx.solver.solve(b_cupy)
+            cupy.cuda.get_current_stream().synchronize()
+            output = torch.from_dlpack(cupy_output)
         output = output.reshape(-1, batch_size, 3)
         output = output.transpose(0, 1)
         # print(f'forward time: {time.time() - t:.4f}s')
@@ -219,7 +234,7 @@ class deformation_gradient(torch.autograd.Function):
 
     
         grad_output = grad_output.permute(1, 0, 2).reshape(grad_output.shape[1], -1)
-        grad = from_dlpack(ctx.solver.solve(cupy.from_dlpack(to_dlpack(grad_output))).toDlpack())
+        grad = torch.from_dlpack(ctx.solver.solve(cupy.from_dlpack(to_dlpack(grad_output))))
         if grad.isnan().any():
             print(grad)
             raise ValueError('Nan found after solving for gradient!')

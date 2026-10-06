@@ -1,3 +1,4 @@
+_tmp/
 _*.py
 _*.ipynb
 third_party
@@ -9,21 +10,20 @@ ckpt*
 test_results
 data_capture
 
-video*/
-vis_CBD*/
-eval_CBD*/
-eval_cyc*/
-notebook/fig*/
-notebook/vis*/
-*summary*/
+video/
+vis_CBD/
+ckpts_CBD/
+eval_CBD/
+eval_cyc/
+eval_CBD_bs/
+eval_CBD_cif/
+eval_CBD_cp/
+eval_CBD_gc/
+eval_CBD_lp/
+eval_1000/
+eval_align/
+smoke_test/
 
-vis_CBD*
-eval_CBD*
-eval_cyc*
-*summary*
-
-*.sh
-*.txt
 *.pkl
 */*.pkl
 */*/*.pkl
@@ -71,6 +71,10 @@ results/
 ICT/*/
 *tmp*/
 _exp*/
+
+notebook/fig*/
+render/video*/
+vis*/
 
 _demo/
 _notebook/

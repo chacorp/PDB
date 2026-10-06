@@ -25,6 +25,8 @@ lambda_align: 2.0
 lambda_p2f: 0.1
 lambda_norm: 0.1
 lambda_vert: 1.0
+lambda_cage_consist: 0.5
+lambda_cyclic: 0.5
 
 batch_size: 8
 

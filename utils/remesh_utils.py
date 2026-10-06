@@ -260,6 +260,8 @@ def calc_norm_torch(batch_v, face, at='face'):
     Returns:
         norm | face_norm (torch.tensor): corresponding normal vector
     """
+    at=at.lower()
+    
     B_S = batch_v.shape[0]
     N_V = batch_v.shape[1]
 
@@ -268,7 +270,7 @@ def calc_norm_torch(batch_v, face, at='face'):
     cross = torch.linalg.cross(span[..., 0, :], span[..., 1, :], dim=-1) # --> [B, F, 3]
     face_norm = torch.nn.functional.normalize(cross, p=2, dim=-1)  # --> [B, F, 3]
     
-    if at == 'face':
+    if at == 'triangle' or at == 'tri' or at == 'faces' or at == 'face' or at=='f':
         return face_norm
     else: # at == 'vertex'
         idx = torch.cat([face[:, 0], face[:, 1], face[:, 2]], dim=0)
@@ -589,8 +591,15 @@ class ICT_face_model():
             v_idx, quad_f_idx = self.region[2]
         
         self.use_decimate = use_decimate
-        self.ict_deci = np.load(f'{base_dir}/utils/ict/ICT_decimate.npz')
-        
+        if self.use_decimate:
+            # np.load on a .npz keeps the underlying zip file handle open
+            # (lazy per-array loading), which is fine in-process but makes
+            # the whole ICT_face_model unpicklable -- e.g. for DataLoader
+            # num_workers>0, which needs to pickle the dataset for worker
+            # processes. Only load it when the decimated indices are
+            # actually going to be used.
+            self.ict_deci = np.load(f'{base_dir}/utils/ict/ICT_decimate.npz')
+
         ## mesh faces
         self.quad_Faces = torch.load(f'{base_dir}/ict_face_pt/quad_faces.pt', weights_only=True)
         quad_Faces = self.quad_Faces[:quad_f_idx] #, map_location='cuda:0')
@@ -610,6 +619,14 @@ class ICT_face_model():
         #self.neutral_verts = self.neutral_verts.to(self.device)
         self.exp_basis= self.exp_basis.numpy()
         self.id_basis = self.id_basis.numpy()
+
+        # get_id_disp/get_exp_disp matmul the (float64) coeffs against these
+        # (float32) bases, so numpy upcasts the whole basis to float64 on every
+        # single call -- ~10x slower than doing that cast once here and reusing
+        # it. Precomputing keeps the exact same float64 matmul (bit-identical
+        # output), it just avoids repeating the upcast every call.
+        self._id_basis_f64 = self.id_basis.reshape(100, -1).astype(np.float64)
+        self._exp_basis_f64 = self.exp_basis.reshape(53, -1).astype(np.float64)
     
     def get_region_num(self, vertices):
         """
@@ -799,8 +816,9 @@ class ICT_face_model():
             if len(id_coeff.shape) < 2:
                 id_coeff = id_coeff[None]
             B = id_coeff.shape[0]
-            id_basis_reshaped = self.id_basis.reshape(100, -1)
-            id_disps = np.matmul(id_coeff, id_basis_reshaped).reshape(B, -1, 3)
+            # pre-upcast basis (see __init__): same float64 matmul numpy would
+            # otherwise redo from scratch (via dtype promotion) on every call.
+            id_disps = np.matmul(id_coeff, self._id_basis_f64).reshape(B, -1, 3)
             id_disps = id_disps[:, :self.region[region][0]]
         else:
             id_disps = 0.0
@@ -824,12 +842,13 @@ class ICT_face_model():
         if exp_coeffs is not None:
             if len(exp_coeffs.shape) < 2:
                 exp_coeffs = exp_coeffs[None]
-                
+
             T = exp_coeffs.shape[0]
             #exp_disps = np.einsum('jk,kls->jls', exp_coeffs.float(), self.exp_basis.to(device))[:, :self.region[region][0]]
-            
-            exp_basis_reshaped = self.exp_basis.reshape(53, -1)
-            exp_disps = np.matmul(exp_coeffs, exp_basis_reshaped).reshape(T, -1, 3)
+
+            # pre-upcast basis (see __init__/get_id_disp): avoids redoing the
+            # float64 promotion of the whole basis matrix on every call.
+            exp_disps = np.matmul(exp_coeffs, self._exp_basis_f64).reshape(T, -1, 3)
             exp_disps = exp_disps[:, :self.region[region][0]]
         else:
             exp_disps = 0.0

@@ -37,4 +37,29 @@
 # python train_CBD.py --max_epoch 1000 --lr 1E-4 --sc_step 1000 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --last_activation 'relu' --data_toggle --use_data2 --log_dir ckpts_CBD --version 5 --align_latent
 
 
-python train_CBD.py --max_epoch 1000 --lr 1E-4 --sc_step 1000 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --last_activation 'relu' --data_toggle --use_data2 --log_dir ckpts_CBD --version 5 --align_latent --start_epoch 360 --ckpt './ckpts_CBD/2026-02-18-09-43-05-NGBCv5' --continue_ckpt
+# python train_CBD.py --max_epoch 1000 --lr 1E-4 --sc_step 1000 --batch_size 8 --num_cage_v 512 --in_type 1 --out_type 1 --last_activation 'relu' --data_toggle --use_data2 --log_dir ckpts_CBD --version 5 --align_latent --start_epoch 360 --ckpt './ckpts_CBD/2026-02-18-09-43-05-NGBCv5' --continue_ckpt
+
+# Reproduces the training setting of ckpts_CBD7/2026-08-07-02-48-53-NGBCv5
+# (opts.json: version=5, num_cage_v=512, last_activation=relu, lr=1e-4, sc_step=1000,
+#  batch_size=8, in_type=1, out_type=1, data_toggle+use_data2, align_latent=True,
+#  use_cage_consistency_loss=True, use_cyclic_loss=True, max_epoch=1000),
+# trained from scratch (epoch 0), with mask_cage_consist enabled and
+# lambda_cage_consist/lambda_cyclic lowered from the original 0.5/0.5.
+python train_CBD.py \
+    --max_epoch 1000 \
+    --lr 1E-4 \
+    --sc_step 1000 \
+    --batch_size 8 \
+    --num_cage_v 512 \
+    --in_type 1 \
+    --out_type 1 \
+    --last_activation 'relu' \
+    --data_toggle --use_data2 \
+    --version 5 \
+    --align_latent \
+    --log_dir ckpts_CBD7 \
+    --use_cage_consistency_loss \
+    --use_cyclic_loss \
+    --mask_cage_consist \
+    --lambda_cage_consist 0.1 \
+    --lambda_cyclic 0.2

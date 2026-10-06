@@ -91,6 +91,38 @@ class PointNetEncoder_small(nn.Module):
             x = x.view(-1, self.out_dim, 1).repeat(1, 1, N)
             return torch.cat([x, pointfeat], 1), trans, trans_feat
             
+class PointNetFeatSimple(nn.Module):
+    """
+    Minimal PointNet encoder without STN or normalization layers, matching
+    deep_cage's PointNetfeat (conv1d x3 + maxpool) followed by a Linear+tanh
+    projection (as used in NetworkFull / FixedSourceDeformer).
+    """
+    def __init__(self, in_dim=3, out_dim=512):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_dim, 64, 1)
+        self.conv2 = nn.Conv1d(64, 128, 1)
+        self.conv3 = nn.Conv1d(128, out_dim, 1)
+        self.act = nn.LeakyReLU(0.2)
+        self.post = nn.Linear(out_dim, out_dim)
+
+    def forward(self, x_in, return_all=False):
+        """
+        Args:
+            x_in: (B,N,D)
+        Returns:
+            (B,1,out_dim) global feature
+        """
+        x = x_in.transpose(2, 1)  # (B,N,D) -> (B,D,N)
+        x = self.act(self.conv1(x))
+        x = self.act(self.conv2(x))
+        x = self.conv3(x)
+        x = torch.max(x, 2)[0]  # (B,out_dim)
+        x = torch.tanh(self.post(x))
+        x = x.view(-1, 1, x.shape[-1])  # (B,1,out_dim)
+        if return_all:
+            return x, None
+        return x
+
 class PointNet_small(nn.Module):
     """
     PointNet architecture
@@ -450,7 +482,22 @@ class BaseDiffusionNetEncoder(nn.Module):
             self.update_precomputes(pre_computes)
         else:
             print("[DiffusionNet] causion: no pre_computes provided!")
-
+            
+    def empty_precomputes(self):
+        self.mass = None
+        self.L_ind = None
+        self.L_val = None
+        self.L_size = None
+        self.evals = None
+        self.evecs = None
+        self.grad_X_ind  = None
+        self.grad_X_val  = None
+        self.grad_X_size = None
+        self.grad_Y_ind  = None
+        self.grad_Y_val  = None
+        self.grad_Y_size = None
+        self.faces = None
+        
     def update_precomputes(self, pre_computes):
         if len(pre_computes[0].shape) > 1:
             self.mass = nn.Parameter(pre_computes[0].squeeze(0), requires_grad=False)
