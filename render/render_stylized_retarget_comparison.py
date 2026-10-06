@@ -1,10 +1,15 @@
 """
-Cross retargeting of the MF test identity and ICT m00 animations onto the
-aligned stylized meshes (test-mesh/test-*-aligned.obj), for the NC / NFS / PDB
-models. Stage 1 (inference): writes the predicted vertices to
-vis_CBD/vis_comparison/stylize_retarget/preds_cache.npz. Rendering and the
-gallery HTML are done by render/render_stylized_retarget_mpr.py (stage 2).
-Inference is skipped when the cache already exists; delete it to rerun.
+Self / cross / cyclic retargeting of the MF test identity and ICT m00
+animations with the aligned stylized meshes (test-mesh/test-*-aligned.obj) as
+targets, for the NC / NFS / PDB models:
+  self   : source expression -> source neutral (reconstruction)
+  cross  : source expression -> target neutral
+  cyclic : cross output -> back onto source neutral (source -> target -> source)
+Stage 1 (inference): writes the predicted vertices to
+vis_CBD/vis_comparison/stylize_retarget/preds_cache.npz (keys
+self/{model}/{src}, pred/{model}/{tgt}/{src} (cross), cyc/{model}/{tgt}/{src}).
+Only keys missing from an existing cache are inferred; delete it to rerun all.
+Rendering and the gallery HTML are done by render/render_stylized_retarget_mpr.py.
 
 Run from repo root:
     python render/render_stylized_retarget_comparison.py
@@ -176,40 +181,66 @@ def nfr_utils_get_ops(mesh):
     return get_mesh_operators(mesh)
 
 
+def needed_keys(model_name, targets, sources):
+    keys = [f'self/{model_name}/{sn}' for sn in sources]
+    for tn in targets:
+        for sn in sources:
+            keys += [f'pred/{model_name}/{tn}/{sn}', f'cyc/{model_name}/{tn}/{sn}']
+    return keys
+
+
 def main():
-    if CACHE_PATH.exists():
-        print(f'cache exists, skip inference (delete to rerun): {CACHE_PATH}')
-        return
     IMG_ROOT.mkdir(parents=True, exist_ok=True)
     targets = load_targets()
+    if CACHE_PATH.exists():
+        cache = dict(np.load(CACHE_PATH))
+        srcs = {sn: dict(neutral_v=cache[f'src/{sn}/v'], faces=cache[f'src/{sn}/f'],
+                         frames=list(cache[f'src/{sn}/frames']), idx=list(cache[f'src/{sn}/idx']))
+                for sn in cache['sources']}
+    else:
+        cache = {}
+        # source frames and neutral templates depend only on the dataset, not the model
+        base_pipe = Pipeline(build_opts(MODELS[0][1], MODELS[0][2]))
+        srcs = load_sources(base_pipe)
 
-    # source frames and neutral templates depend only on the dataset, not the model
-    base_pipe = Pipeline(build_opts(MODELS[0][1], MODELS[0][2]))
-    srcs = load_sources(base_pipe)
-
-    results = {}  # (model, target, src) -> list of predicted verts
     for model_name, ckpt, version in MODELS:
-        print(f'===== {model_name} ({ckpt}) =====', flush=True)
+        missing = [k for k in needed_keys(model_name, targets, srcs) if k not in cache]
+        if not missing:
+            print(f'===== {model_name}: cached, skip =====', flush=True)
+            continue
+        print(f'===== {model_name} ({ckpt}): {len(missing)} missing =====', flush=True)
         opts = build_opts(ckpt, version)
         trainer = Trainer(opts)
         pipe = Pipeline(opts)
         pipe.model = trainer.model
-        for tname, (tv, tf) in targets.items():
-            for sname, s in srcs.items():
-                outs = run_model(pipe, version, s['neutral_v'], s['faces'], s['frames'], tv, tf)
-                results[(model_name, tname, sname)] = outs
-                print(f'  {tname} <- {sname}: {len(outs)} frames', flush=True)
+        for sname, s in srcs.items():
+            sv, sf = s['neutral_v'], s['faces']
+            k = f'self/{model_name}/{sname}'
+            if k not in cache:
+                cache[k] = np.stack(run_model(pipe, version, sv, sf, s['frames'], sv, sf))
+                print(f'  self {sname}', flush=True)
+            for tname, (tv, tf) in targets.items():
+                k = f'pred/{model_name}/{tname}/{sname}'
+                if k not in cache:
+                    cache[k] = np.stack(run_model(pipe, version, sv, sf, s['frames'], tv, tf))
+                    print(f'  cross {tname} <- {sname}', flush=True)
+                k = f'cyc/{model_name}/{tname}/{sname}'
+                if k not in cache:
+                    cross = list(cache[f'pred/{model_name}/{tname}/{sname}'])
+                    cache[k] = np.stack(run_model(pipe, version, tv, tf, cross, sv, sf))
+                    print(f'  cyclic {sname} -> {tname} -> {sname}', flush=True)
         del trainer, pipe
         torch.cuda.empty_cache()
 
-    save_cache(targets, srcs, results)
+    save_cache(cache, targets, srcs)
     print('wrote', CACHE_PATH)
 
 
-def save_cache(targets, srcs, results):
+def save_cache(cache, targets, srcs):
     """Flat npz: target/source meshes, source frames and per-model predictions."""
-    d = {'targets': np.array(list(targets)), 'sources': np.array(list(srcs)),
-         'models': np.array([m for m, _, _ in MODELS])}
+    d = dict(cache)
+    d.update({'targets': np.array(list(targets)), 'sources': np.array(list(srcs)),
+              'models': np.array([m for m, _, _ in MODELS])})
     for tname, (tv, tf) in targets.items():
         d[f'tgt/{tname}/v'] = tv
         d[f'tgt/{tname}/f'] = tf
@@ -218,8 +249,6 @@ def save_cache(targets, srcs, results):
         d[f'src/{sname}/f'] = s['faces']
         d[f'src/{sname}/idx'] = np.array(s['idx'])
         d[f'src/{sname}/frames'] = np.stack(s['frames'])
-    for (m, tname, sname), outs in results.items():
-        d[f'pred/{m}/{tname}/{sname}'] = np.stack(outs)
     np.savez_compressed(CACHE_PATH, **d)
 
 
