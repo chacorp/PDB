@@ -44,7 +44,7 @@ from dataloader_CBD import (
     # CBD_collate_wrapper2,
 )
 
-from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
+from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig, fix_triangle_widning
 from utils.ckpt_utils import *
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 from utils.exp_utils import plateau_hat_points
@@ -323,11 +323,13 @@ class Trainer():
     def train_v5(self, epochs, target_mesh):
         # target neutral mesh for test-time training: [1, Nt, 3]
         target_mesh_v = torch.from_numpy(np.asarray(target_mesh.vertices)).float()[None].to(self.device)
-        target_mesh_vn_np = igl.per_vertex_normals(
-            np.asarray(target_mesh.vertices, dtype=np.float64), np.asarray(target_mesh.faces, dtype=np.int64)
-        )
+        # unify face winding to outward (positive signed volume) like the training meshes;
+        # vertex normals (model input with in_type 1) follow the winding
+        target_mesh_v_np = np.asarray(target_mesh.vertices, dtype=np.float64)
+        target_mesh_f_np = fix_triangle_widning(target_mesh_v_np, np.asarray(target_mesh.faces, dtype=np.int64))
+        target_mesh_vn_np = igl.per_vertex_normals(target_mesh_v_np, target_mesh_f_np)
         target_mesh_vn = torch.from_numpy(target_mesh_vn_np).float()[None].to(self.device)
-        target_mesh_f_cpu = torch.from_numpy(np.asarray(target_mesh.faces, dtype=np.int64))
+        target_mesh_f_cpu = torch.from_numpy(target_mesh_f_np)
         
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -530,15 +532,28 @@ class Trainer():
         interv_train = round(len_train_data / 10)
         interv_ttt_img = max(1, round(len_train_data / self.opts.ttt_img_per_epoch))
 
-        def save_ttt_image(pred_self, pred_cross, split, name):
-            """target neutral (GT) | ttt-self prediction | ttt-cross prediction"""
+        def save_ttt_image(batch, pred_self, pred_cross, pred_cage_d, split, name):
+            """
+            batch neutral | batch expression | target neutral (GT) | ttt-self | ttt-cross (neutral)
+            | cross retarget of the batch expression onto the target (visualization only, no GT)
+            """
+            with torch.no_grad():
+                w_t = self.model.predict_coordinate(target_mesh_v, target_mesh_vn)
+                expr_t = self.model.apply_key_d(w_t, pred_cage_d[0:1].detach(), target_mesh_v)
+                if not self.model.use_full_vertex:
+                    expr_t = expr_t + target_mesh_v
+            batch_faces = batch.faces.cpu()
             ttt_v_list = [
+                batch.template[0].cpu().detach(),
+                batch.vertices[0].cpu().detach(),
                 target_mesh_v[0].cpu().detach(),
                 pred_self[0].cpu().detach(),
                 pred_cross[0].cpu().detach(),
+                expr_t[0].cpu().detach(),
             ]
+            ttt_f_list = [batch_faces] * 2 + [target_mesh_f_cpu] * 4
             plot_image_array(
-                ttt_v_list, [target_mesh_f_cpu] * len(ttt_v_list),
+                ttt_v_list, ttt_f_list,
                 rot_list=[[0,0,0]] * len(ttt_v_list),
                 size=1, bg_black=False, mode='shade',
                 logdir=f"{self.opts.log_dir}/img/{split}/ttt",
@@ -845,7 +860,7 @@ class Trainer():
 
                 # target (ttt) image, denser than the mesh log below
                 if index % interv_ttt_img == 0:
-                    save_ttt_image(ttt_pred_self, ttt_pred_cross, 'train', f"{epoch:03d}_{index:04d}")
+                    save_ttt_image(batch, ttt_pred_self, ttt_pred_cross, pred_cage_d, 'train', f"{epoch:03d}_{index:04d}")
                 
                 if index % interv_train == 1:
 
@@ -1067,7 +1082,7 @@ class Trainer():
                         for key, value in running_losses_val.items():
                             log_text += f"{key}: {value*__jdx__:.6e} "
                         self.logger.write(log_text+"\n")
-                        save_ttt_image(ttt_pred_self, ttt_pred_cross, 'valid', f"{epoch:03d}_{counter:04d}")
+                        save_ttt_image(batch, ttt_pred_self, ttt_pred_cross, pred_cage_d, 'valid', f"{epoch:03d}_{counter:04d}")
 
                         if save_val_mesh_img:
                     
