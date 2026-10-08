@@ -74,6 +74,8 @@ def Options():
     parser.add_argument("-t", "--target_mesh", type=str,   default="",   help='target mesh for test-time training')
     parser.add_argument("--lambda_ttt_self",  type=float, default=1.0, help='weight of target self retargeting loss')
     parser.add_argument("--lambda_ttt_cross", type=float, default=1.0, help='weight of target neutral cross retargeting loss')
+    parser.add_argument("--ttt_img_per_epoch", type=int, default=100, help='number of target (ttt) log images saved per train epoch')
+    parser.add_argument("--valid_interval",    type=int, default=1,   help='validation interval epoch (ttt images are saved at every validation)')
     
     parser.add_argument("--save_interval",type=int,   default=50,     help='save interval epoch')
     parser.add_argument("--max_epoch",    type=int,   default=200,    help='number of epochs')
@@ -325,6 +327,7 @@ class Trainer():
             np.asarray(target_mesh.vertices, dtype=np.float64), np.asarray(target_mesh.faces, dtype=np.int64)
         )
         target_mesh_vn = torch.from_numpy(target_mesh_vn_np).float()[None].to(self.device)
+        target_mesh_f_cpu = torch.from_numpy(np.asarray(target_mesh.faces, dtype=np.int64))
         
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -406,6 +409,8 @@ class Trainer():
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/train/ttt", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/valid/ttt", exist_ok=True)
         if self.opts.use_cyclic_loss:
             os.makedirs(f"{self.opts.log_dir}/img/train/cyclic", exist_ok=True)
             os.makedirs(f"{self.opts.log_dir}/img/valid/cyclic", exist_ok=True)
@@ -523,6 +528,22 @@ class Trainer():
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
         interv_train = round(len_train_data / 10)
+        interv_ttt_img = max(1, round(len_train_data / self.opts.ttt_img_per_epoch))
+
+        def save_ttt_image(pred_self, pred_cross, split, name):
+            """target neutral (GT) | ttt-self prediction | ttt-cross prediction"""
+            ttt_v_list = [
+                target_mesh_v[0].cpu().detach(),
+                pred_self[0].cpu().detach(),
+                pred_cross[0].cpu().detach(),
+            ]
+            plot_image_array(
+                ttt_v_list, [target_mesh_f_cpu] * len(ttt_v_list),
+                rot_list=[[0,0,0]] * len(ttt_v_list),
+                size=1, bg_black=False, mode='shade',
+                logdir=f"{self.opts.log_dir}/img/{split}/ttt",
+                name=name, save=True
+            )
         
         for epoch in range(start_epoch, epochs+1):
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
@@ -626,7 +647,7 @@ class Trainer():
                 # test-time training: target self retargeting (T -> T) and neutral cross
                 # retargeting (rest cage of this batch identity, one sample, on W_T).
                 # no t_mask; pred_cage_s is detached inside ttt_loss.
-                loss_dict['ttt-self'], loss_dict['ttt-cross'], _, _ = self.model.ttt_loss(
+                loss_dict['ttt-self'], loss_dict['ttt-cross'], ttt_pred_self, ttt_pred_cross = self.model.ttt_loss(
                     target_mesh_v, target_mesh_vn, pred_cage_s[0:1]
                 )
                 
@@ -821,7 +842,10 @@ class Trainer():
                 
                 global_step += 1
                 train_counter += 1
-                                
+
+                # target (ttt) image, denser than the mesh log below
+                if index % interv_ttt_img == 0:
+                    save_ttt_image(ttt_pred_self, ttt_pred_cross, 'train', f"{epoch:03d}_{index:04d}")
                 
                 if index % interv_train == 1:
 
@@ -939,7 +963,10 @@ class Trainer():
             
             
             # validation -----------------------------------------------------------------------------------------
-            if epoch % 10 == 0 or epoch == epochs:
+            # validation every valid_interval epochs (for ttt losses/images); the mesh/cyclic
+            # validation images keep the original 10-epoch cadence
+            save_val_mesh_img = epoch % 10 == 0 or epoch == epochs
+            if epoch % self.opts.valid_interval == 0 or epoch == epochs:
                 self.model.eval()
                 print(f"[{epoch:03d}/{epochs:03d}][Valid]")
                 running_losses_val = {
@@ -1016,7 +1043,7 @@ class Trainer():
                         loss_dict["total"] = loss 
 
                         # test-time training losses: logged only, not in total (best model criterion)
-                        ttt_self, ttt_cross, _, _ = self.model.ttt_loss(
+                        ttt_self, ttt_cross, ttt_pred_self, ttt_pred_cross = self.model.ttt_loss(
                             target_mesh_v, target_mesh_vn, pred_cage_s[0:1]
                         )
                         running_losses_val['ttt-self'] += ttt_self.item()*self.loss_lambda['ttt-self']
@@ -1040,57 +1067,60 @@ class Trainer():
                         for key, value in running_losses_val.items():
                             log_text += f"{key}: {value*__jdx__:.6e} "
                         self.logger.write(log_text+"\n")
+                        save_ttt_image(ttt_pred_self, ttt_pred_cross, 'valid', f"{epoch:03d}_{counter:04d}")
+
+                        if save_val_mesh_img:
                     
-                        frame = HB
-                        v_list = [
-                            vertices[0].cpu().detach(),
-                            vertices[1].cpu().detach(),
-                            vertices[HB].cpu().detach(),
-                            vertices[BS-1].cpu().detach(),
-                            pred_vertices[0].cpu().detach(),
-                            pred_vertices[1].cpu().detach(),
-                            pred_vertices[HB].cpu().detach(),
-                            pred_vertices[BS-1].cpu().detach(),
-                        ]
-                        len_v = len(v_list)
-                        f_list=[faces] * len_v
-                        save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
-                        save_img_name = f"{epoch:03d}_{counter:04d}"
-
-                        plot_image_array(
-                            v_list, f_list,
-                            rot_list=[[0,0,0]]*len_v,
-                            size=1, bg_black=False, mode='shade',
-                            logdir=save_logdir,
-                            name=save_img_name, save=True
-                        )
-
-                        # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
-                        # retargeted expression, saved as its own image so it's comparable side by side.
-                        if self.opts.use_cyclic_loss and tgt_template is not None:
-                            cyc_faces = tgt_faces.cpu()
-                            cyc_v_list = [
-                                batch_tgt_neu_v[0].cpu().detach(),
-                                pred_cyclic_neu[0].cpu().detach(),
-                                pred_cyclic_def[0].cpu().detach(),
-                                pred_cyclic_neu[1].cpu().detach(),
-                                pred_cyclic_def[1].cpu().detach(),
-                                pred_cyclic_neu[HB].cpu().detach(),
-                                pred_cyclic_def[HB].cpu().detach(),
-                                pred_cyclic_neu[BS-1].cpu().detach(),
-                                pred_cyclic_def[BS-1].cpu().detach(),
+                            frame = HB
+                            v_list = [
+                                vertices[0].cpu().detach(),
+                                vertices[1].cpu().detach(),
+                                vertices[HB].cpu().detach(),
+                                vertices[BS-1].cpu().detach(),
+                                pred_vertices[0].cpu().detach(),
+                                pred_vertices[1].cpu().detach(),
+                                pred_vertices[HB].cpu().detach(),
+                                pred_vertices[BS-1].cpu().detach(),
                             ]
-                            cyc_len_v = len(cyc_v_list)
-                            cyc_f_list = [cyc_faces] * cyc_len_v
-                            save_logdir_cyc = f"{self.opts.log_dir}/img/valid/cyclic"
+                            len_v = len(v_list)
+                            f_list=[faces] * len_v
+                            save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                            save_img_name = f"{epoch:03d}_{counter:04d}"
 
                             plot_image_array(
-                                cyc_v_list, cyc_f_list,
-                                rot_list=[[0,0,0]]*cyc_len_v,
+                                v_list, f_list,
+                                rot_list=[[0,0,0]]*len_v,
                                 size=1, bg_black=False, mode='shade',
-                                logdir=save_logdir_cyc,
+                                logdir=save_logdir,
                                 name=save_img_name, save=True
                             )
+
+                            # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
+                            # retargeted expression, saved as its own image so it's comparable side by side.
+                            if self.opts.use_cyclic_loss and tgt_template is not None:
+                                cyc_faces = tgt_faces.cpu()
+                                cyc_v_list = [
+                                    batch_tgt_neu_v[0].cpu().detach(),
+                                    pred_cyclic_neu[0].cpu().detach(),
+                                    pred_cyclic_def[0].cpu().detach(),
+                                    pred_cyclic_neu[1].cpu().detach(),
+                                    pred_cyclic_def[1].cpu().detach(),
+                                    pred_cyclic_neu[HB].cpu().detach(),
+                                    pred_cyclic_def[HB].cpu().detach(),
+                                    pred_cyclic_neu[BS-1].cpu().detach(),
+                                    pred_cyclic_def[BS-1].cpu().detach(),
+                                ]
+                                cyc_len_v = len(cyc_v_list)
+                                cyc_f_list = [cyc_faces] * cyc_len_v
+                                save_logdir_cyc = f"{self.opts.log_dir}/img/valid/cyclic"
+
+                                plot_image_array(
+                                    cyc_v_list, cyc_f_list,
+                                    rot_list=[[0,0,0]]*cyc_len_v,
+                                    size=1, bg_black=False, mode='shade',
+                                    logdir=save_logdir_cyc,
+                                    name=save_img_name, save=True
+                                )
 
                     # ------------------------------------------------------------------------------------------------
                     if self.opts.debug:
