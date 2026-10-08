@@ -1,0 +1,1201 @@
+import os
+# Small per-item CPU ops (dataloading: tensor conversions, ICT blendshape matmuls,
+# igl normal computation) get *slower* under this machine's default thread count
+# because thread-pool sync overhead dwarfs the actual work. Cap it before numpy/
+# torch/igl initialize their thread pools. `setdefault` respects an env already
+# set by the caller's shell/launch script.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+
+import glob
+import json
+import yaml
+import random
+
+import numpy as np
+import argparse
+from tqdm import tqdm
+from functools import partial
+import trimesh
+import igl
+
+# import sys
+# from pathlib import Path
+# __abs_path__ = str(Path(__file__).parents[1].absolute())
+# __deep_cage_path__ = f'{__abs_path__}/third_party/deep_cage'
+
+# for __util_path__ in [__abs_path__, __deep_cage_path__]:
+#     if not __util_path__ in sys.path:
+#         sys.path+=[__util_path__]
+
+
+import torch
+torch.set_num_threads(1)
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+
+from dataloader_CBD import (
+    CBDdataSampler,
+    CBDDataset,
+    CBD_collate_wrapper,
+    # CBDDataset2,
+    # CBD_collate_wrapper2,
+)
+
+from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
+from utils.ckpt_utils import *
+from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
+from utils.exp_utils import plateau_hat_points
+from utils.mesh_utils import calc_norm_torch
+
+from models.baseline import CageNet
+from models.NGBC import NeuralGeneralizedBarycentricCoordinate
+from utils.loss_utils import * #distance_loss
+
+
+# sys.path = list(set(sys.path))
+def Options():
+    parser = argparse.ArgumentParser(description='neural generalized barycentric coordinate for FA retargeting')
+    parser.add_argument('-c', '--config', default='config/train_CBD.yml', help='config file path')
+    parser.add_argument("--device",       type=str,   default="cuda:0")
+    
+    parser.add_argument("--log_dir",      type=str,   default="ckpts_CBD")
+
+    parser.add_argument("--version",      type=int,   default=1,      help='train model (1: baseline, 5: NGBC, 6: PDBplus)')
+    parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
+    
+    parser.add_argument("--in_type",      type=int,   default=1,
+                        help='input type (0: position, 1: position + normal')
+    parser.add_argument("--out_type",      type=int,   default=1,      
+                        help='output type (0: cage delta_v`, 1: cage v, 2: cage delta_T mat, 3: vertex T mat')
+    
+    parser.add_argument("-t", "--target_mesh", type=str,   default="",   help='target mesh for test-time training')
+    parser.add_argument("--lambda_ttt_self",  type=float, default=1.0, help='weight of target self retargeting loss')
+    parser.add_argument("--lambda_ttt_cross", type=float, default=1.0, help='weight of target neutral cross retargeting loss')
+    
+    parser.add_argument("--save_interval",type=int,   default=50,     help='save interval epoch')
+    parser.add_argument("--max_epoch",    type=int,   default=200,    help='number of epochs')
+    parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
+    parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
+    parser.add_argument("--sc_step",      type=int,   default=10,     help='scheduler step')
+    parser.add_argument("--warmup_epochs",type=int,   default=1,      help='(v1/CageNet) epochs before mvc loss is activated')
+    parser.add_argument("--use_p2f_loss", dest='use_p2f_loss', action='store_true')
+    parser.set_defaults(use_p2f_loss=False)
+    
+    parser.add_argument("--batch_size",   type=int,   default=8,      help='batch size')
+    parser.add_argument("--seed",         type=int,   default=42,     help='random seed')
+    parser.add_argument("--ckpt",         type=str,   default=None)    
+    parser.add_argument("--continue_ckpt",dest='continue_ckpt', action='store_true')
+    parser.set_defaults(continue_ckpt=False)
+    
+    parser.add_argument("--n_sampling",   dest='n_sampling', action='store_true')
+    parser.set_defaults(n_sampling=False)
+    
+    parser.add_argument("--use_decimate", dest='use_decimate', action='store_true')
+    parser.set_defaults(use_decimate=False)
+
+    #### Choose a last layer activation for key_weight_model()
+    parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"],
+        help="Choose a last layer activation for NGBC.key_weight_model()"
+    )
+    
+    parser.add_argument("--no_pou",dest='no_pou', action='store_true')
+    parser.set_defaults(no_pou=False)
+    
+    parser.add_argument("--pou_loss",dest='pou_loss', action='store_true')
+    parser.set_defaults(pou_loss=False)
+    
+    parser.add_argument("--use_scheduler",dest='use_scheduler', action='store_true')
+    parser.set_defaults(use_scheduler=False)
+    
+    parser.add_argument("--use_dist_loss",dest='use_dist_loss', action='store_true')
+    parser.set_defaults(use_dist_loss=False)
+    parser.add_argument("--use_cage_consistency_loss",dest='use_cage_consistency_loss', action='store_true')
+    parser.set_defaults(use_cage_consistency_loss=False)
+    parser.add_argument("--mask_cage_consist",dest='mask_cage_consist', action='store_true',
+                         help='cage-consistency loss: only penalize control points the sampled '
+                              'input actually has evidence for (nonzero key_weight column)')
+    parser.set_defaults(mask_cage_consist=False)
+    parser.add_argument("--use_cyclic_loss",dest='use_cyclic_loss', action='store_true',
+                         help='cross-identity factor cycle: W_t sg(v_s) re-encoded should recover sg(v_s)')
+    parser.set_defaults(use_cyclic_loss=False)
+    parser.add_argument("--lambda_cage_consist", type=float, default=0.5, help='weight for cage-consistency loss')
+    parser.add_argument("--lambda_cyclic",       type=float, default=0.5, help='weight for cyclic loss')
+    parser.add_argument("--use_segment_weight",dest='use_segment_weight', action='store_true')
+    parser.set_defaults(use_segment_weight=False)
+    parser.add_argument("--use_laplacian",dest='use_laplacian', action='store_true')
+    parser.set_defaults(use_laplacian=False)
+    parser.add_argument("--use_normal_loss",dest='use_normal_loss', action='store_true')
+    parser.set_defaults(use_normal_loss=False)
+
+    
+    parser.add_argument("--no_t_mask",dest='no_t_mask', action='store_true')
+    parser.set_defaults(no_t_mask=False)
+    
+    parser.add_argument("--use_data0",dest='use_data0', action='store_true')
+    parser.set_defaults(use_data0=False)
+    parser.add_argument("--use_data1",dest='use_data1', action='store_true')
+    parser.set_defaults(use_data1=False)
+    parser.add_argument("--use_data2",dest='use_data2', action='store_true')
+    parser.set_defaults(use_data2=False)
+    parser.add_argument("--use_data3",dest='use_data3', action='store_true')
+    parser.set_defaults(use_data3=False)
+    parser.add_argument("--use_data9",dest='use_data9', action='store_true')
+    parser.set_defaults(use_data9=False)
+    parser.add_argument("--use_data8",dest='use_data8', action='store_true')
+    parser.set_defaults(use_data8=False)
+    parser.add_argument("--data_toggle",dest='data_toggle', action='store_true')
+    parser.set_defaults(data_toggle=False)
+
+    parser.add_argument("--tb",           action='store_true')
+    parser.set_defaults(is_train=True)
+    
+    parser.add_argument("--optim_cage",dest='optim_cage', action='store_true')
+    parser.set_defaults(optim_cage=False)
+    
+    parser.add_argument("--align_latent",dest='align_latent', action='store_true')
+    parser.set_defaults(align_latent=False)
+    
+    args = parser.parse_args()
+    return args
+
+
+class Logger():
+    def __init__(self, file_path):
+        self.file_path = file_path
+
+    def write(self, txt):
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(self.file_path, 'a') as f:
+            f.write(f"[{timestamp}] {txt}")
+        f.close()
+
+class Trainer():
+    def __init__(self, opts):
+        # set opts
+        self.opts = opts
+        if opts.version == 6:
+            if opts.out_type != 0:
+                raise ValueError('PDBplus requires --version 6 --out_type 0.')
+            if opts.use_cyclic_loss:
+                raise ValueError('PDBplus cyclic loss is not implemented; omit --use_cyclic_loss.')
+            if opts.use_dist_loss:
+                raise ValueError('PDBplus returns canonical displacements, not cage positions; '
+                                 'omit --use_dist_loss.')
+            if opts.last_activation is None:
+                opts.last_activation = 'relu'
+        self.set_seed(self.opts)
+        self.device = opts.device
+
+        last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
+        last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
+        
+        if opts.version==1:
+            # from deep_cage import NetworkFull
+            
+            # self.model = NetworkFull(device=self.device, optim_cage=self.opts.optim_cage).to(self.device)
+            self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+            
+        elif opts.version in (5, 6):
+            model_cls = NeuralGeneralizedBarycentricCoordinate
+            if opts.version == 6:
+                from models.PDBplus import PDBplus
+                model_cls = PDBplus
+            self.model = model_cls(
+                opts, num_layers=4,
+                num_cage_vertices=self.opts.num_cage_v,
+                use_exp_recon=False, # not used yet
+                use_shp_recon=False, # not used yet
+                use_shp=False,
+                use_relu=last_act_list[0],
+                use_elu=last_act_list[1],
+                use_softmax=last_act_list[2],
+                use_softplus=last_act_list[3],
+                no_activation=last_act_list[4],
+                use_least_N_on_V=False,
+                is_train=True,
+                use_pou = not self.opts.no_pou,
+                device=self.device,
+                #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
+                hid_dim=128 if self.opts.align_latent else 256,
+            )
+        else:
+            raise NotImplementedError('No matching model version')
+            
+        # load weight
+        self.load_weight()
+    
+    def load_weight(self):
+        self._ckpt_optimizer_state = None
+        self._ckpt_scheduler_state = None
+        if self.opts.ckpt:
+            print(f"Loading... {self.opts.ckpt}")
+            if self.opts.continue_ckpt:
+                ckpt = glob.glob(os.path.join(self.opts.ckpt, f"*_{self.opts.start_epoch:03d}.pth"))[0]
+            else:
+                ckpt = glob.glob(os.path.join(self.opts.ckpt, "*_best.pth"))[0]
+            ckpt_dict = torch.load(ckpt)
+            if isinstance(ckpt_dict, dict) and 'model' in ckpt_dict:
+                self.model.load_state_dict(ckpt_dict['model'])
+                if self.opts.continue_ckpt:
+                    self._ckpt_optimizer_state = ckpt_dict.get('optimizer')
+                    self._ckpt_scheduler_state = ckpt_dict.get('scheduler')
+            else:
+                self.model.load_state_dict(ckpt_dict)
+            print(f"Loaded! {ckpt}")
+        else:
+            print('no ckpt found, training from scratch!')
+
+    def _load_optim_states(self):
+        if self._ckpt_optimizer_state is not None:
+            self.optimizer.load_state_dict(self._ckpt_optimizer_state)
+            print("Loaded optimizer state from checkpoint.")
+        if self._ckpt_scheduler_state is not None:
+            self.scheduler.load_state_dict(self._ckpt_scheduler_state)
+            print("Loaded scheduler state from checkpoint.")
+    
+    def random_trans_scale(self, template, vertices):
+        """
+            not used
+        """
+        ## Random Augmentation ---------------------------------------------------------
+        trans, scale = 0.0, 1.0
+        if self.opts.data_rand_trans:
+            t_range = 0.1
+            trans = (torch.rand((1, 3))*t_range - t_range*0.5)
+        if self.opts.data_rand_scale:
+            scale = torch.rand((1)).repeat(3) * 0.4 + 0.8
+        template = template * scale + trans
+        vertices = vertices * scale + trans
+        ## -----------------------------------------------------------------------------
+        
+        return template, vertices, scale, trans
+
+    def _neutral_prediction_vertices(self, pred_source, template):
+        """NGBC delta outputs need grounding; PDBplus already returns positions."""
+        if self.opts.version == 6 or self.model.use_full_vertex:
+            return pred_source
+        return pred_source + template
+
+    def log_active_losses_v5(self):
+        """
+        Per-loss on/off status + lambda weight for train_v5, mirroring the gating used
+        when loss_dict is actually built in the training loop below (self.loss_lambda
+        alone isn't enough since cage-consist/cyclic are always present in that dict
+        regardless of whether their opts flag is on).
+        """
+        def _line(key, note=""):
+            return f"[{key}]: \tlambda={self.loss_lambda[key]}{note}\n"
+
+        log_txt = "========< Active losses (train_v5) >========\n"
+        log_txt += _line('ttt-self', f" (target: {self.opts.target_mesh})")
+        log_txt += _line('ttt-cross')
+        log_txt += _line('recon-def')
+        log_txt += _line('recon-neu')
+        if self.opts.align_latent:
+            log_txt += _line('exp-z')
+        if self.model.use_exp_recon:
+            log_txt += _line('exp-v')
+        if self.model.use_shp_recon:
+            log_txt += _line('shape')
+        if self.opts.use_cage_consistency_loss:
+            note = " (masked)" if self.opts.mask_cage_consist else " (naive)"
+            log_txt += _line('cage-consist', note)
+        if self.opts.use_cyclic_loss:
+            log_txt += _line('cyclic')
+        if self.opts.use_dist_loss:
+            log_txt += _line('dist')
+        if self.opts.pou_loss:
+            log_txt += _line('pou')
+        if self.opts.use_laplacian:
+            log_txt += _line('lap')
+        if self.opts.use_normal_loss:
+            log_txt += _line('norm-def')
+            log_txt += _line('norm-neu')
+        log_txt += "=============================================="
+        return log_txt
+
+    def train_v5(self, epochs, target_mesh):
+        # target neutral mesh for test-time training: [1, Nt, 3]
+        target_mesh_v = torch.from_numpy(np.asarray(target_mesh.vertices)).float()[None].to(self.device)
+        target_mesh_vn_np = igl.per_vertex_normals(
+            np.asarray(target_mesh.vertices, dtype=np.float64), np.asarray(target_mesh.faces, dtype=np.int64)
+        )
+        target_mesh_vn = torch.from_numpy(target_mesh_vn_np).float()[None].to(self.device)
+        
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.opts.lr,
+            betas=(0.9, 0.999)
+        )
+
+        # self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        #     self.optimizer,
+        #     milestones=[i for i in range(0, epochs-1, self.opts.sc_step)],
+        #     gamma=self.opts.sc_gamma
+        # )
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer,
+            step_size=self.opts.sc_step,
+            gamma=self.opts.sc_gamma
+        )
+        self._load_optim_states()
+
+        ##########################################################################################################
+        # define dataset -----------------------------------------------------------------------------------------
+        BS = self.opts.batch_size
+        BS_denom = 1 / BS
+        
+        self.train_dataset = CBDDataset(
+            self.opts, is_train=True, toggle=self.opts.data_toggle
+        )
+        self.valid_dataset = CBDDataset(
+            self.opts, is_valid=True, toggle=self.opts.data_toggle
+        )
+        
+        train_sampler = CBDdataSampler(
+            self.train_dataset.len_list, 
+            self.opts.batch_size,
+            shuffle=True,
+            balance=False,
+            is_train=True
+        )
+        self.train_dataloader = torch.utils.data.DataLoader(
+            self.train_dataset, 
+            batch_sampler=train_sampler, 
+            # batch_size=8, shuffle=True,
+            collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
+            num_workers=0,
+        )        
+            
+        valid_sampler = CBDdataSampler(
+            self.valid_dataset.len_list, 
+            self.opts.batch_size,
+            shuffle=True,
+            balance=False,
+            is_valid=True
+        )
+        self.valid_dataloader = torch.utils.data.DataLoader(
+            self.valid_dataset, 
+            batch_sampler=valid_sampler, 
+            # batch_size=8, shuffle=True,
+            collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
+            num_workers=0
+        )
+        ##########################################################################################################
+        
+        
+        ###### Logging ###########################################################################################
+        # make logdir --------------------------------------------------------------------------------------------
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+        import datetime
+        now = datetime.datetime.now()
+        now = now.strftime("%Y-%m-%d-%H-%M-%S")
+        
+        model_label = 'PDBplus' if self.opts.version == 6 else 'NGBC'
+        tag = f"-{model_label}v{self.opts.version}"
+        if self.opts.optim_cage:
+            tag += "-optim_cage"
+        tag += f"-TTT-{os.path.splitext(os.path.basename(self.opts.target_mesh))[0]}"
+        self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
+        os.makedirs(self.opts.log_dir, exist_ok=True)
+
+        os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
+        if self.opts.use_cyclic_loss:
+            os.makedirs(f"{self.opts.log_dir}/img/train/cyclic", exist_ok=True)
+            os.makedirs(f"{self.opts.log_dir}/img/valid/cyclic", exist_ok=True)
+        
+        # save options as json -----------------------------------------------------------------------------------
+        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
+            json.dump(vars(self.opts), f, indent=4)
+            
+        # save train option as yml
+        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
+        
+        if self.opts.tb:
+            train_ = os.path.join(self.opts.log_dir, "train")
+            valid_ = os.path.join(self.opts.log_dir, "valid")
+            self.writer_train = SummaryWriter(log_dir=train_)
+            self.writer_valid = SummaryWriter(log_dir=valid_)
+        
+        # self logger
+        self.logger = Logger(os.path.join(self.opts.log_dir, "log.txt"))
+        print(f'Saving log at: {self.logger.file_path}')
+        
+        print(self.train_dataset.get_data_config())
+        print(train_sampler.get_sampler_config())
+        print(self.valid_dataset.get_data_config())
+        print(valid_sampler.get_sampler_config())
+        print(self.model.log_parameter_num())
+
+        self.logger.write(self.train_dataset.get_data_config())
+        self.logger.write(train_sampler.get_sampler_config())
+        self.logger.write(self.valid_dataset.get_data_config())
+        self.logger.write(valid_sampler.get_sampler_config())
+        self.logger.write(self.model.log_parameter_num())
+
+        # fixed reference templates for stable "cage vertex usage" logging ---------------------------------------
+        # (id-0 neutral template mesh per active sub-dataset, instead of whatever mesh happens to land in the
+        #  current random training batch, so the metric is comparable across log points / training runs)
+        self.fixed_ref_templates = {}
+
+        def _add_ref(name, template_np, faces_np):
+            template_np = np.asarray(template_np)
+            faces_np = np.asarray(faces_np)
+            normal_np = igl.per_vertex_normals(template_np, faces_np)
+            self.fixed_ref_templates[name] = (
+                torch.tensor(template_np).float().to(self.device),
+                torch.tensor(normal_np).float().to(self.device),
+            )
+
+        ds = self.train_dataset
+        if getattr(ds, 'use_voca', False):
+            id_name = ds.voca_id_list[0]
+            _add_ref('voca', ds.voca_mesh[id_name], ds.voca_mesh['face'])
+        if getattr(ds, 'use_coma', False):
+            id_name = ds.coma_id_list[0]
+            _add_ref('coma', ds.coma_mesh[id_name], ds.coma_mesh['face'])
+        if getattr(ds, 'use_biwi', False):
+            id_name = ds.biwi_id_list[0]
+            _add_ref('biwi', ds.biwi_mesh[id_name], ds.biwi_mesh['face'])
+        if getattr(ds, 'use_mf_SEN', False):
+            id_name = ds.mf_SEN_id_list[0]
+            _add_ref('mf', ds.mf_SEN_mesh[id_name], ds.mf_SEN_mesh['face'])
+        elif getattr(ds, 'use_mf_ROM', False):
+            id_name = ds.mf_ROM_id_list[0]
+            _add_ref('mf', ds.mf_ROM_mesh[id_name], ds.mf_ROM_mesh['face'])
+        if getattr(ds, 'use_ict', False):
+            id_coeff = ds.iden_vecs[0]
+            _, template, _ = ds.ict_face_model.apply_coeffs(
+                id_coeff, np.zeros(53), return_all=True
+            )
+            _add_ref('ict', template[0], ds.ict_face_model.faces)
+        #---------------------------------------------------------------------------------------------------------
+        ##########################################################################################################
+        
+        
+        
+        # training loop ##########################################################################################
+        global_step = 0
+        BEST_LOSS = 100_000_000
+        BEST_EPOCH = 0
+        start_epoch = self.opts.start_epoch
+                        
+        # define loss lamdba 
+        self.loss_lambda = {
+            "ttt-self": self.opts.lambda_ttt_self,
+            "ttt-cross": self.opts.lambda_ttt_cross,
+            "recon-def": self.opts.lambda_vert,
+            "recon-neu": self.opts.lambda_vert,
+            "exp-z": self.opts.lambda_vert * 0.5,
+            "exp-v": self.opts.lambda_vert,
+            "shape": self.opts.lambda_vert,
+            "cage-consist": self.opts.lambda_cage_consist,
+            "cyclic": self.opts.lambda_cyclic,
+            # "pou": self.opts.lambda_vert,
+            # symm
+        }
+        if self.opts.use_dist_loss:
+            self.loss_lambda['dist'] = 0.5
+        if self.opts.pou_loss:
+            self.loss_lambda['pou'] = 1.0
+        if self.opts.use_laplacian:
+            self.loss_lambda['lap'] = 1.0
+        if self.opts.use_normal_loss:
+            self.loss_lambda['norm-def']=0.1
+            self.loss_lambda['norm-neu']=0.1
+
+        # log which losses are actually active this run, and their lambda weight, next to the
+        # parameter count above -- self.loss_lambda holds weights for keys that may not be
+        # active (e.g. cage-consist/cyclic are always in the dict but only used when their
+        # opts flag is on), so this mirrors the same gating used when loss_dict is built below.
+        active_loss_log = self.log_active_losses_v5()
+        print(active_loss_log)
+        self.logger.write(active_loss_log)
+
+        check_usage = False
+        
+        len_train_data = len(self.train_dataloader)
+        len_valid_data = len(self.valid_dataloader)
+        interv_train = round(len_train_data / 10)
+        
+        for epoch in range(start_epoch, epochs+1):
+            print(f"[{epoch:03d}/{epochs:03d}][Train]")
+            
+            ## for logging loss!
+            running_losses = {
+                "ttt-self": 0.0,
+                "ttt-cross": 0.0,
+                "recon-def": 0.0,
+                "recon-neu": 0.0,
+                "exp-z": 0.0,
+                "exp-v": 0.0,
+                "shape": 0.0,
+                "total": 0.0,
+            }
+            if self.opts.use_cage_consistency_loss:
+                running_losses['cage-consist']=0.0
+            if self.opts.use_cyclic_loss:
+                running_losses['cyclic']=0.0
+            if self.opts.use_dist_loss:
+                running_losses['dist']=0.0
+            if self.opts.pou_loss:
+                running_losses['pou']=0.0
+            if self.opts.use_laplacian:
+                running_losses['lap']=0.0
+            if self.opts.use_normal_loss:
+                running_losses['norm-def']=0.0
+                running_losses['norm-neu']=0.0
+
+            self.model.train()
+            train_counter = 0
+            
+            is_stepped = False
+            is_stts_added = False
+            
+            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100, disable=(epoch % 10 != 0))
+            for index, batch in pbar:
+                self.optimizer.zero_grad()
+                
+                mesh_data_num = batch.mesh_data.cpu().numpy()
+                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
+                
+                with torch.no_grad():
+                    ## sampling points with probability
+                    # margin = 0.8
+                    # _p = (plateau_hat_points(batch.template[0]).squeeze() + margin) / (1 + margin)
+                    # batch.template, batch.vertices, scale, trans = self.random_trans_scale(batch.template, batch.vertices)
+                    
+                    ## random sampling and random permutation
+                    N = batch.template.shape[1]
+                    use_perm = torch.rand(1) > 0.3
+                    # use_perm= False
+                    if use_perm:
+                        N_range = N-torch.randint(100, N//6, (1,)).item()
+                        randperm_idx = torch.randperm(N)[:N_range]
+                    else:
+                        randperm_idx = torch.arange(N)
+                        # randperm_idx = torch.multinomial(_p, 2048)
+                    rearange_idx = torch.argsort(randperm_idx)
+                    
+                    batch_template_v = batch.template[:, randperm_idx]
+                    batch_template_n = batch.template_normal[:, randperm_idx]
+                    batch_vertices_v = batch.vertices[:, randperm_idx]
+                    batch_vertices_n = batch.vertices_normal[:, randperm_idx]
+
+                    ## masking face region using hat function (min x1 ~ max x2)
+                    # t_mask = plateau_hat_points(batch_template_v) + 1.0
+                    
+                # model prediction -------------------------------------------------------------------------------
+                ## B: number of batch, Nv : number of vertices, Nc: number of control vertices
+                ## weight prediction: (B, Nv, Nc)
+                ## key_d prediction:  (B, Nc, 3+3) [deformed cage]
+                # import pdb;pdb.set_trace()
+                pred_vertices, recon_vertices, recon_source, exp_z, \
+                pred_source, t_mask, pred_key_weight, pred_cage_s, pred_cage_d = self.model(
+                    batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
+                    batch.mesh_data, epoch=epoch
+                )
+
+                # cage-consistency target: only needed when the loss is enabled, and it's a
+                # stop-gradient target so no graph needs to be built for it.
+                if self.opts.use_cage_consistency_loss:
+                    with torch.no_grad():
+                        _, _, _, _, \
+                        _, _, _, pred_cage_s_full, pred_cage_d_full = self.model(
+                            batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=epoch
+                        )
+                # ------------------------------------------------------------------------------------------------
+                if self.opts.no_t_mask:
+                    t_mask = 1.0
+                    inv_t_mask = 0.0
+                else:
+                    inv_t_mask = 1.0 - t_mask
+                    
+                # loss -------------------------------------------------------------------------------------------
+                
+                loss_dict = {} # make it as a dictionary
+                HB = batch.vertices.shape[0] // 2
+
+                # test-time training: target self retargeting (T -> T) and neutral cross
+                # retargeting (rest cage of this batch identity, one sample, on W_T).
+                # no t_mask; pred_cage_s is detached inside ttt_loss.
+                loss_dict['ttt-self'], loss_dict['ttt-cross'], _, _ = self.model.ttt_loss(
+                    target_mesh_v, target_mesh_vn, pred_cage_s[0:1]
+                )
+                
+                if self.opts.no_t_mask:
+                    loss_dict['recon-def'] = F.mse_loss(
+                        batch_vertices_v, pred_vertices
+                    )
+                else:
+                    # focus deformation on face
+                    loss_dict['recon-def'] = F.mse_loss(
+                        batch_vertices_v*t_mask, pred_vertices*t_mask
+                    )
+                    # should be static on elsewhere
+                    loss_dict['recon-def'] += F.mse_loss(
+                        batch_template_v*inv_t_mask, pred_vertices*inv_t_mask
+                    )
+
+                # coordinate-weight sparsity: a mesh vertex's barycentric weight onto a
+                # cage vertex should vanish once they're farther apart than `tau`.
+                if self.opts.use_dist_loss:
+                    loss_dict['dist'] = distance_loss(
+                        batch_template_v, pred_cage_s, pred_key_weight
+                    ) + distance_loss(
+                        batch_vertices_v, pred_cage_d, pred_key_weight
+                    )
+
+                # if mesh_data =='ict':
+                # cage consistency: full-mesh vs. subsampled-mesh cage predictions should agree.
+                # with mask_cage_consist, only control points the sampled input has nonzero
+                # key_weight evidence for are compared (see masked_cage_consistency_loss).
+                if self.opts.use_cage_consistency_loss:
+                    if self.opts.mask_cage_consist:
+                        loss_dict['cage-consist'] = masked_cage_consistency_loss(
+                            pred_cage_s_full, pred_cage_s, pred_key_weight
+                        ) + masked_cage_consistency_loss(
+                            pred_cage_d_full, pred_cage_d, pred_key_weight
+                        )
+                    else:
+                        loss_dict['cage-consist'] = F.mse_loss(
+                            pred_cage_s_full, pred_cage_s
+                        ) + F.mse_loss(
+                            pred_cage_d_full, pred_cage_d
+                        )
+
+                # cross-identity factor cycle: v_s=key_d from this batch's own identity/expression,
+                # W_t=ψ(a *different* identity's neutral, drawn straight from the dataset -- batches
+                # are single-identity, so this can't come from within the batch). Re-encoding the
+                # pseudo target W_t·sg(v_s) through φ should recover sg(v_s). Unlike cage-consist,
+                # this sends gradient into key_weight_model (ψ) via a genuinely different identity.
+                if self.opts.use_cyclic_loss:
+                    Bc = batch_template_v.shape[0]
+                    tgt_template, tgt_template_normal, tgt_faces, _ = self.train_dataset.sample_other_identity_neutral(
+                        exclude_id_name=batch.id_name
+                    )
+                    if tgt_template is not None:
+                        batch_tgt_neu_v = tgt_template.to(self.device)[None].expand(Bc, -1, -1)
+                        batch_tgt_neu_n = tgt_template_normal.to(self.device)[None].expand(Bc, -1, -1)
+                        
+                        loss_cyclic, pred_cyclic_def, pred_cyclic_neu = self.model.cyclic_loss(
+                            batch_tgt_neu_v,
+                            batch_tgt_neu_n,
+                            pred_cage_d.detach(),
+                            pred_cage_s.detach(),
+                            pred_key_weight.detach(),
+                        )
+                        loss_dict['cyclic'] = loss_cyclic
+
+                # directly hanging mesh vertex position ----------------------------------------------------------
+                # Resolve the model-specific neutral output convention once,
+                # shared by neutral position loss and neutral normal loss.
+                pred_source_v = self._neutral_prediction_vertices(pred_source, batch_template_v)
+                if self.opts.no_t_mask:
+                    loss_dict['recon-neu'] = F.mse_loss(
+                        batch_template_v, pred_source_v
+                    )
+                else:
+                    loss_dict['recon-neu'] = F.mse_loss(
+                        batch_template_v*t_mask, pred_source_v*t_mask
+                    )
+                    loss_dict['recon-neu'] += F.mse_loss(
+                        batch_template_v*inv_t_mask, pred_source_v*inv_t_mask
+                    )
+                #-------------------------------------------------------------------------------------------------
+
+                #-------( not used )------------------------------------------------------------------------------
+                if self.model.use_shp_recon:
+                    loss_dict['shape'] = F.mse_loss(
+                        batch_template_v[:,rearange_idx]*t_mask,
+                        recon_source[:,randperm_idx[rearange_idx]]*t_mask
+                    ) # for shape AE
+                if self.model.use_exp_recon:
+                    loss_dict['exp-v'] = F.mse_loss(
+                        batch_vertices_v[:,rearange_idx]*t_mask,
+                        recon_vertices[:,randperm_idx[rearange_idx]]*t_mask
+                    ) # for expression AE
+                #-------------------------------------------------------------------------------------------------
+
+                # soft POU ---------------------------------------------------------------------------------------
+                if self.opts.pou_loss:
+                    pred_key_weight_sum = pred_key_weight.sum(-1)
+                    loss_dict['pou'] = F.mse_loss(
+                        torch.ones_like(pred_key_weight_sum).to(self.device),
+                        pred_key_weight_sum, 
+                    )
+                #-------------------------------------------------------------------------------------------------
+
+                if False:
+                    loss_sparse = torch.nn.functional.l1_loss(pred_key_weight, torch.zeros_like(pred_key_weight))
+                    
+                # Laplacian smoothing ----------------------------------------------------------------------------
+                if not use_perm and self.opts.use_laplacian:
+                    loss_dict['lap'] = laplacian_loss(
+                        batch, pred_key_weight, self.train_dataset, mesh_data_num, self.device
+                    ) * BS_denom
+                    
+                    # with torch.no_grad():
+                    #     batch_vertices_lap = cotmatrix @ batch_vertices_v
+                    #     batch_template_lap = cotmatrix @ batch_template_v
+                    # pred_vertices_lap = cotmatrix @ pred_vertices
+                    # pred_source_lap = cotmatrix @ pred_source
+                    
+                    # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
+                    # loss_dict['pois'] += F.mse_loss(batch_vertices_lap, pred_vertices_lap)
+                #-------------------------------------------------------------------------------------------------
+
+                
+                # vertex normal loss -----------------------------------------------------------------------------
+                if not use_perm and self.opts.use_normal_loss:
+                    pred_vertices_norm = calc_norm_torch(pred_vertices, batch.faces, at='verts') # [1, V, 3]
+                    
+                    if self.opts.no_t_mask:
+                        loss_dict['norm-def'] = F.mse_loss(
+                                batch_vertices_n, pred_vertices_norm
+                            )
+                    else:
+                        loss_dict['norm-def'] = (
+                            F.mse_loss(
+                                batch_vertices_n*t_mask, pred_vertices_norm*t_mask
+                            ) + F.mse_loss(
+                                batch_template_n*inv_t_mask, pred_vertices_norm*inv_t_mask
+                            )
+                        )
+                    
+                    pred_template_norm = calc_norm_torch(pred_source_v, batch.faces, at='verts')   # [1, V, 3]
+
+                    loss_dict['norm-neu'] = F.mse_loss(
+                        batch_template_n, pred_template_norm
+                    )
+                #-------------------------------------------------------------------------------------------------
+                
+                # latent alignment loss --------------------------------------------------------------------------
+                #if (self.opts.use_data2 or self.opts.use_data3):
+                if self.opts.align_latent:
+                    if mesh_data=='ict':
+                        loss_dict['exp-z'] = F.mse_loss(
+                            batch.exp_coeff.unsqueeze(1), exp_z
+                        )
+                    else:
+                        exp_z_facs, exp_z_ext = exp_z[...,:53], exp_z[...,53:]
+                        loss_dict['exp-z'] = non_ict_loss(exp_z_facs)
+                        loss_dict['exp-z'] += F.mse_loss(
+                            torch.zeros_like(exp_z_ext).to(self.device),
+                            exp_z_ext
+                        )
+                # ------------------------------------------------------------------------------------------------
+
+                # get total loss (lambda weights are multiplied here!) -------------------------------------------
+                loss = 0
+                for key, value in loss_dict.items():
+                    tmp = value*self.loss_lambda[key]
+                    loss += tmp
+                    running_losses[key] += tmp.detach() # for logging
+                loss_dict["total"] = loss
+                # ------------------------------------------------------------------------------------------------
+
+                
+                # backward ---------------------------------------------------------------------------------------
+                loss.backward()
+                # try:
+                #     loss.backward()
+                # except:
+                #     import pdb;pdb.set_trace()
+                self.optimizer.step()
+                # ------------------------------------------------------------------------------------------------
+
+                
+                # running loss for logging -----------------------------------------------------------------------
+                running_losses["total"] += loss_dict["total"].detach()
+                pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
+                # ------------------------------------------------------------------------------------------------
+
+                
+                global_step += 1
+                train_counter += 1
+                                
+                
+                if index % interv_train == 1:
+
+                    IDX = torch.tensor([0, 1, HB, BS-1])
+                    with torch.no_grad():
+                        #pred_vertices, recon_vertices, recon_source, exp_z, pred_source = self.model(
+                        pred_vertices, _, _, exp_z, key_d, key_weight = self.model(
+                            batch.template[IDX], batch.vertices[IDX],
+                            batch.template_normal[IDX], batch.vertices_normal[IDX],
+                            batch.mesh_data, epoch=epoch, out_kw=True
+                        )
+                    # for visualization
+                    vertices = batch.vertices.cpu()
+                    faces = batch.faces.cpu()
+                    
+                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
+                    __idx__ = 1/train_counter
+                    for key, value in running_losses.items():
+                        log_text += f"{key}: {value*__idx__:.6e} "
+
+                    if not is_stts_added:
+                        log_text+='\n>>> Num actually used cage vertex (fixed id-0 template per dataset):'
+                        for ref_name, (ref_v, ref_n) in self.fixed_ref_templates.items():
+                            ref_key_weight = self.model.predict_coordinate(
+                                ref_v.unsqueeze(0), ref_n.unsqueeze(0)
+                            )
+                            ref_weight_sum = ref_key_weight[0].sum(0)
+                            ref_used = torch.count_nonzero(ref_weight_sum)
+                            log_text += (
+                                f'\n>>>   [{ref_name}] {ref_used} / {ref_key_weight.shape[-1]} '
+                                f'(max: {ref_weight_sum.max().item():.5e}, min: {ref_weight_sum.min().item():.5e})'
+                            )
+                        is_stts_added=True
+                    self.logger.write(log_text+"\n")
+                    
+                    frame = HB
+                    v_list = [
+                        vertices[0].cpu().detach(),
+                        vertices[1].cpu().detach(),
+                        vertices[HB].cpu().detach(),
+                        vertices[BS-1].cpu().detach(),
+                        pred_vertices[0].cpu().detach(),
+                        pred_vertices[1].cpu().detach(),
+                        pred_vertices[2].cpu().detach(),
+                        pred_vertices[3].cpu().detach(),
+                    ]
+                    
+                    len_v = len(v_list)
+                    f_list = [faces] * len_v
+                    save_logdir = f"{self.opts.log_dir}/img/train/mesh"
+                    save_img_name = f"{epoch:03d}_{index:04d}"
+
+                    plot_image_array(
+                        v_list, f_list, 
+                        rot_list=[[0,0,0]] * len_v, 
+                        size=1, bg_black=False, mode='shade',
+                        logdir=save_logdir,
+                        name=save_img_name, save=True
+                    )
+
+                    # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
+                    # retargeted expression, saved as its own image (mirrors the validation version).
+                    if self.opts.use_cyclic_loss and tgt_template is not None:
+                        cyc_faces = tgt_faces.cpu()
+                        cyc_v_list = [
+                            batch_tgt_neu_v[0].cpu().detach(),
+                            pred_cyclic_neu[0].cpu().detach(),
+                            pred_cyclic_def[0].cpu().detach(),
+                            pred_cyclic_neu[1].cpu().detach(),
+                            pred_cyclic_def[1].cpu().detach(),
+                            pred_cyclic_neu[HB].cpu().detach(),
+                            pred_cyclic_def[HB].cpu().detach(),
+                            pred_cyclic_neu[BS-1].cpu().detach(),
+                            pred_cyclic_def[BS-1].cpu().detach(),
+                        ]
+                        cyc_len_v = len(cyc_v_list)
+                        cyc_f_list = [cyc_faces] * cyc_len_v
+                        save_logdir_cyc = f"{self.opts.log_dir}/img/train/cyclic"
+
+                        plot_image_array(
+                            cyc_v_list, cyc_f_list,
+                            rot_list=[[0,0,0]]*cyc_len_v,
+                            size=1, bg_black=False, mode='shade',
+                            logdir=save_logdir_cyc,
+                            name=save_img_name, save=True
+                        )
+                
+                if self.opts.debug:
+                    break
+                # ------------------------------------------------------------------------------------------------
+            
+            ### scheduler ----------------------------------------------------------------------------------------
+            if epoch != 0:
+                self.scheduler.step()
+                
+                curr_lr = self.optimizer.param_groups[0]["lr"]
+                if epoch % self.opts.sc_step==0 and not is_stepped:
+                    log_notice = f'[{epoch:03d}/{epochs:03d}][{index:04d}][Train] scheduler stepped: {curr_lr:.6e}'
+                    self.logger.write(log_notice+"\n")
+                    is_stepped=True
+            # ----------------------------------------------------------------------------------------------------
+                
+            # log
+            if self.opts.tb:
+                self.log_loss(self.writer_train, running_losses, epoch, train_counter)
+
+            # save model
+            if epoch % self.opts.save_interval == 0:
+                torch.save({
+                    'model': self.model.state_dict(),
+                    'optimizer': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict(),
+                    'epoch': epoch,
+                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
+            
+            
+            # validation -----------------------------------------------------------------------------------------
+            if epoch % 10 == 0 or epoch == epochs:
+                self.model.eval()
+                print(f"[{epoch:03d}/{epochs:03d}][Valid]")
+                running_losses_val = {
+                    "recon-def": 0.0,
+                    "recon-neu": 0.0,
+                    "exp-z": 0.0,
+                    "exp-v": 0.0,
+                    "shape": 0.0,
+                    "total": 0.0,
+                    "ttt-self": 0.0,
+                    "ttt-cross": 0.0,
+                }
+                if self.opts.use_cyclic_loss:
+                    running_losses_val['cyclic'] = 0.0
+
+                counter = 0
+                pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
+                for index, batch in pbar:
+                    counter += 1
+                
+                    # model validation -------------------------------------------------------------------------------
+                    with torch.no_grad():
+                        pred_vertices, recon_vertices, recon_source, exp_z, \
+                        pred_source, _, pred_weight, pred_cage_s, pred_cage_d = self.model(
+                            batch.template, batch.vertices,
+                            batch.template_normal, batch.vertices_normal,
+                            batch.mesh_data, epoch=epoch
+                        )
+                    # ------------------------------------------------------------------------------------------------
+                
+                
+                    # loss ------------------------------------------------------------------------------------------- 
+                    with torch.no_grad():
+                        mesh_data_num = batch.mesh_data.cpu().numpy()
+                        mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf','ict'])[mesh_data_num]
+                
+                        loss_dict = {} # make it as a dictionary
+                        HB = batch.vertices.shape[0] // 2
+                    
+                        loss_dict['recon-def'] = F.mse_loss(batch.vertices, pred_vertices) # for NGBC model
+                        pred_source_v = self._neutral_prediction_vertices(pred_source, batch.template)
+                        loss_dict['recon-neu'] = F.mse_loss(batch.template, pred_source_v)
+
+                        if self.model.use_shp_recon:
+                            loss_dict['shape'] = F.mse_loss(batch.template, recon_source) # for shape AE
+                        if self.model.use_exp_recon:
+                            loss_dict['exp-v'] = F.mse_loss(batch.vertices, recon_vertices) # for expression AE
+                        # loss_dict['exp-z'] = F.mse_loss(exp_z[:HB], exp_z[HB:])
+
+                        if self.opts.use_cyclic_loss:
+                            tgt_template, tgt_template_normal, tgt_faces, _ = self.valid_dataset.sample_other_identity_neutral(
+                                exclude_id_name=batch.id_name
+                            )
+                            if tgt_template is not None:
+                                Bc = batch.vertices.shape[0]
+                                batch_tgt_neu_v = tgt_template.to(self.device)[None].expand(Bc, -1, -1)
+                                batch_tgt_neu_n = tgt_template_normal.to(self.device)[None].expand(Bc, -1, -1)
+
+                                loss_cyclic, pred_cyclic_def, pred_cyclic_neu = self.model.cyclic_loss(
+                                    batch_tgt_neu_v,
+                                    batch_tgt_neu_n,
+                                    pred_cage_d.detach(),
+                                    pred_cage_s.detach(),
+                                    pred_weight.detach(),
+                                )
+                                loss_dict['cyclic'] = loss_cyclic
+
+                        # get total loss
+                        loss = 0
+                        for key, value in loss_dict.items():
+                            tmp = value.item()*self.loss_lambda[key]
+                            loss += tmp
+                            running_losses_val[key] += tmp
+                        loss_dict["total"] = loss 
+
+                        # test-time training losses: logged only, not in total (best model criterion)
+                        ttt_self, ttt_cross, _, _ = self.model.ttt_loss(
+                            target_mesh_v, target_mesh_vn, pred_cage_s[0:1]
+                        )
+                        running_losses_val['ttt-self'] += ttt_self.item()*self.loss_lambda['ttt-self']
+                        running_losses_val['ttt-cross'] += ttt_cross.item()*self.loss_lambda['ttt-cross']
+
+                    # running loss for logging
+                    running_losses_val["total"] += loss_dict["total"]
+                    pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
+                    # ------------------------------------------------------------------------------------------------
+            
+                
+                    # ------------------------------------------------------------------------------------------------
+                    interv_val = round(len_valid_data / 5)
+                    if index % interv_val == 0:
+                        # for visualization
+                        vertices = batch.vertices.cpu()
+                        faces = batch.faces.cpu()
+                
+                        log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
+                        __jdx__ = 1/counter
+                        for key, value in running_losses_val.items():
+                            log_text += f"{key}: {value*__jdx__:.6e} "
+                        self.logger.write(log_text+"\n")
+                    
+                        frame = HB
+                        v_list = [
+                            vertices[0].cpu().detach(),
+                            vertices[1].cpu().detach(),
+                            vertices[HB].cpu().detach(),
+                            vertices[BS-1].cpu().detach(),
+                            pred_vertices[0].cpu().detach(),
+                            pred_vertices[1].cpu().detach(),
+                            pred_vertices[HB].cpu().detach(),
+                            pred_vertices[BS-1].cpu().detach(),
+                        ]
+                        len_v = len(v_list)
+                        f_list=[faces] * len_v
+                        save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                        save_img_name = f"{epoch:03d}_{counter:04d}"
+
+                        plot_image_array(
+                            v_list, f_list,
+                            rot_list=[[0,0,0]]*len_v,
+                            size=1, bg_black=False, mode='shade',
+                            logdir=save_logdir,
+                            name=save_img_name, save=True
+                        )
+
+                        # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
+                        # retargeted expression, saved as its own image so it's comparable side by side.
+                        if self.opts.use_cyclic_loss and tgt_template is not None:
+                            cyc_faces = tgt_faces.cpu()
+                            cyc_v_list = [
+                                batch_tgt_neu_v[0].cpu().detach(),
+                                pred_cyclic_neu[0].cpu().detach(),
+                                pred_cyclic_def[0].cpu().detach(),
+                                pred_cyclic_neu[1].cpu().detach(),
+                                pred_cyclic_def[1].cpu().detach(),
+                                pred_cyclic_neu[HB].cpu().detach(),
+                                pred_cyclic_def[HB].cpu().detach(),
+                                pred_cyclic_neu[BS-1].cpu().detach(),
+                                pred_cyclic_def[BS-1].cpu().detach(),
+                            ]
+                            cyc_len_v = len(cyc_v_list)
+                            cyc_f_list = [cyc_faces] * cyc_len_v
+                            save_logdir_cyc = f"{self.opts.log_dir}/img/valid/cyclic"
+
+                            plot_image_array(
+                                cyc_v_list, cyc_f_list,
+                                rot_list=[[0,0,0]]*cyc_len_v,
+                                size=1, bg_black=False, mode='shade',
+                                logdir=save_logdir_cyc,
+                                name=save_img_name, save=True
+                            )
+
+                    # ------------------------------------------------------------------------------------------------
+                    if self.opts.debug:
+                        break
+                # log
+                if self.opts.tb:
+                    self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
+            
+                # best loss
+                val_loss = running_losses_val["total"]/counter
+                if val_loss < BEST_LOSS:
+                    BEST_LOSS = val_loss
+                    BEST_EPOCH = epoch
+                    print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e} - Best epoch: {BEST_EPOCH:03d}\n")
+                    self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6e}\n")
+                    torch.save({
+                        'model': self.model.state_dict(),
+                        'optimizer': self.optimizer.state_dict(),
+                        'scheduler': self.scheduler.state_dict(),
+                        'epoch': epoch,
+                    }, f'{self.opts.log_dir}/model_best.pth')
+                else:
+                    self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
+                    print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
+    
+   
+    @staticmethod
+    def log_loss(writer, loss_dict, step, counter=None):
+        if counter:
+            N = counter
+        else:
+            N = 1
+        for key, value in loss_dict.items():
+            writer.add_scalar(f'{key}', value/N, step)
+
+    @staticmethod
+    def set_seed(opts):
+        # set seed
+        torch.manual_seed(opts.seed)
+        torch.cuda.manual_seed(opts.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        np.random.seed(opts.seed)
+        random.seed(opts.seed)
+    
+    @staticmethod
+    def count_parameters(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    @staticmethod
+    def dump_yaml(yaml_file_path, opts):
+        with open(yaml_file_path, 'w') as f: 
+            yaml.dump(vars(opts), f, sort_keys=False)
+
+
+def vis_mask_plot(XX, WW, logdir='./', name='test'):
+    #import torch
+    #import numpy as np
+    import matplotlib.pyplot as plt
+    #from utils.remesh_utils import ICT_face_model
+    
+    fig1 = plt.figure(figsize=(14, 8))
+    ax3 = fig1.add_axes([0.3, 0.0, 0.5, 0.5], projection='3d') ## left bottom W H
+    
+    # Use default colormap; do not specify colors explicitly
+    p = ax3.scatter(
+        XX[:, 2].numpy(),
+        XX[:, 0].numpy(),
+        XX[:, 1].numpy(),
+        c=WW.numpy(),
+        s=5,
+        depthshade=False)
+    
+    ax3.set_title("mask", y=-0.21, fontsize=22)
+    cb = fig1.colorbar(p, ax=ax3, shrink=0.75)
+    
+    # Equal aspect
+    try:
+        ax3.set_box_aspect([1, 1, 1])
+    except Exception:
+        # Fallback for older matplotlib: approximate equal aspect
+        xyzlim = np.array([ax3.get_xlim3d(), ax3.get_ylim3d(), ax3.get_zlim3d()])
+        xyzmin = xyzlim[:, 0].min()
+        xyzmax = xyzlim[:, 1].max()
+        ax3.set_xlim3d([xyzmin, xyzmax])
+        ax3.set_ylim3d([xyzmin, xyzmax])
+        ax3.set_zlim3d([xyzmin, xyzmax])
+    plt.savefig('{}/{}.png'.format(logdir, name), bbox_inches = 'tight')
+    # plt.show()
+    plt.close(plt.gcf())
+    
+if __name__ == "__main__":
+    # argparse configs
+    opts = Options()
+    
+    # base configs (yaml)
+    opts_yaml = yaml.load(open(opts.config), Loader=yaml.FullLoader)
+        
+    # update with argparse configs
+    opts_ = vars(opts)
+    opts_yaml.update(opts_)
+    opts = argparse.Namespace(**opts_yaml)
+    
+    trainer = Trainer(opts)
+    target_mesh = trimesh.load(opts.target_mesh, process=False, maintain_order=True)
+    trainer.train_v5(epochs=opts.max_epoch, target_mesh=target_mesh)
+    
+
