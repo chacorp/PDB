@@ -62,6 +62,9 @@ MODELS = [
     ('NC', './ckpts_CBD/2025-10-20-00-15-40-CBD', 1),
     ('NFS', './ckpt_stage1/2024-08-18-23-32-29-all', 0),
     ('PDB', './ckpts_CBD8/2026-09-16-02-19-03-NGBCv5', 5),
+    # PDB continued 1000 -> 2000 (train_continue.sh, use_data3); stopped at
+    # epoch 1221, model_best.pth = epoch 1220. Shown in continue_figure.html.
+    ('PDB-cont', './ckpts_CBD8/2026-10-07-00-58-27-NGBCv5', 5),
 ]
 
 OUT_ROOT = REPO_ROOT / 'vis_CBD' / 'vis_comparison'

@@ -19,8 +19,12 @@ share the target neutral's center/scale, and meshes on the source identity
 
 matplotrender does `from utils import ...`, which clashes with the repo's utils
 package, so run it in isolated mode from outside the repo root:
-    cd _tmp && python -I ../render/render_stylized_retarget_mpr.py
+    cd _tmp && python -I ../render/render_stylized_retarget_mpr.py [report ...]
+report: keys of REPORTS (default: all). 'main' = NC / NFS / PDB
+(vis_comparison_stylize_retarget.html), 'continue' = PDB vs the continued PDB
+run (continue_figure.html).
 """
+import sys
 import base64
 from pathlib import Path
 
@@ -34,9 +38,24 @@ from utils import fix_triangle_widning  # noqa: E402  (matplotrender's site-pack
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_ROOT = REPO_ROOT / 'vis_CBD' / 'vis_comparison'
 IMG_ROOT = OUT_ROOT / 'stylize_retarget'
-FIG_ROOT = IMG_ROOT / 'figure'
 CACHE_PATH = IMG_ROOT / 'preds_cache.npz'
-HTML_PATH = OUT_ROOT / 'vis_comparison_stylize_retarget.html'
+
+# report -> models (columns), cell PNG root, HTML path, title, extra legend.
+# Each report has its own cell PNGs since the shared diff scale depends on the
+# models shown together.
+REPORTS = {
+    'main': dict(
+        models=['NC', 'NFS', 'PDB'], fig_root=IMG_ROOT / 'figure',
+        html=OUT_ROOT / 'vis_comparison_stylize_retarget.html',
+        title='stylized mesh retargeting (NC / NFS / PDB): self / cross / cyclic', note=''),
+    'continue': dict(
+        models=['PDB', 'PDB-cont'], fig_root=IMG_ROOT / 'figure_continue',
+        html=OUT_ROOT / 'continue_figure.html',
+        title='stylized mesh retargeting: PDB vs continued PDB',
+        note='PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5/model_best.pth (epoch 920, use_data2). '
+             'PDB-cont = ckpts_CBD8/2026-10-07-00-58-27-NGBCv5/model_best.pth (epoch 1220, '
+             'continued from epoch 1000 with use_data3 via train_continue.sh; run stopped at epoch 1221). '),
+}
 
 SIZE = 8
 FIT = 1.8  # largest neutral extent maps to this width in the [-1, 1] view
@@ -100,7 +119,12 @@ def render_row(row, vs_by_model, F, diff_base, out_dir):
 
 def main():
     c = np.load(CACHE_PATH)
-    targets, sources, models = list(c['targets']), list(c['sources']), list(c['models'])
+    for key in sys.argv[1:] or list(REPORTS):
+        render_report(c, **REPORTS[key])
+
+
+def render_report(c, models, fig_root, html, title, note):
+    targets, sources = list(c['targets']), list(c['sources'])
     for sname in sources:
         sv, sf, frames = c[f'src/{sname}/v'], c[f'src/{sname}/f'], c[f'src/{sname}/frames']
         # plot_mesh_gouraud culls by face normal but doesn't fix inverted winding
@@ -114,7 +138,7 @@ def main():
             tgt_fit = fit_transform(tv)
             tv_n = tgt_fit(tv)
             for k, fidx in enumerate(c[f'src/{sname}/idx']):
-                d = FIG_ROOT / f'{sname}_to_{tname}' / f'frame_{fidx:06d}'
+                d = fig_root / f'{sname}_to_{tname}' / f'frame_{fidx:06d}'
                 d.mkdir(parents=True, exist_ok=True)
                 expr = src_fit(frames[k])
                 save_mesh(sv_n, sf, d / 'source_neutral.png')
@@ -128,8 +152,8 @@ def main():
                 for row, vs, F, base in rows:
                     render_row(row, vs, F, base, d)
                 print(f'  saved {sname} -> {tname} frame {fidx}', flush=True)
-    write_html(targets, sources, models, c)
-    print('wrote', HTML_PATH)
+    write_html(targets, sources, models, c, fig_root, html, title, note)
+    print('wrote', html)
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +189,7 @@ def build_result_table(d, models):
 
 HTML_HEAD = """<!doctype html>
 <html><head><meta charset="utf-8">
-<title>stylized retargeting: self / cross / cyclic</title>
+<title>{title}</title>
 <style>
   body { font-family: -apple-system, sans-serif; background:#fff; color:#111; margin:0; padding:24px; }
   h1 { font-size:20px; }
@@ -191,15 +215,15 @@ HTML_HEAD = """<!doctype html>
 """
 
 
-def write_html(targets, sources, models, c):
-    parts = [HTML_HEAD,
-             '<h1>stylized mesh retargeting (' + ' / '.join(models) + '): self / cross / cyclic</h1>',
-             '<p class="legend">Targets: aligned stylized meshes under test-mesh/. '
+def write_html(targets, sources, models, c, fig_root, html, title, note):
+    parts = [HTML_HEAD.replace('{title}', title),
+             f'<h1>{title}</h1>',
+             f'<p class="legend">{note}Targets: aligned stylized meshes under test-mesh/. '
              'Left: Source Neutral (plain) / Source Expression (diff vs source neutral, own scale) / '
              'Target Neutral (plain). Right: self = source expression reconstructed on the source neutral, '
              'cross = source expression on the target neutral, cyclic = source &rarr; target &rarr; source. '
              'Diff heatmaps (YlOrRd) are normalized per row against that row\'s diff_base '
-             '(source neutral for self/cyclic, target neutral for cross); NC on its own scale, '
+             '(source neutral for self/cyclic, target neutral for cross); NC (when shown) on its own scale, '
              'the others share one. Front view, matplotrender plot_mesh_gouraud. '
              'Generated by render/render_stylized_retarget_comparison.py (inference) + '
              'render/render_stylized_retarget_mpr.py.</p>',
@@ -212,14 +236,14 @@ def write_html(targets, sources, models, c):
         parts.append(f'<h2 id="{s}_to_{t}">{s} &rarr; {t} &mdash; source: {SRC_LABEL.get(s, s)}, '
                      f'target: {c[f"tgt/{t}/file"]}</h2>')
         for fidx in c[f'src/{s}/idx']:
-            d = FIG_ROOT / f'{s}_to_{t}' / f'frame_{fidx:06d}'
+            d = fig_root / f'{s}_to_{t}' / f'frame_{fidx:06d}'
             parts.append(f'<h3>frame {fidx}</h3>')
             parts.append('<div class="figure-row">')
             parts.append(build_ref_table(d))
             parts.append(build_result_table(d, models))
             parts.append('</div>')
     parts.append('</section></body></html>')
-    HTML_PATH.write_text('\n'.join(parts))
+    html.write_text('\n'.join(parts))
 
 
 if __name__ == '__main__':
