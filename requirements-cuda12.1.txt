@@ -9,4 +9,5 @@ transforms3d==0.4.2
 easydict==1.13
 tensorboard==2.19.0
 pygeodesic==0.1.9
+https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt210/pytorch3d-0.7.5-cp310-cp310-linux_x86_64.whl
 # pip install torch_cluster -f https://data.pyg.org/whl/torch-2.1.0+cu121.html --no-cache-dir
