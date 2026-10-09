@@ -475,7 +475,50 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             loss = loss + loss_recon
         return loss, pred_deformed, pred_source
 
-    def retarget(self, 
+    def ttt_loss(self, tgt_vert, tgt_norm, pred_cage_s):
+        """
+        test-time training loss on a new target neutral mesh (ttt_CBD.py).
+        Gradient flows into both key_weight_model and exp_z/key_d_model through the
+        target; pred_cage_s (the training batch identity's rest cage) is a fixed input.
+
+        Args:
+            tgt_vert (torch.tensor): [B, Nt, 3] target neutral mesh vertices
+            tgt_norm (torch.tensor): [B, Nt, 3] target neutral mesh vertex normals
+            pred_cage_s (torch.tensor): rest cage key_s of a training identity (detached here)
+        Returns:
+            (loss_self, loss_cross, pred_self, pred_cross):
+            loss_self : target self retargeting, W_T * key_s(T) vs target
+            loss_cross: neutral cross retargeting, W_T * key_s(S) vs target
+        """
+        B = tgt_vert.shape[0]
+        hat_mask = plateau_hat_points(tgt_vert)
+        # zero-deformation input (T -> T): deform_in is the rest-pose input of forward()
+        source_in, deform_in = self.process_input(tgt_vert, tgt_vert, tgt_norm, tgt_norm, hat_mask)
+
+        key_weight = self.key_weight_model(source_in, N=self.NZ) # (B, Nt, M)
+
+        if self.use_shp:
+            z_ID_B = self.shape_model(source_in) # (B, 1, L)
+            exp_z_s = self.exp_z_model(deform_in, z_ID_B) # (B, 1, L)
+            key_s = self.key_d_model(exp_z_s, z_ID_B)
+        else:
+            exp_z_s = self.exp_z_model(deform_in) # (B, 1, L)
+            key_s = self.key_d_model(exp_z_s)
+        key_s = self.reshape_key_d(key_s, B)
+
+        self_v = self.apply_key_d(key_weight, key_s, tgt_vert)
+        cross_v = self.apply_key_d(key_weight, pred_cage_s.detach(), tgt_vert)
+
+        if self.use_full_vertex:
+            pred_self, pred_cross = self_v, cross_v
+        else:
+            pred_self, pred_cross = self_v + tgt_vert, cross_v + tgt_vert
+
+        loss_self = torch.nn.functional.mse_loss(pred_self, tgt_vert)
+        loss_cross = torch.nn.functional.mse_loss(pred_cross, tgt_vert)
+        return loss_self, loss_cross, pred_self, pred_cross
+
+    def retarget(self,
                  src_neu_vert, src_neu_norm, src_def_vert, src_def_norm, tgt_neu_vert, tgt_neu_norm,
                  mesh_data=0, out_kw=False, recon_out=True):
         """

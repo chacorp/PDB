@@ -114,6 +114,30 @@ def softmax(x):
     exp_x = np.exp(x)
     return exp_x / exp_x.sum(-1)[:,None]
     
+def fix_triangle_widning(vertices, faces):
+    """Flip triangle winding so the mesh has a consistent, outward-facing orientation
+    (same as matplotrender's utils.fix_triangle_widning).
+
+    Face-normal based shading and backface culling assume CCW (outward-facing,
+    positive signed volume) winding. Meshes exported with the opposite winding
+    flip every face normal, so the outer surface gets culled and hidden interior
+    geometry (eye sockets, inner mouth) is drawn instead. This detects that case
+    from the signed volume and reverses every face's winding if needed.
+
+    Args
+        vertices (np.ndarray): [V, 3] vertex positions
+        faces (np.ndarray): [F, 3] triangle indices
+    Return
+        faces (np.ndarray): [F, 3] triangle indices with outward winding
+    """
+    vertices = np.asarray(vertices)
+    faces = np.asarray(faces)
+    v0, v1, v2 = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]
+    signed_volume = np.sum(np.einsum('ij,ij->i', v0, np.cross(v1, v2)))
+    if signed_volume < 0:
+        faces = faces[:, [0, 2, 1]]
+    return faces
+
 def calc_face_norm(vertices, faces, mode='faces'):
     """
     Args
@@ -574,6 +598,9 @@ def plot_image_array(Vs,
     fig = plt.figure(figsize=(size * num_meshes, size))  # Adjust figure size based on the number of meshes
     
     for idx, (V, F) in enumerate(zip(Vs, Fs)):
+        # face-normal culling below needs outward winding (some meshes are inverted)
+        F = fix_triangle_widning(V, F)
+
         # Calculate the position of the subplot for the current mesh
         ax_pos = [idx / num_meshes, 0, 1 / num_meshes, 1]
         ax = fig.add_axes(ax_pos, xlim=[-1, +1], ylim=[-1, +1], aspect=1, frameon=False)
