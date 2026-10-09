@@ -44,7 +44,7 @@ from dataloader_CBD import (
     # CBD_collate_wrapper2,
 )
 
-from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig
+from utils.matplotlib_rnd import plot_image_array, plot_image_array_seg, vis_rig, fix_triangle_widning
 from utils.ckpt_utils import *
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 from utils.exp_utils import plateau_hat_points
@@ -71,8 +71,14 @@ def Options():
     parser.add_argument("--out_type",      type=int,   default=1,      
                         help='output type (0: cage delta_v`, 1: cage v, 2: cage delta_T mat, 3: vertex T mat')
     
+    parser.add_argument("-t", "--target_mesh", type=str,   default="",   help='target mesh for test-time training')
+    parser.add_argument("--lambda_ttt_self",  type=float, default=1.0, help='weight of target self retargeting loss')
+    parser.add_argument("--lambda_ttt_cross", type=float, default=1.0, help='weight of target neutral cross retargeting loss')
+    parser.add_argument("--ttt_img_per_epoch", type=int, default=100, help='number of target (ttt) log images saved per train epoch')
+    parser.add_argument("--valid_interval",    type=int, default=1,   help='validation interval epoch (ttt images are saved at every validation)')
+    
     parser.add_argument("--save_interval",type=int,   default=50,     help='save interval epoch')
-    parser.add_argument("--max_epoch",    type=int,   default=500,    help='number of epochs')
+    parser.add_argument("--max_epoch",    type=int,   default=200,    help='number of epochs')
     parser.add_argument("--start_epoch",  type=int,   default=0,      help='number of epochs')
     parser.add_argument("--lr",           type=float, default=0.0002, help='learning rate')
     parser.add_argument("--sc_step",      type=int,   default=10,     help='scheduler step')
@@ -108,16 +114,14 @@ def Options():
     
     parser.add_argument("--use_dist_loss",dest='use_dist_loss', action='store_true')
     parser.set_defaults(use_dist_loss=False)
-    parser.add_argument("--use_cage_consistency_loss", dest='use_cage_consistency_loss', action='store_true',
-                           help='NOT USED: enforce the cage to be consistent')
+    parser.add_argument("--use_cage_consistency_loss",dest='use_cage_consistency_loss', action='store_true')
     parser.set_defaults(use_cage_consistency_loss=False)
     parser.add_argument("--mask_cage_consist",dest='mask_cage_consist', action='store_true',
-                         help='use mask for cage-consistency loss: only penalize control points the sampled '
+                         help='cage-consistency loss: only penalize control points the sampled '
                               'input actually has evidence for (nonzero key_weight column)')
-    
     parser.set_defaults(mask_cage_consist=False)
     parser.add_argument("--use_cyclic_loss",dest='use_cyclic_loss', action='store_true',
-                         help='NOT USED: cross-identity factor cycle: W_t sg(v_s) re-encoded should recover sg(v_s)')
+                         help='cross-identity factor cycle: W_t sg(v_s) re-encoded should recover sg(v_s)')
     parser.set_defaults(use_cyclic_loss=False)
     parser.add_argument("--lambda_cage_consist", type=float, default=0.5, help='weight for cage-consistency loss')
     parser.add_argument("--lambda_cyclic",       type=float, default=0.5, help='weight for cyclic loss')
@@ -192,7 +196,11 @@ class Trainer():
         last_act_list = [self.opts.last_activation==l_act for l_act in last_act_list]
         
         if opts.version==1:
+            # from deep_cage import NetworkFull
+            
+            # self.model = NetworkFull(device=self.device, optim_cage=self.opts.optim_cage).to(self.device)
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
+            
         elif opts.version in (5, 6):
             model_cls = NeuralGeneralizedBarycentricCoordinate
             if opts.version == 6:
@@ -213,6 +221,7 @@ class Trainer():
                 is_train=True,
                 use_pou = not self.opts.no_pou,
                 device=self.device,
+                #hid_dim=128 if self.opts.use_data2 or self.opts.use_data3 else 256,
                 hid_dim=128 if self.opts.align_latent else 256,
             )
         else:
@@ -249,448 +258,6 @@ class Trainer():
         if self._ckpt_scheduler_state is not None:
             self.scheduler.load_state_dict(self._ckpt_scheduler_state)
             print("Loaded scheduler state from checkpoint.")
-
-    def train_v1(self, epochs):
-        # deep_cage humanoid recipe: plain Adam (no weight decay), StepLR schedule
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.opts.lr, betas=(0.9, 0.999))
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer,
-            step_size=self.opts.sc_step,
-            gamma=self.opts.sc_gamma
-        )
-
-        if self.opts.optim_cage:
-            self.model.cage_v = nn.Parameter(self.model.cage_v)
-            self.optimizer_cage = torch.optim.Adam([self.model.cage_v], lr=0.0002, betas=(0.9, 0.999))
-        self._load_optim_states()
-
-        ##########################################################################################################
-        # define dataset -----------------------------------------------------------------------------------------
-        BS = self.opts.batch_size
-        
-        self.train_dataset = CBDDataset(
-            self.opts, is_train=True, toggle=self.opts.data_toggle
-        )
-        self.valid_dataset = CBDDataset(
-            self.opts, is_train=True, toggle=self.opts.data_toggle
-        )
-        if self.opts.use_data2:
-            self.neighbor_pad_mask = {
-                2: build_padded_neighbors(
-                    igl.adjacency_list(
-                        self.train_dataset.mf_SEN_mesh['face']
-                    ), device=self.device
-                ),
-                4: build_padded_neighbors(
-                    igl.adjacency_list(
-                        self.train_dataset.mf_SEN_mesh['face']
-                    ), device=self.device
-                ),
-                5: build_padded_neighbors(
-                    igl.adjacency_list(
-                        self.train_dataset.ict_face_model.faces
-                    ), device=self.device
-                ),
-                6: build_padded_neighbors(
-                    igl.adjacency_list(
-                        self.train_dataset.ict_face_model.faces
-                    ), device=self.device
-                ),
-            }
-        else:
-            self.neighbor_maps = {
-                i: igl.adjacency_list(mesh_info['face'])
-                for i, mesh_info in enumerate([
-                    self.train_dataset.voca_mesh,
-                    self.train_dataset.biwi_mesh,
-                    self.train_dataset.mf_SEN_mesh,
-                ])
-            }
-            self.neighbor_pad_mask = {}
-            for i in self.neighbor_maps.keys():
-                # (idx_pad, mask)
-                self.neighbor_pad_mask[i] = build_padded_neighbors(self.neighbor_maps[i], device=self.device) 
-        
-        train_sampler = CBDdataSampler(
-            self.train_dataset.len_list, 
-            self.opts.batch_size,
-            shuffle=True,
-            balance=False,
-            is_train=True
-        )
-        self.train_dataloader = torch.utils.data.DataLoader(
-            self.train_dataset, 
-            batch_sampler=train_sampler, 
-            # batch_size=8, shuffle=True,
-            collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
-            num_workers=0,
-        )
-        
-        valid_sampler = CBDdataSampler(
-            self.valid_dataset.len_list, 
-            self.opts.batch_size,
-            shuffle=True,
-            balance=False,
-            is_train=False,
-            is_valid=True,
-        )
-        self.valid_dataloader = torch.utils.data.DataLoader(
-            self.valid_dataset, 
-            batch_sampler=valid_sampler, 
-            # batch_size=8, shuffle=True,
-            collate_fn=partial(CBD_collate_wrapper, device=opts.device), 
-            num_workers=0
-        )
-        ##########################################################################################################
-        
-        
-        ###### Logging ###########################################################################################
-        # make logdir --------------------------------------------------------------------------------------------
-        os.makedirs(self.opts.log_dir, exist_ok=True)
-        import datetime
-        now = datetime.datetime.now()
-        now = now.strftime("%Y-%m-%d-%H-%M-%S")
-        
-        tag = "-CBD"
-        if self.opts.optim_cage:
-            tag += "-optim_cage"
-        self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
-        os.makedirs(self.opts.log_dir, exist_ok=True)
-
-        os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
-        os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
-        os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
-        
-        # save options as json -----------------------------------------------------------------------------------
-        with open(os.path.join(self.opts.log_dir, "opts.json"), 'w') as f:
-            json.dump(vars(self.opts), f, indent=4)
-            
-        # save train option as yml
-        self.dump_yaml(os.path.join(self.opts.log_dir, "train_opts.yml"), opts)
-        
-        if self.opts.tb:
-            train_ = os.path.join(self.opts.log_dir, "train")
-            valid_ = os.path.join(self.opts.log_dir, "valid")
-            self.writer_train = SummaryWriter(log_dir=train_)
-            self.writer_valid = SummaryWriter(log_dir=valid_)
-        
-        # self logger
-        self.logger = Logger(os.path.join(self.opts.log_dir, "log.txt"))
-        print(f'Saving log at: {self.logger.file_path}')
-        
-        print(self.train_dataset.get_data_config())
-        print(train_sampler.get_sampler_config())
-        print(self.valid_dataset.get_data_config())
-        print(valid_sampler.get_sampler_config())
-        print(self.model.log_parameter_num())
-
-        self.logger.write(self.train_dataset.get_data_config())
-        self.logger.write(train_sampler.get_sampler_config())
-        self.logger.write(self.valid_dataset.get_data_config())
-        self.logger.write(valid_sampler.get_sampler_config())
-        self.logger.write(self.model.log_parameter_num())
-        #---------------------------------------------------------------------------------------------------------
-        ##########################################################################################################
-        
-        
-        
-        # training loop ##########################################################################################
-        global_step = 0
-        BEST_LOSS = 100_000_000
-        BEST_EPOCH = 0
-        start_epoch = self.opts.start_epoch
-                
-        # define loss lamdba (deep_cage humanoid recipe: mvc + align(MSE) only by default;
-        # p2f/norm kept available behind flags, off by default)
-        self.loss_lambda = {
-            "mvc": self.opts.lambda_mvc,
-            "align": self.opts.lambda_align,
-        }
-        if self.opts.use_p2f_loss:
-            self.loss_lambda["p2f"] = self.opts.lambda_p2f
-        if self.opts.use_normal_loss:
-            self.loss_lambda["norm"] = self.opts.lambda_norm
-
-        check_usage = False
-
-        len_train_data = len(self.train_dataloader)
-        len_valid_data = len(self.valid_dataloader)
-        interv_train = round(len_train_data / 10)
-        running_avg_loss = -1.0
-        for epoch in range(start_epoch, epochs+1):
-            print(f"[{epoch:03d}/{epochs:03d}][Train]")
-
-            ## for logging loss!
-            running_losses = {k: 0.0 for k in list(self.loss_lambda.keys()) + ["total"]}
-
-            self.model.train()
-            train_counter = 0
-
-            # warm-up: hold off on the mvc regularizer until the cage prediction stabilizes
-            warming_up = epoch < self.opts.warmup_epochs
-
-            pbar = tqdm(enumerate(self.train_dataloader), total=len_train_data, position=0, ncols=100, disable=(epoch % 10 != 0))
-
-            for index, batch in pbar:
-
-                self.optimizer.zero_grad()
-                if self.opts.optim_cage:
-                    self.optimizer_cage.zero_grad()
-
-
-                # model prediction -------------------------------------------------------------------------------
-                pred_vertices, pred_template, mvc_weights, source_cage_v, deform_cage_v = self.model(
-                    # batch_template_v, batch_vertices_v, epoch=epoch, return_cage=True
-                    batch.template, batch.vertices, epoch=epoch, return_cage=True
-                    # batch.template[0,None], batch.vertices, epoch=epoch, return_cage=True
-                )
-                # ------------------------------------------------------------------------------------------------
-
-                ##################################################################################################
-                # ------------------------------------------------------------------------------------------------
-                mesh_data_num = batch.mesh_data.cpu().numpy()
-                mesh_data = np.array(['voca', 'biwi', 'mf', 'voca', 'mf', 'ict'])[mesh_data_num]
-
-                loss_dict = {} # make it as a dictionary
-
-                loss_dict['mvc'] = mvc_loss(mvc_weights)
-                loss_dict['align'] = F.mse_loss(
-                    batch.vertices,
-                    pred_vertices,
-                ) + F.mse_loss(
-                    batch.template,
-                    pred_template,
-                )
-                if self.opts.use_p2f_loss or self.opts.use_normal_loss:
-                    idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
-                    normals_before = pca_normal_axis_vectorized(batch.template, idx_pad, mask)
-                    normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
-                    if self.opts.use_p2f_loss:
-                        loss_dict['p2f'] = p2f_loss(batch.template, pred_vertices, normals_before, normals_after)
-                    if self.opts.use_normal_loss:
-                        loss_dict['norm'] = norm_loss(normals_before, normals_after)
-                # ------------------------------------------------------------------------------------------------
-                ##################################################################################################
-
-
-                # get total loss (lambda weights are multiplied here!)
-                loss = 0
-                for key, value in loss_dict.items():
-                    weight = 0.0 if (key == "mvc" and warming_up) else self.loss_lambda[key]
-                    tmp = value*weight
-                    loss += tmp
-                    running_losses[key] += tmp.detach()
-                loss_dict["total"] = loss
-
-                # running loss
-                running_losses["total"] += loss_dict["total"].detach()
-                pbar.set_description(f"total loss: {loss:.5e}")
-
-                # deep_cage safety net: skip the update (not the whole step count) if loss spikes
-                # or turns non-finite (NaN/Inf comparisons are always False, so the finiteness
-                # check must be explicit or a NaN loss would silently reach backward()).
-                loss_val = loss_dict["total"].item()
-                loss_is_finite = np.isfinite(loss_val)
-                # TEMP DIAGNOSTIC: identify which dataset/identity a loss spike came from
-                if (not loss_is_finite) or loss_val > 10.0:
-                    diag = f"[DIAG] e{epoch} t{global_step} mesh_data={mesh_data} id_name={getattr(batch, 'id_name', '?')} loss={loss_val}"
-                    print(diag)
-                    self.logger.write(diag + "\n")
-                if loss_is_finite:
-                    if running_avg_loss < 0:
-                        running_avg_loss = loss_val
-                    else:
-                        running_avg_loss += (loss_val - running_avg_loss) / (global_step + 1)
-                if (not loss_is_finite) or loss_val > 100 * running_avg_loss:
-                    global_step += 1
-                    train_counter += 1
-                    if self.opts.debug:
-                        break
-                    continue
-                # ------------------------------------------------------------------------------------------------
-                # backward (no gradient clipping, matching deep_cage's humanoid recipe;
-                # the loss-spike skip above is the safety net instead)
-                loss.backward()
-                self.optimizer.step()
-
-                if self.opts.optim_cage:
-                    self.optimizer_cage.step()
-                # ------------------------------------------------------------------------------------------------
-
-                global_step += 1
-                train_counter += 1
-
-                if train_counter % interv_train == 1:
-
-                    # with torch.no_grad():
-                    #     pred_vertices, pred_template, mvc_weights, source_cage_v, deform_cage_v = self.model(
-                    #         batch.template, batch.vertices, epoch=epoch, return_cage=True
-                    #     )
-                        
-                    # for visualization
-                    vertices = batch.vertices.cpu()
-                    faces = batch.faces.cpu()
-                    
-                    log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Train] "
-                    for key, value in running_losses.items():
-                        log_text += f"{key}: {value:.6f} "
-                    self.logger.write(log_text+"\n")
-                    
-                    frame = BS//2
-                    v_list = [ v for v in vertices[frame:frame+2] ] + \
-                        [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
-                                            
-                    #v_list = [v for v in vertices[frame:frame+2]]+[batch.template.cpu()[0]]*2
-                    len_v = len(v_list)
-                    f_list = [faces] * len_v
-
-                    # import pdb;pdb.set_trace()
-                    cv_list = [ v for v in source_cage_v[frame:frame+2].cpu().detach() ] + \
-                        [ v for v in deform_cage_v[frame:frame+2].cpu().detach() ] + \
-                        [ self.model.cage_v.cpu().detach() ]
-                    len_cv = len(cv_list)
-                    cf_list = [self.model.cage_f.cpu().detach()] * len_cv
-                    v_list += cv_list
-                    f_list += cf_list
-                    
-                    save_logdir = f"{self.opts.log_dir}/img/train/mesh"
-                    save_img_name = f"{epoch:03d}_{index:04d}"
-
-                    plot_image_array(
-                        v_list, f_list, 
-                        rot_list=[[0,0,0]] * (len_v + len_cv),
-                        size=1, bg_black=False, mode='shade',
-                        logdir=save_logdir,
-                        name=save_img_name, save=True
-                    )
-                    
-                
-                if self.opts.debug:
-                    break
-                # ------------------------------------------------------------------------------------------------
-            
-            ### scheduler
-            self.scheduler.step()
-
-            # log
-            if self.opts.tb:
-                self.log_loss(self.writer_train, running_losses, epoch, train_counter)
-
-            # save model
-            if epoch % self.opts.save_interval == 0:
-                torch.save({
-                    'model': self.model.state_dict(),
-                    'optimizer': self.optimizer.state_dict(),
-                    'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
-                    'epoch': epoch,
-                }, f'{self.opts.log_dir}/model_{epoch:03d}.pth')
-            
-            
-            
-            # validation -----------------------------------------------------------------------------------------
-            if epoch % 10 == 0 or epoch == epochs:
-                self.model.eval()
-                print(f"[{epoch:03d}/{epochs:03d}][Valid]")
-                running_losses_val = {k: 0.0 for k in list(self.loss_lambda.keys()) + ["total"]}
-
-                counter = 0
-                pbar = tqdm(enumerate(self.valid_dataloader), total=len_valid_data, ncols=100)
-                for index, batch in pbar:
-                    counter += 1
-
-                    # model validation -------------------------------------------------------------------------------
-                    with torch.no_grad():
-                        pred_vertices, mvc_weights = self.model(batch.template, batch.vertices, epoch=epoch)
-                    # ------------------------------------------------------------------------------------------------
-
-
-                    ##################################################################################################
-                    # ------------------------------------------------------------------------------------------------
-                    with torch.no_grad():
-                        mesh_data_num = batch.mesh_data.cpu().numpy()
-                        mesh_data = np.array(['voca', 'biwi', 'mf','voca','mf','ict'])[mesh_data_num]
-                        template_expanded = batch.template#.expand_as(pred_vertices)
-
-                        loss_dict = {} # make it as a dictionary
-
-                        loss_dict['mvc'] = mvc_loss(mvc_weights)
-                        loss_dict['align'] = F.mse_loss(batch.vertices, pred_vertices)
-                        if self.opts.use_p2f_loss or self.opts.use_normal_loss:
-                            idx_pad, mask = self.neighbor_pad_mask[batch.mesh_data.item()]
-                            normals_before = pca_normal_axis_vectorized(template_expanded, idx_pad, mask)
-                            normals_after = pca_normal_axis_vectorized(pred_vertices, idx_pad, mask)
-                            if self.opts.use_p2f_loss:
-                                loss_dict['p2f'] = p2f_loss(template_expanded, pred_vertices, normals_before, normals_after)
-                            if self.opts.use_normal_loss:
-                                loss_dict['norm'] = norm_loss(normals_before, normals_after)
-                    # ------------------------------------------------------------------------------------------------
-                    ##################################################################################################
-                
-                    # get total loss
-                    loss = 0
-                    for key, value in loss_dict.items():
-                        tmp = value.item()*self.loss_lambda[key]
-                        loss += tmp
-                        running_losses_val[key] += tmp
-                    loss_dict["total"] = loss 
-
-                    # running loss
-                    running_losses_val["total"] += loss_dict["total"]
-            
-                    pbar.set_description(f"total loss: {loss:.5e}")
-                
-                    # ------------------------------------------------------------------------------------------------
-                    interv_val = round(len_valid_data / 5)
-                    if index % interv_val == 0:
-                        # for visualization
-                        vertices = batch.vertices.cpu()
-                        faces = batch.faces.cpu()
-                
-                        log_text = f"[{epoch:03d}/{epochs:03d}][{index:04d}][Valid] "
-                        for key, value in running_losses_val.items():
-                            log_text += f"{key}: {value:.6f} "
-                        self.logger.write(log_text+"\n")
-
-                        frame = BS//2
-                        v_list = [ v for v in vertices[frame:frame+2] ] + \
-                            [ v for v in pred_vertices[frame:frame+2].cpu().detach() ]
-                        len_v = len(v_list)
-                        f_list=[faces] * len_v
-                        save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
-                        save_img_name = f"{epoch:03d}_{index:04d}"
-                    
-                        plot_image_array(
-                            v_list, f_list, 
-                            rot_list=[[0,0,0]]*len_v,
-                            size=1, bg_black=False, mode='shade', 
-                            logdir=save_logdir, 
-                            name=save_img_name, save=True
-                        )
-                    
-                    # ------------------------------------------------------------------------------------------------
-                    if self.opts.debug:
-                        break
-                # log
-                if self.opts.tb:
-                    self.log_loss(self.writer_valid, running_losses_val, epoch, counter)
-            
-                # best loss
-                val_loss = running_losses_val["total"]/counter
-                if val_loss < BEST_LOSS:
-                    BEST_LOSS = val_loss
-                    BEST_EPOCH = epoch
-                    print(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d}\n")
-                    self.logger.write(f"[{epoch:03d}/{epochs:03d}] Best Loss: {BEST_LOSS:.6f}\n")
-                    torch.save({
-                        'model': self.model.state_dict(),
-                        'optimizer': self.optimizer.state_dict(),
-                        'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
-                        'epoch': epoch,
-                    }, f'{self.opts.log_dir}/model_best.pth')
-                else:
-                    log_txt_val = f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6f} (Best Loss: {BEST_LOSS:.6f} - Best epoch: {BEST_EPOCH:03d})\n"
-                    self.logger.write(log_txt_val)
-                    print(log_txt_val)
     
     def random_trans_scale(self, template, vertices):
         """
@@ -726,6 +293,8 @@ class Trainer():
             return f"[{key}]: \tlambda={self.loss_lambda[key]}{note}\n"
 
         log_txt = "========< Active losses (train_v5) >========\n"
+        log_txt += _line('ttt-self', f" (target: {self.opts.target_mesh})")
+        log_txt += _line('ttt-cross')
         log_txt += _line('recon-def')
         log_txt += _line('recon-neu')
         if self.opts.align_latent:
@@ -751,7 +320,17 @@ class Trainer():
         log_txt += "=============================================="
         return log_txt
 
-    def train_v5(self, epochs):
+    def train_v5(self, epochs, target_mesh):
+        # target neutral mesh for test-time training: [1, Nt, 3]
+        target_mesh_v = torch.from_numpy(np.asarray(target_mesh.vertices)).float()[None].to(self.device)
+        # unify face winding to outward (positive signed volume) like the training meshes;
+        # vertex normals (model input with in_type 1) follow the winding
+        target_mesh_v_np = np.asarray(target_mesh.vertices, dtype=np.float64)
+        target_mesh_f_np = fix_triangle_widning(target_mesh_v_np, np.asarray(target_mesh.faces, dtype=np.int64))
+        target_mesh_vn_np = igl.per_vertex_normals(target_mesh_v_np, target_mesh_f_np)
+        target_mesh_vn = torch.from_numpy(target_mesh_vn_np).float()[None].to(self.device)
+        target_mesh_f_cpu = torch.from_numpy(target_mesh_f_np)
+        
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.opts.lr,
@@ -825,12 +404,15 @@ class Trainer():
         tag = f"-{model_label}v{self.opts.version}"
         if self.opts.optim_cage:
             tag += "-optim_cage"
+        tag += f"-TTT-{os.path.splitext(os.path.basename(self.opts.target_mesh))[0]}"
         self.opts.log_dir = os.path.join(self.opts.log_dir, now+tag)
         os.makedirs(self.opts.log_dir, exist_ok=True)
 
         os.makedirs(f"{self.opts.log_dir}/img", exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img/train/mesh", exist_ok=True)
         os.makedirs(f"{self.opts.log_dir}/img/valid/mesh", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/train/ttt", exist_ok=True)
+        os.makedirs(f"{self.opts.log_dir}/img/valid/ttt", exist_ok=True)
         if self.opts.use_cyclic_loss:
             os.makedirs(f"{self.opts.log_dir}/img/train/cyclic", exist_ok=True)
             os.makedirs(f"{self.opts.log_dir}/img/valid/cyclic", exist_ok=True)
@@ -913,6 +495,8 @@ class Trainer():
                         
         # define loss lamdba 
         self.loss_lambda = {
+            "ttt-self": self.opts.lambda_ttt_self,
+            "ttt-cross": self.opts.lambda_ttt_cross,
             "recon-def": self.opts.lambda_vert,
             "recon-neu": self.opts.lambda_vert,
             "exp-z": self.opts.lambda_vert * 0.5,
@@ -946,12 +530,43 @@ class Trainer():
         len_train_data = len(self.train_dataloader)
         len_valid_data = len(self.valid_dataloader)
         interv_train = round(len_train_data / 10)
+        interv_ttt_img = max(1, round(len_train_data / self.opts.ttt_img_per_epoch))
+
+        def save_ttt_image(batch, pred_self, pred_cross, pred_cage_d, split, name):
+            """
+            batch neutral | batch expression | target neutral (GT) | ttt-self | ttt-cross (neutral)
+            | cross retarget of the batch expression onto the target (visualization only, no GT)
+            """
+            with torch.no_grad():
+                w_t = self.model.predict_coordinate(target_mesh_v, target_mesh_vn)
+                expr_t = self.model.apply_key_d(w_t, pred_cage_d[0:1].detach(), target_mesh_v)
+                if not self.model.use_full_vertex:
+                    expr_t = expr_t + target_mesh_v
+            batch_faces = batch.faces.cpu()
+            ttt_v_list = [
+                batch.template[0].cpu().detach(),
+                batch.vertices[0].cpu().detach(),
+                target_mesh_v[0].cpu().detach(),
+                pred_self[0].cpu().detach(),
+                pred_cross[0].cpu().detach(),
+                expr_t[0].cpu().detach(),
+            ]
+            ttt_f_list = [batch_faces] * 2 + [target_mesh_f_cpu] * 4
+            plot_image_array(
+                ttt_v_list, ttt_f_list,
+                rot_list=[[0,0,0]] * len(ttt_v_list),
+                size=1, bg_black=False, mode='shade',
+                logdir=f"{self.opts.log_dir}/img/{split}/ttt",
+                name=name, save=True
+            )
         
         for epoch in range(start_epoch, epochs+1):
             print(f"[{epoch:03d}/{epochs:03d}][Train]")
             
             ## for logging loss!
             running_losses = {
+                "ttt-self": 0.0,
+                "ttt-cross": 0.0,
                 "recon-def": 0.0,
                 "recon-neu": 0.0,
                 "exp-z": 0.0,
@@ -1022,6 +637,7 @@ class Trainer():
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
                     batch.mesh_data, epoch=epoch
                 )
+
                 # cage-consistency target: only needed when the loss is enabled, and it's a
                 # stop-gradient target so no graph needs to be built for it.
                 if self.opts.use_cage_consistency_loss:
@@ -1032,31 +648,23 @@ class Trainer():
                             batch.mesh_data, epoch=epoch
                         )
                 # ------------------------------------------------------------------------------------------------
-
-                # import pdb;pdb.set_trace()
-                # vis_mask_plot(batch_template_v[0].detach().cpu(), t_mask[0].detach().cpu(), logdir='./', name='test')
-                # vis_mask_plot(batch_template_v[0].detach().cpu(), inv_t_mask[0].detach().cpu(), logdir='./', name='test')
                 if self.opts.no_t_mask:
                     t_mask = 1.0
                     inv_t_mask = 0.0
                 else:
                     inv_t_mask = 1.0 - t_mask
-
-                
-                # use segmentation for loss weight ------- ( not used ) ------------------------------------------
-                ## -> re-weighting based on facial region area
-                if self.opts.use_segment_weight:
-                    with torch.no_grad():
-                        # batch.segmentation # (B, Nv, 24)
-                        segment_weight = batch.segmentation.sum(1) / N # batch.segmentation.sum(1).sum(1) # (B, 24)
-                        batch_segment_weight = (batch.segmentation * segment_weight[:, None])[:, randperm_idx]
-                        t_mask = t_mask * batch_segment_weight
-                # ------------------------------------------------------------------------------------------------
-                
+                    
                 # loss -------------------------------------------------------------------------------------------
                 
                 loss_dict = {} # make it as a dictionary
                 HB = batch.vertices.shape[0] // 2
+
+                # test-time training: target self retargeting (T -> T) and neutral cross
+                # retargeting (rest cage of this batch identity, one sample, on W_T).
+                # no t_mask; pred_cage_s is detached inside ttt_loss.
+                loss_dict['ttt-self'], loss_dict['ttt-cross'], ttt_pred_self, ttt_pred_cross = self.model.ttt_loss(
+                    target_mesh_v, target_mesh_vn, pred_cage_s[0:1]
+                )
                 
                 if self.opts.no_t_mask:
                     loss_dict['recon-def'] = F.mse_loss(
@@ -1249,7 +857,10 @@ class Trainer():
                 
                 global_step += 1
                 train_counter += 1
-                                
+
+                # target (ttt) image, denser than the mesh log below
+                if index % interv_ttt_img == 0:
+                    save_ttt_image(batch, ttt_pred_self, ttt_pred_cross, pred_cage_d, 'train', f"{epoch:03d}_{index:04d}")
                 
                 if index % interv_train == 1:
 
@@ -1367,7 +978,10 @@ class Trainer():
             
             
             # validation -----------------------------------------------------------------------------------------
-            if epoch % 10 == 0 or epoch == epochs:
+            # validation every valid_interval epochs (for ttt losses/images); the mesh/cyclic
+            # validation images keep the original 10-epoch cadence
+            save_val_mesh_img = epoch % 10 == 0 or epoch == epochs
+            if epoch % self.opts.valid_interval == 0 or epoch == epochs:
                 self.model.eval()
                 print(f"[{epoch:03d}/{epochs:03d}][Valid]")
                 running_losses_val = {
@@ -1376,7 +990,9 @@ class Trainer():
                     "exp-z": 0.0,
                     "exp-v": 0.0,
                     "shape": 0.0,
-                    "total": 0.0
+                    "total": 0.0,
+                    "ttt-self": 0.0,
+                    "ttt-cross": 0.0,
                 }
                 if self.opts.use_cyclic_loss:
                     running_losses_val['cyclic'] = 0.0
@@ -1441,6 +1057,13 @@ class Trainer():
                             running_losses_val[key] += tmp
                         loss_dict["total"] = loss 
 
+                        # test-time training losses: logged only, not in total (best model criterion)
+                        ttt_self, ttt_cross, ttt_pred_self, ttt_pred_cross = self.model.ttt_loss(
+                            target_mesh_v, target_mesh_vn, pred_cage_s[0:1]
+                        )
+                        running_losses_val['ttt-self'] += ttt_self.item()*self.loss_lambda['ttt-self']
+                        running_losses_val['ttt-cross'] += ttt_cross.item()*self.loss_lambda['ttt-cross']
+
                     # running loss for logging
                     running_losses_val["total"] += loss_dict["total"]
                     pbar.set_description(f"total loss: {loss:.5e}, mesh data: {mesh_data_num}")
@@ -1459,57 +1082,60 @@ class Trainer():
                         for key, value in running_losses_val.items():
                             log_text += f"{key}: {value*__jdx__:.6e} "
                         self.logger.write(log_text+"\n")
+                        save_ttt_image(batch, ttt_pred_self, ttt_pred_cross, pred_cage_d, 'valid', f"{epoch:03d}_{counter:04d}")
+
+                        if save_val_mesh_img:
                     
-                        frame = HB
-                        v_list = [
-                            vertices[0].cpu().detach(),
-                            vertices[1].cpu().detach(),
-                            vertices[HB].cpu().detach(),
-                            vertices[BS-1].cpu().detach(),
-                            pred_vertices[0].cpu().detach(),
-                            pred_vertices[1].cpu().detach(),
-                            pred_vertices[HB].cpu().detach(),
-                            pred_vertices[BS-1].cpu().detach(),
-                        ]
-                        len_v = len(v_list)
-                        f_list=[faces] * len_v
-                        save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
-                        save_img_name = f"{epoch:03d}_{counter:04d}"
-
-                        plot_image_array(
-                            v_list, f_list,
-                            rot_list=[[0,0,0]]*len_v,
-                            size=1, bg_black=False, mode='shade',
-                            logdir=save_logdir,
-                            name=save_img_name, save=True
-                        )
-
-                        # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
-                        # retargeted expression, saved as its own image so it's comparable side by side.
-                        if self.opts.use_cyclic_loss and tgt_template is not None:
-                            cyc_faces = tgt_faces.cpu()
-                            cyc_v_list = [
-                                batch_tgt_neu_v[0].cpu().detach(),
-                                pred_cyclic_neu[0].cpu().detach(),
-                                pred_cyclic_def[0].cpu().detach(),
-                                pred_cyclic_neu[1].cpu().detach(),
-                                pred_cyclic_def[1].cpu().detach(),
-                                pred_cyclic_neu[HB].cpu().detach(),
-                                pred_cyclic_def[HB].cpu().detach(),
-                                pred_cyclic_neu[BS-1].cpu().detach(),
-                                pred_cyclic_def[BS-1].cpu().detach(),
+                            frame = HB
+                            v_list = [
+                                vertices[0].cpu().detach(),
+                                vertices[1].cpu().detach(),
+                                vertices[HB].cpu().detach(),
+                                vertices[BS-1].cpu().detach(),
+                                pred_vertices[0].cpu().detach(),
+                                pred_vertices[1].cpu().detach(),
+                                pred_vertices[HB].cpu().detach(),
+                                pred_vertices[BS-1].cpu().detach(),
                             ]
-                            cyc_len_v = len(cyc_v_list)
-                            cyc_f_list = [cyc_faces] * cyc_len_v
-                            save_logdir_cyc = f"{self.opts.log_dir}/img/valid/cyclic"
+                            len_v = len(v_list)
+                            f_list=[faces] * len_v
+                            save_logdir = f"{self.opts.log_dir}/img/valid/mesh"
+                            save_img_name = f"{epoch:03d}_{counter:04d}"
 
                             plot_image_array(
-                                cyc_v_list, cyc_f_list,
-                                rot_list=[[0,0,0]]*cyc_len_v,
+                                v_list, f_list,
+                                rot_list=[[0,0,0]]*len_v,
                                 size=1, bg_black=False, mode='shade',
-                                logdir=save_logdir_cyc,
+                                logdir=save_logdir,
                                 name=save_img_name, save=True
                             )
+
+                            # cyclic loss: target neutral (GT) vs. reconstructed neutral vs. cross-identity
+                            # retargeted expression, saved as its own image so it's comparable side by side.
+                            if self.opts.use_cyclic_loss and tgt_template is not None:
+                                cyc_faces = tgt_faces.cpu()
+                                cyc_v_list = [
+                                    batch_tgt_neu_v[0].cpu().detach(),
+                                    pred_cyclic_neu[0].cpu().detach(),
+                                    pred_cyclic_def[0].cpu().detach(),
+                                    pred_cyclic_neu[1].cpu().detach(),
+                                    pred_cyclic_def[1].cpu().detach(),
+                                    pred_cyclic_neu[HB].cpu().detach(),
+                                    pred_cyclic_def[HB].cpu().detach(),
+                                    pred_cyclic_neu[BS-1].cpu().detach(),
+                                    pred_cyclic_def[BS-1].cpu().detach(),
+                                ]
+                                cyc_len_v = len(cyc_v_list)
+                                cyc_f_list = [cyc_faces] * cyc_len_v
+                                save_logdir_cyc = f"{self.opts.log_dir}/img/valid/cyclic"
+
+                                plot_image_array(
+                                    cyc_v_list, cyc_f_list,
+                                    rot_list=[[0,0,0]]*cyc_len_v,
+                                    size=1, bg_black=False, mode='shade',
+                                    logdir=save_logdir_cyc,
+                                    name=save_img_name, save=True
+                                )
 
                     # ------------------------------------------------------------------------------------------------
                     if self.opts.debug:
@@ -1535,7 +1161,7 @@ class Trainer():
                     self.logger.write(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
                     print(f"[{epoch:03d}/{epochs:03d}] Curr Loss: {val_loss:.6e} (Best Loss: {BEST_LOSS:.6e} [{BEST_EPOCH:03d}])\n")
     
-    
+   
     @staticmethod
     def log_loss(writer, loss_dict, step, counter=None):
         if counter:
@@ -1614,12 +1240,7 @@ if __name__ == "__main__":
     opts = argparse.Namespace(**opts_yaml)
     
     trainer = Trainer(opts)
-    
-    if opts.version==1:
-        trainer.train_v1(epochs=opts.max_epoch)
-    elif opts.version in (5, 6, 8, 55):
-        trainer.train_v5(epochs=opts.max_epoch)
-    else:
-        raise NotImplementedError('no matching version!')
+    target_mesh = trimesh.load(opts.target_mesh, process=False, maintain_order=True)
+    trainer.train_v5(epochs=opts.max_epoch, target_mesh=target_mesh)
     
 
