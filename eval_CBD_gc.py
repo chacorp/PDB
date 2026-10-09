@@ -491,10 +491,14 @@ class Trainer():
                 optim_cage=self.opts.optim_cage,
             )
 
-        elif opts.version == 5:
+        elif opts.version == 5 or opts.version == 6:
             if self.opts.last_activation == 'sqrelu':
-                raise ValueError('version 5 does not expose a sqrelu output activation')
-            self.model = NeuralGeneralizedBarycentricCoordinate(
+                raise ValueError('version 5/6 does not expose a sqrelu output activation')
+            model_cls = NeuralGeneralizedBarycentricCoordinate
+            if opts.version == 6:
+                from models.PDBplus import PDBplus
+                model_cls = PDBplus
+            self.model = model_cls(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False,

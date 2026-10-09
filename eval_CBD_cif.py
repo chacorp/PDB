@@ -341,9 +341,9 @@ class Trainer():
         self.rng = np.random.RandomState(opts.seed)
         self.torch_gen = torch.Generator(device=self.device).manual_seed(opts.seed)
 
-        if opts.version not in (0, 1, 5):
+        if opts.version not in (0, 1, 5, 6):
             raise NotImplementedError(
-                'eval_CBD_cif.py supports version 5 (NGBC, full Part I-IV), 1 (NC baseline, '
+                'eval_CBD_cif.py supports version 5/6 (NGBC/PDBplus, full Part I-IV), 1 (NC baseline, '
                 'Part III/IV only) and 0 (NFS/NFR, Part III/IV only).'
             )
 
@@ -394,7 +394,9 @@ class Trainer():
             self.K = None
             return
 
-        # ---- version == 5 (NGBC), full Part I-IV -------------------------------
+        # ---- version == 5 (NGBC) / version == 6 (PDBplus), full Part I-IV ------
+        if opts.version not in (5, 6):
+            raise NotImplementedError(f'No matching model version: {opts.version}')
         if self.opts.out_type not in (0, 1):
             raise ValueError(
                 'CIF evaluation currently supports out_type 0 (delta) and 1 '
@@ -403,14 +405,18 @@ class Trainer():
             )
         if self.opts.last_activation == 'sqrelu':
             raise ValueError(
-                'NGBC version 5 does not pass a sqrelu option to its coordinate encoder; '
+                'NGBC/PDBplus does not pass a sqrelu option to its coordinate encoder; '
                 'evaluating it as sqrelu would silently instantiate a different activation.'
             )
 
         last_act_list = ["relu", "elu", "softmax", "softplus", "none", "sqrelu"]
         last_act_list = [self.opts.last_activation == l_act for l_act in last_act_list]
 
-        self.model = NeuralGeneralizedBarycentricCoordinate(
+        model_cls = NeuralGeneralizedBarycentricCoordinate
+        if opts.version == 6:
+            from models.PDBplus import PDBplus
+            model_cls = PDBplus
+        self.model = model_cls(
             opts, num_layers=4,
             num_cage_vertices=self.opts.num_cage_v,
             use_exp_recon=False,
@@ -443,6 +449,19 @@ class Trainer():
         # be restricted to columns active for every probed target (see there
         # for why perturbing an inactive column is a meaningless, trivially-zero
         # probe rather than a real disentanglement signal).
+
+    def _ra_kwargs(self, tgt_neu_norm):
+        """Extra kwargs for self.model.retarget_animation(..., tgt_neu_vert).
+
+        version==5 (NGBC): key_weight alone reconstructs on the target, so no
+        extra kwarg is passed (unchanged behavior).
+        version==6 (PDBplus): the target also needs its own neutral normal to
+        predict that target's control rotation/scale (see models/PDBplus.py
+        _resolve_transforms), so tgt_neu_norm must be threaded through.
+        """
+        if self.opts.version == 6:
+            return {'tgt_neu_norm': tgt_neu_norm}
+        return {}
 
     def load_weight(self):
         if self.opts.ckpt:
@@ -746,10 +765,12 @@ class Trainer():
                 pred_t, v_s = self.model.retarget_animation(
                     batch.template, batch.template_normal, batch.vertices, batch.vertices_normal,
                     kw_t, t.neu_vert,
+                    **self._ra_kwargs(t.neu_norm),
                 )
                 pred_t_normal = calc_norm_torch(pred_t, t.faces, at='vert')
                 _, key_d_out_t = self.model.retarget_animation(
                     t.neu_vert, t.neu_norm, pred_t, pred_t_normal, kw_t, t.neu_vert,
+                    **self._ra_kwargs(t.neu_norm),
                 )
                 key_ds_by_target[t.name] = key_d_out_t
 
@@ -758,6 +779,7 @@ class Trainer():
             _, v_s0 = self.model.retarget_animation(
                 batch.template, batch.template_normal, batch.template, batch.template_normal,
                 kw_first, pool[0].neu_vert,
+                **self._ra_kwargs(pool[0].neu_norm),
             )
             denom_ncp = F.mse_loss(v_s, v_s0).item()
             ncp_denoms.append(denom_ncp)
@@ -831,6 +853,7 @@ class Trainer():
             _, v_t0 = self.model.retarget_animation(
                 t.neu_vert, t.neu_norm, t.neu_vert, t.neu_norm,
                 kw_t, t.neu_vert,
+                **self._ra_kwargs(t.neu_norm),
             )
             v_batch = v_t0.expand(B_pert, -1, -1).clone()
             for j, k in enumerate(self.pert_columns.tolist()):
@@ -845,6 +868,7 @@ class Trainer():
 
             _, R_batch = self.model.retarget_animation(
                 tgt_neu_b, tgt_norm_b, mesh_b, mesh_norm_b, kw_b, tgt_neu_b,
+                **self._ra_kwargs(tgt_norm_b),
             )  # [B_pert, K, 3]
 
             R_base = R_batch[0]  # [K, 3]
@@ -876,6 +900,7 @@ class Trainer():
         _, v_t0 = self.model.retarget_animation(
             t0.neu_vert, t0.neu_norm, t0.neu_vert, t0.neu_norm,
             kw_t0, t0.neu_vert,
+            **self._ra_kwargs(t0.neu_norm),
         )
         v_batch2 = v_t0.expand(B_pert, -1, -1).clone()
         for j, k in enumerate(self.pert_columns.tolist()):
@@ -886,7 +911,10 @@ class Trainer():
         tgt_norm_b = t0.neu_norm.expand(B_pert, -1, -1)
         mesh_b = self._apply_key_d(kw_b, v_batch2, tgt_neu_b)
         mesh_norm_b = calc_norm_torch(mesh_b, t0.faces, at='vert')
-        _, R_batch2 = self.model.retarget_animation(tgt_neu_b, tgt_norm_b, mesh_b, mesh_norm_b, kw_b, tgt_neu_b)
+        _, R_batch2 = self.model.retarget_animation(
+            tgt_neu_b, tgt_norm_b, mesh_b, mesh_norm_b, kw_b, tgt_neu_b,
+            **self._ra_kwargs(tgt_norm_b),
+        )
         R_base2 = R_batch2[0]
         R_pert2 = R_batch2[1:].reshape(n_pert, 3, self.K, 3)[:, :, self.pert_columns, :]
         J2 = ((R_pert2 - R_base2[self.pert_columns][None, None]) / eta2).permute(0, 2, 3, 1)
@@ -928,6 +956,7 @@ class Trainer():
             kw_b = self._get_key_weight(b)
             pred, _ = self.model.retarget_animation(
                 a.neu_vert, a.neu_norm, a.neu_vert, a.neu_norm, kw_b, b.neu_vert,
+                **self._ra_kwargs(b.neu_norm),
             )
             mse = F.mse_loss(pred, b.neu_vert).item()
             swap_records.append(dict(a=a.name, b=b.name, direction=direction_tag(a, b), mse=mse))
@@ -937,6 +966,7 @@ class Trainer():
             kw_b0 = self._get_key_weight(b0)
             pred0, _ = self.model.retarget_animation(
                 a0.neu_vert, a0.neu_norm, a0.neu_vert, a0.neu_norm, kw_b0, b0.neu_vert,
+                **self._ra_kwargs(b0.neu_norm),
             )
             v_list = [b0.neu_vert[0].cpu(), pred0[0].detach().cpu()]
             plot_image_array(
@@ -973,7 +1003,10 @@ class Trainer():
             t_norm = batch.template_normal[0:1]
             kw_a = self.model.predict_coordinate(t_neu, t_norm)  # [1, V, K]
 
-            _, v_a0 = self.model.retarget_animation(t_neu, t_norm, t_neu, t_norm, kw_a, t_neu)  # [1, K, 3]
+            _, v_a0 = self.model.retarget_animation(
+                t_neu, t_norm, t_neu, t_norm, kw_a, t_neu,
+                **self._ra_kwargs(t_norm),
+            )  # [1, K, 3]
 
             B = batch.vertices.shape[0]
             kw_a_b = kw_a.expand(B, -1, -1)
@@ -981,6 +1014,7 @@ class Trainer():
             t_norm_b = t_norm.expand(B, -1, -1)
             _, v_a_s = self.model.retarget_animation(
                 t_neu_b, t_norm_b, batch.vertices, batch.vertices_normal, kw_a_b, t_neu_b,
+                **self._ra_kwargs(t_norm_b),
             )  # [53, K, 3]
 
             neu_vert[name] = t_neu
@@ -1160,7 +1194,7 @@ class Trainer():
     @torch.no_grad()
     def _generic_context(self, id_name, neu_vert, faces):
         """Per-identity target-only precompute for the shared ICT protocol."""
-        if self.opts.version == 5:
+        if self.opts.version == 5 or self.opts.version == 6:
             neu_norm = calc_norm_torch(neu_vert, faces, at='vert')
             key_weight = self.model.predict_coordinate(neu_vert, neu_norm)
             return dict(neu_vert=neu_vert, neu_norm=neu_norm, faces=faces,
@@ -1184,7 +1218,7 @@ class Trainer():
 
     def _generic_encode(self, ctx, def_vert, faces):
         """Encode expression from a mesh carried by this identity."""
-        if self.opts.version == 5:
+        if self.opts.version == 5 or self.opts.version == 6:
             batch_size = def_vert.shape[0]
             neu = ctx['neu_vert'].expand(batch_size, -1, -1)
             neu_norm = ctx['neu_norm'].expand(batch_size, -1, -1)
@@ -1192,6 +1226,7 @@ class Trainer():
             def_norm = calc_norm_torch(def_vert, faces, at='vert')
             _, key_d = self.model.retarget_animation(
                 neu, neu_norm, def_vert, def_norm, key_weight, neu,
+                **self._ra_kwargs(neu_norm),
             )
             return key_d
 
@@ -1210,7 +1245,7 @@ class Trainer():
 
     def _generic_apply(self, ctx, exp_code):
         """Apply a cached expression code through this target identity."""
-        if self.opts.version == 5:
+        if self.opts.version == 5 or self.opts.version == 6:
             batch_size = exp_code.shape[0]
             return self._apply_key_d(
                 ctx['key_weight'].expand(batch_size, -1, -1),
@@ -1276,7 +1311,8 @@ class Trainer():
         n_id = self.opts.n_ict_identity
         arch = (
             'PDF' if self.opts.version == 5 else
-            ('NC' if self.opts.version == 1 else ('NFR' if self.opts.NFR else 'NFS'))
+            ('PDBplus' if self.opts.version == 6 else
+            ('NC' if self.opts.version == 1 else ('NFR' if self.opts.NFR else 'NFS')))
         )
         route_rng = np.random.RandomState(self.opts.seed + 3001)
         enabled = []
@@ -1488,7 +1524,7 @@ class Trainer():
             f'S{self.opts.src_name}{self.opts.n_src_frames}-'
             f'A{self.opts.active_mass_ratio:g}{run_tag}'
         )
-        if self.opts.version != 5:
+        if self.opts.version not in (5, 6):
             arch = 'NC' if self.opts.version == 1 else ('NFR' if self.opts.NFR else 'NFS')
             setting_tag = f'-cif-baseline-{arch}-I{self.opts.n_ict_identity}'
         self.opts.log_dir = os.path.join(self.opts.log_dir, ckpt_path + setting_tag)
@@ -1506,7 +1542,7 @@ class Trainer():
         else:
             self.model.eval()
 
-        if self.opts.version != 5:
+        if self.opts.version not in (5, 6):
             run_route = not self.opts.skip_part3
             run_target_gt = not self.opts.skip_part4
             if run_route or run_target_gt:

@@ -300,8 +300,12 @@ class Trainer():
                 optim_cage=self.opts.optim_cage,
             )
 
-        elif opts.version == 5:
-            self.model = NeuralGeneralizedBarycentricCoordinate(
+        elif opts.version == 5 or opts.version == 6:
+            model_cls = NeuralGeneralizedBarycentricCoordinate
+            if opts.version == 6:
+                from models.PDBplus import PDBplus
+                model_cls = PDBplus
+            self.model = model_cls(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
                 use_exp_recon=False,
@@ -791,12 +795,12 @@ class Trainer():
             own `retarget()` method (geometry-only cage model, no img
             features / precompute needed).
         """
-        if self.opts.version == 5:
+        if self.opts.version == 5 or self.opts.version == 6:
             return self._evaluate_lp_cross_ngbc(src_name, tgt_name)
         if not (self.opts.version == 0 and self.opts.NFR == False):
             raise NotImplementedError(
                 'cross LP eval only implemented for version=0 with --NFR off '
-                '(the NFS encode_id/encode_exp/decode interface), or version=5 (NGBC)'
+                '(the NFS encode_id/encode_exp/decode interface), or version=5/6 (NGBC/PDBplus)'
             )
 
         device = self.device
