@@ -1,7 +1,7 @@
 """
 Self / cross / cyclic retargeting of the MF test identity and ICT m00
 animations with the aligned stylized meshes (test-mesh/, see TARGETS) as
-targets, for the NC / NFS / PDB models:
+targets, for the NC / NFS / PDB (/ PDB-cont / PDBplus) models:
   self   : source expression -> source neutral (reconstruction)
   cross  : source expression -> target neutral
   cyclic : cross output -> back onto source neutral (source -> target -> source)
@@ -37,6 +37,7 @@ import utils.nfr_utils as nfr_utils  # noqa: E402
 from vis_CBD_retarget_fig import Pipeline  # noqa: E402
 from eval_CBD_cyc import Options  # noqa: E402
 from eval_CBD import Trainer  # noqa: E402
+from utils.matplotlib_rnd import fix_triangle_widning  # noqa: E402
 
 # target name -> aligned mesh under test-mesh/
 TARGETS = {
@@ -57,22 +58,36 @@ ICT_EXP_924 = 1
 MF_FRAMES = [1039, 5044, 5112, 7623, 9013]
 ICT_FRAMES = [107, 602, 843, 873, 1117]
 
-# (name, ckpt, version)  version 1 = NC, 0 = NFS, 5 = PDB
+# (name, ckpt, version)  version 1 = NC, 0 = NFS, 5 = PDB, 6 = PDBplus
 MODELS = [
     ('NC', './ckpts_CBD/2025-10-20-00-15-40-CBD', 1),
     ('NFS', './ckpt_stage1/2024-08-18-23-32-29-all', 0),
+    # NFR = version 0 with use_NFR (design nfr, jacob decoder), as eval_CBD_cyc.sh
+    ('NFR', './ckpt_stage1/exp_019_ICT_MF-jacob_NFR', 0),
     ('PDB', './ckpts_CBD8/2026-09-16-02-19-03-NGBCv5', 5),
     # PDB continued 1000 -> 2000 (train_continue.sh, use_data3); stopped at
     # epoch 1221, model_best.pth = epoch 1220. Shown in continue_figure.html.
     ('PDB-cont', './ckpts_CBD8/2026-10-07-00-58-27-NGBCv5', 5),
+    # PDBplus (models/PDBplus.py, train_PDBplus.sh, use_data8); stopped at
+    # epoch 463, model_best.pth = epoch 430. Shown in continue_figure.html.
+    ('PDBplus', './ckpts_CBD/2026-10-06-01-00-32-PDBplusv6', 6),
+    # PDB after test-time training on bowen (ttt_CBD.py, 10 epochs from PDB
+    # model_best.pth). Shown in ttt_figure.html. (set once the TTT run finishes)
+    # ('PDB-TTT-bowen', './ttt_CBD/<run>', 5),
 ]
+
+# per-model overrides: checkpoint epoch to load instead of model_best.pth, and the
+# only targets to infer (a TTT model is adapted to a single target)
+MODEL_EPOCH = {'PDB-TTT-bowen': 10}
+MODEL_TARGETS = {'PDB-TTT-bowen': ['bowen']}
+USE_NFR = {'NFR'}
 
 OUT_ROOT = REPO_ROOT / 'vis_CBD' / 'vis_comparison'
 IMG_ROOT = OUT_ROOT / 'stylize_retarget'
 CACHE_PATH = IMG_ROOT / 'preds_cache.npz'
 
 
-def build_opts(ckpt, version):
+def build_opts(ckpt, version, epoch=None, use_nfr=False):
     opts = Options()
     opts.ckpt = ckpt
     opts.version = version
@@ -86,25 +101,51 @@ def build_opts(ckpt, version):
         opts.stage1 = True
         opts.scale_exp = 1.0
         opts.ict_face_only = False
-        opts.use_NFR = False
-        opts.design = 'new2'
-        opts.dec_type = 'disp'
+        opts.use_NFR = use_nfr
+        # same switch as eval_CBD_cyc.py: NFR -> design nfr + jacob decoder
+        opts.design = 'nfr' if use_nfr else 'new2'
+        opts.dec_type = 'jacob' if use_nfr else 'disp'
     else:
         opts_yaml = yaml.load(open(f'{ckpt}/train_opts.yml'), Loader=yaml.FullLoader)
         opts_ = vars(opts)
         opts_yaml.update(opts_)
         opts = argparse.Namespace(**opts_yaml)
     opts.use_t_mask = True
-    opts.continue_ckpt = False
+    # eval_CBD.Trainer loads model_{start_epoch}.pth when continue_ckpt, else model_best.pth
+    opts.continue_ckpt = epoch is not None
+    if epoch is not None:
+        opts.start_epoch = epoch
     opts.batch_size = 1
     return opts
+
+
+def build_pdbplus(opts):
+    """eval_CBD.Trainer has no version 6; build PDBplus as train_CBD.py does and
+    load model_best.pth (continue_ckpt is False)."""
+    from models.PDBplus import PDBplus
+    acts = [opts.last_activation == a for a in ['relu', 'elu', 'softmax', 'softplus', 'none']]
+    model = PDBplus(
+        opts, num_layers=4, num_cage_vertices=opts.num_cage_v,
+        use_exp_recon=False, use_shp_recon=False, use_shp=False,
+        use_relu=acts[0], use_elu=acts[1], use_softmax=acts[2], use_softplus=acts[3],
+        no_activation=acts[4], use_least_N_on_V=False, is_train=True,
+        use_pou=not opts.no_pou, device=opts.device,
+        hid_dim=128 if opts.align_latent else 256,
+    )
+    ckpt_dict = torch.load(os.path.join(opts.ckpt, 'model_best.pth'), map_location=opts.device)
+    model.load_state_dict(ckpt_dict['model'] if 'model' in ckpt_dict else ckpt_dict)
+    print(f"Loaded! {opts.ckpt}/model_best.pth (epoch {ckpt_dict.get('epoch')})", flush=True)
+    return model
 
 
 def load_targets():
     out = {}
     for n, fn in TARGETS.items():
         m = trimesh.load(f'test-mesh/{fn}', process=False, maintain_order=True)
-        out[n] = (np.asarray(m.vertices, float), np.asarray(m.faces, np.int64))
+        v = np.asarray(m.vertices, float)
+        # outward winding (bowen/proteus are inverted): the vertex normals fed to the
+        # models (PDB in_type 1, NFS mesh features) follow the face winding
+        out[n] = (v, fix_triangle_widning(v, np.asarray(m.faces, np.int64)))
     return out
 
 
@@ -162,7 +203,9 @@ def run_model(pipe, version, src_v, src_f, frames, tgt_v, tgt_f):
         for fv in frames:
             fv_th = torch.tensor(fv).float()[None].to(device)
             with torch.no_grad():
-                vert_feat_exp = model.get_local_feature(fv_th, src_faces_th, src_img_feat).float() * 1.3
+                # expression feature scale 1.3 for NFS, 1.0 for the jacob decoder (NFR), as eval_CBD_cyc.py
+                exp_scale = 1.0 if pipe.opts.dec_type == 'jacob' else 1.3
+                vert_feat_exp = model.get_local_feature(fv_th, src_faces_th, src_img_feat).float() * exp_scale
                 pred_exp_coeff = model.encode_exp(vert_feat_exp, src_dfn_info, batch_process=True, verbose=False)
                 inputs = (
                     tgt_tri_feat if pipe.opts.dec_type == 'jacob' else tgt_vert_feat,
@@ -171,7 +214,13 @@ def run_model(pipe, version, src_v, src_f, frames, tgt_v, tgt_f):
                 )
                 decode_out = model.decode(inputs, batch_process=True)
                 pred = decode_out[0] if isinstance(decode_out, tuple) else decode_out
-            outs.append(pred[0].detach().cpu().numpy())
+            pred = pred[0].detach().cpu().numpy()
+            if pipe.opts.dec_type == 'jacob':
+                # jacob decoder output is zero-centered (no translation, evaluation.py
+                # calc_new_mesh); place it at the mean of the mesh it is decoded on, which
+                # equals evaluation.py's zero-mean comparison
+                pred = pred - pred.mean(0) + tgt_v.mean(0)
+            outs.append(pred)
     else:
         src_n = igl.per_vertex_normals(src_v, src_f)
         tgt_n = igl.per_vertex_normals(tgt_v, tgt_f)
@@ -181,12 +230,15 @@ def run_model(pipe, version, src_v, src_f, frames, tgt_v, tgt_f):
         tgt_n_th = torch.tensor(tgt_n).float()[None].to(device)
         with torch.no_grad():
             key_weight = model.predict_coordinate(tgt_v_th, tgt_n_th)
+        # PDBplus also needs the target's own neutral normal (as in eval_CBD_cyc.py)
+        tgt_kwargs = {'tgt_neu_norm': tgt_n_th} if version == 6 else {}
         for fv in frames:
             fn = igl.per_vertex_normals(fv, src_f)
             fv_th = torch.tensor(fv).float()[None].to(device)
             fn_th = torch.tensor(fn).float()[None].to(device)
             with torch.no_grad():
-                pred, _ = model.retarget_animation(src_v_th, src_n_th, fv_th, fn_th, key_weight, tgt_v_th)
+                pred, _ = model.retarget_animation(src_v_th, src_n_th, fv_th, fn_th, key_weight, tgt_v_th,
+                                                   **tgt_kwargs)
             outs.append(pred[0].detach().cpu().numpy())
     return outs
 
@@ -219,22 +271,23 @@ def main():
         srcs = load_sources(base_pipe)
 
     for model_name, ckpt, version in MODELS:
-        missing = [k for k in needed_keys(model_name, targets, srcs) if k not in cache]
+        m_targets = {t: targets[t] for t in MODEL_TARGETS.get(model_name, targets)}
+        missing = [k for k in needed_keys(model_name, m_targets, srcs) if k not in cache]
         if not missing:
             print(f'===== {model_name}: cached, skip =====', flush=True)
             continue
         print(f'===== {model_name} ({ckpt}): {len(missing)} missing =====', flush=True)
-        opts = build_opts(ckpt, version)
-        trainer = Trainer(opts)
+        opts = build_opts(ckpt, version, MODEL_EPOCH.get(model_name), use_nfr=model_name in USE_NFR)
+        trainer = None if version == 6 else Trainer(opts)
         pipe = Pipeline(opts)
-        pipe.model = trainer.model
+        pipe.model = build_pdbplus(opts) if version == 6 else trainer.model
         for sname, s in srcs.items():
             sv, sf = s['neutral_v'], s['faces']
             k = f'self/{model_name}/{sname}'
             if k not in cache:
                 cache[k] = np.stack(run_model(pipe, version, sv, sf, s['frames'], sv, sf))
                 print(f'  self {sname}', flush=True)
-            for tname, (tv, tf) in targets.items():
+            for tname, (tv, tf) in m_targets.items():
                 k = f'pred/{model_name}/{tname}/{sname}'
                 if k not in cache:
                     cache[k] = np.stack(run_model(pipe, version, sv, sf, s['frames'], tv, tf))

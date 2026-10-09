@@ -20,9 +20,10 @@ share the target neutral's center/scale, and meshes on the source identity
 matplotrender does `from utils import ...`, which clashes with the repo's utils
 package, so run it in isolated mode from outside the repo root:
     cd _tmp && python -I ../render/render_stylized_retarget_mpr.py [report ...]
-report: keys of REPORTS (default: all). 'main' = NC / NFS / PDB
+report: keys of REPORTS (default: all). 'main' = NC / NFS / NFR / PDB
 (vis_comparison_stylize_retarget.html), 'continue' = PDB vs the continued PDB
-run (continue_figure.html).
+run (continue_figure.html), 'ttt' = PDB before vs after test-time training on
+bowen (ttt_figure.html).
 """
 import sys
 import base64
@@ -45,16 +46,26 @@ CACHE_PATH = IMG_ROOT / 'preds_cache.npz'
 # models shown together.
 REPORTS = {
     'main': dict(
-        models=['NC', 'NFS', 'PDB'], fig_root=IMG_ROOT / 'figure',
+        models=['NC', 'NFS', 'NFR', 'PDB'], fig_root=IMG_ROOT / 'figure',
         html=OUT_ROOT / 'vis_comparison_stylize_retarget.html',
-        title='stylized mesh retargeting (NC / NFS / PDB): self / cross / cyclic', note=''),
+        title='stylized mesh retargeting (NC / NFS / NFR / PDB): self / cross / cyclic', note=''),
     'continue': dict(
-        models=['PDB', 'PDB-cont'], fig_root=IMG_ROOT / 'figure_continue',
+        models=['PDB', 'PDB-cont', 'PDBplus'], fig_root=IMG_ROOT / 'figure_continue',
         html=OUT_ROOT / 'continue_figure.html',
-        title='stylized mesh retargeting: PDB vs continued PDB',
+        title='stylized mesh retargeting: PDB vs continued PDB vs PDBplus',
         note='PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5/model_best.pth (epoch 920, use_data2). '
              'PDB-cont = ckpts_CBD8/2026-10-07-00-58-27-NGBCv5/model_best.pth (epoch 1220, '
-             'continued from epoch 1000 with use_data3 via train_continue.sh; run stopped at epoch 1221). '),
+             'continued from epoch 1000 with use_data3 via train_continue.sh; run stopped at epoch 1221). '
+             'PDBplus = ckpts_CBD/2026-10-06-01-00-32-PDBplusv6/model_best.pth (epoch 430, version 6, '
+             'use_data8 via train_PDBplus.sh; run stopped at epoch 463). '),
+    'ttt': dict(
+        models=['PDB', 'PDB-TTT-bowen'], targets=['bowen'], fig_root=IMG_ROOT / 'figure_ttt',
+        html=OUT_ROOT / 'ttt_figure.html',
+        title='stylized mesh retargeting: PDB before vs after test-time training (bowen)',
+        note='PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5/model_best.pth (epoch 920, before TTT). '
+             'PDB-TTT-bowen = ttt_CBD/2026-10-09-00-48-16-NGBCv5-TTT-test-bowen-aligned/model_010.pth '
+             '(after 10 epochs of ttt_CBD.py on test-bowen-aligned, from the PDB above; use_data2, lr 1e-4, '
+             'ttt-self + ttt-cross, lambda 1). '),
 }
 
 SIZE = 8
@@ -123,8 +134,8 @@ def main():
         render_report(c, **REPORTS[key])
 
 
-def render_report(c, models, fig_root, html, title, note):
-    targets, sources = list(c['targets']), list(c['sources'])
+def render_report(c, models, fig_root, html, title, note, targets=None):
+    targets, sources = targets or list(c['targets']), list(c['sources'])
     for sname in sources:
         sv, sf, frames = c[f'src/{sname}/v'], c[f'src/{sname}/f'], c[f'src/{sname}/frames']
         # plot_mesh_gouraud culls by face normal but doesn't fix inverted winding
