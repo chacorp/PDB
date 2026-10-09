@@ -85,7 +85,8 @@ FIG_ROWS = [
 ]
 SRC_LABEL = {
     'mf': 'mf test id 12 (mf_ROM)',
-    'ict': 'ict m00 (20240325_MySlate_924)',
+    'ict_m00': 'ict m00 (20240325_MySlate_924)',
+    'ict_m02': 'ict m02 (20240318_MySlate_922)',
 }
 
 
@@ -137,7 +138,7 @@ def main():
 def render_report(c, models, fig_root, html, title, note, targets=None):
     targets, sources = targets or list(c['targets']), list(c['sources'])
     for sname in sources:
-        sv, sf, frames = c[f'src/{sname}/v'], c[f'src/{sname}/f'], c[f'src/{sname}/frames']
+        sv, sf = c[f'src/{sname}/v'], c[f'src/{sname}/f']
         # plot_mesh_gouraud culls by face normal but doesn't fix inverted winding
         # (the stylized meshes have it), so orient faces once per identity
         sf = fix_triangle_widning(sv, sf)
@@ -148,17 +149,17 @@ def render_report(c, models, fig_root, html, title, note, targets=None):
             tf = fix_triangle_widning(tv, tf)
             tgt_fit = fit_transform(tv)
             tv_n = tgt_fit(tv)
-            for k, fidx in enumerate(c[f'src/{sname}/idx']):
+            for fidx in c[f'src/{sname}/idx']:
                 d = fig_root / f'{sname}_to_{tname}' / f'frame_{fidx:06d}'
                 d.mkdir(parents=True, exist_ok=True)
-                expr = src_fit(frames[k])
+                expr = src_fit(c[f'src/{sname}/frame/{fidx}'])
                 save_mesh(sv_n, sf, d / 'source_neutral.png')
                 save_mesh(tv_n, tf, d / 'target_neutral.png')
                 save_mesh(expr, sf, d / 'source_expression.png', joint_colors([expr], sf, sv_n)[0])
                 rows = [
-                    ('self', {m: src_fit(c[f'self/{m}/{sname}'][k]) for m in models}, sf, sv_n),
-                    ('cross', {m: tgt_fit(c[f'pred/{m}/{tname}/{sname}'][k]) for m in models}, tf, tv_n),
-                    ('cyclic', {m: src_fit(c[f'cyc/{m}/{tname}/{sname}'][k]) for m in models}, sf, sv_n),
+                    ('self', {m: src_fit(c[f'self/{m}/{sname}/{fidx}']) for m in models}, sf, sv_n),
+                    ('cross', {m: tgt_fit(c[f'pred/{m}/{tname}/{sname}/{fidx}']) for m in models}, tf, tv_n),
+                    ('cyclic', {m: src_fit(c[f'cyc/{m}/{tname}/{sname}/{fidx}']) for m in models}, sf, sv_n),
                 ]
                 for row, vs, F, base in rows:
                     render_row(row, vs, F, base, d)

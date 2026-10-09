@@ -1,13 +1,15 @@
 """
-Self / cross / cyclic retargeting of the MF test identity and ICT m00
+Self / cross / cyclic retargeting of the MF test identity and ICT m00 / m02
 animations with the aligned stylized meshes (test-mesh/, see TARGETS) as
-targets, for the NC / NFS / PDB (/ PDB-cont / PDBplus) models:
+targets, for the NC / NFS / NFR / PDB (/ PDB-cont / PDBplus) models:
   self   : source expression -> source neutral (reconstruction)
   cross  : source expression -> target neutral
   cyclic : cross output -> back onto source neutral (source -> target -> source)
 Stage 1 (inference): writes the predicted vertices to
-vis_CBD/vis_comparison/stylize_retarget/preds_cache.npz (keys
-self/{model}/{src}, pred/{model}/{tgt}/{src} (cross), cyc/{model}/{tgt}/{src}).
+vis_CBD/vis_comparison/stylize_retarget/preds_cache.npz, one key per frame:
+self/{model}/{src}/{frame}, pred/{model}/{tgt}/{src}/{frame} (cross),
+cyc/{model}/{tgt}/{src}/{frame}; source frames src/{src}/frame/{frame}.
+Frames come from render/comparison_frames.py (shared with vis_comparison.html).
 Only keys missing from an existing cache are inferred; delete it to rerun all.
 Rendering and the gallery HTML are done by render/render_stylized_retarget_mpr.py.
 
@@ -54,9 +56,18 @@ TARGETS = {
 }
 MF_TEST_IDX = 12
 ICT_ID_M00 = 0
-ICT_EXP_924 = 1
-MF_FRAMES = [1039, 5044, 5112, 7623, 9013]
-ICT_FRAMES = [107, 602, 843, 873, 1117]
+ICT_ID_M02 = 2
+ICT_EXP_922 = 0  # dataloader_CBD.py: exp_num==0 -> 20240318_MySlate_922 (m02's own motion)
+ICT_EXP_924 = 1  # exp_num!=0 -> 20240325_MySlate_924 (m00's own motion)
+sys.path.insert(0, str(REPO_ROOT / 'render'))
+from comparison_frames import MF_FRAMES, ICT_FRAMES_M00, ICT_FRAMES_M02  # noqa: E402
+
+# source key -> (data selection, mesh id, ict exp_num, frames)
+SOURCES = {
+    'mf': ('mf_ROM', MF_TEST_IDX, None, MF_FRAMES),
+    'ict_m00': ('ict-cap', ICT_ID_M00, ICT_EXP_924, ICT_FRAMES_M00),
+    'ict_m02': ('ict-cap', ICT_ID_M02, ICT_EXP_922, ICT_FRAMES_M02),
+}
 
 # (name, ckpt, version)  version 1 = NC, 0 = NFS, 5 = PDB, 6 = PDBplus
 MODELS = [
@@ -149,21 +160,52 @@ def load_targets():
     return out
 
 
-def load_sources(pipe):
-    mf_ds = dataloader_CBD.EvalDataset(data_name='mf_ROM', toggle=False)
-    ict_ds = dataloader_CBD.EvalDataset(
-        data_name='ict-cap', toggle=False, ict_cap_id_num=ICT_ID_M00, ict_cap_exp_num=ICT_EXP_924,
-    )
+def load_sources(cache):
+    """Source neutral / faces and the configured expression frames (only the frames
+    missing from the cache are read from the datasets)."""
+    pipe = None
     srcs = {}
-    for key, ds, sel, mid, frames in [
-        ('mf', mf_ds, 'mf_ROM', MF_TEST_IDX, MF_FRAMES),
-        ('ict', ict_ds, 'ict-cap', ICT_ID_M00, ICT_FRAMES),
-    ]:
-        src_v, src_f, _ = pipe.get_mesh(sel, None, mid)
-        frame_vs = [ds[i][0].numpy() for i in frames]
-        srcs[key] = dict(neutral_v=np.asarray(src_v, float), faces=np.asarray(src_f, np.int64),
-                         frames=frame_vs, idx=frames)
+    for key, (sel, mid, exp_num, frames) in SOURCES.items():
+        missing = [f for f in frames if f'src/{key}/frame/{f}' not in cache]
+        if f'src/{key}/v' not in cache or missing:
+            if pipe is None:
+                pipe = Pipeline(build_opts(MODELS[0][1], MODELS[0][2]))
+            src_v, src_f, _ = pipe.get_mesh(sel, None, mid)
+            cache[f'src/{key}/v'] = np.asarray(src_v, float)
+            cache[f'src/{key}/f'] = np.asarray(src_f, np.int64)
+        if missing:
+            kw = dict(ict_cap_id_num=mid, ict_cap_exp_num=exp_num) if sel == 'ict-cap' else {}
+            ds = dataloader_CBD.EvalDataset(data_name=sel, toggle=False, **kw)
+            for f in missing:
+                cache[f'src/{key}/frame/{f}'] = ds[f][0].numpy()
+        srcs[key] = dict(neutral_v=cache[f'src/{key}/v'], faces=cache[f'src/{key}/f'], idx=list(frames),
+                         frames=[cache[f'src/{key}/frame/{f}'] for f in frames])
     return srcs
+
+
+def migrate_cache(cache):
+    """One-time conversion of the old cache (one stacked array per source over a fixed
+    frame list, sources 'mf' / 'ict' = m00) to per-frame keys."""
+    if 'src/mf/idx' not in cache or 'src/mf/frames' not in cache:
+        return cache
+    rename = {'mf': 'mf', 'ict': 'ict_m00'}
+    new = {}
+    for k, v in cache.items():
+        parts = k.split('/')
+        if parts[0] == 'src' and parts[1] in rename:
+            if parts[2] in ('v', 'f'):
+                new[f'src/{rename[parts[1]]}/{parts[2]}'] = v
+            elif parts[2] == 'frames':
+                for f, fv in zip(cache[f'src/{parts[1]}/idx'], v):
+                    new[f'src/{rename[parts[1]]}/frame/{int(f)}'] = fv
+        elif parts[0] in ('self', 'pred', 'cyc') and parts[-1] in rename:
+            idx = cache[f'src/{parts[-1]}/idx']
+            for f, fv in zip(idx, v):
+                new['/'.join(parts[:-1] + [rename[parts[-1]], str(int(f))])] = fv
+        elif parts[0] == 'tgt':
+            new[k] = v
+    print(f'migrated cache to per-frame keys ({len(cache)} -> {len(new)} keys)', flush=True)
+    return new
 
 
 def run_model(pipe, version, src_v, src_f, frames, tgt_v, tgt_f):
@@ -248,55 +290,51 @@ def nfr_utils_get_ops(mesh):
     return get_mesh_operators(mesh)
 
 
-def needed_keys(model_name, targets, sources):
-    keys = [f'self/{model_name}/{sn}' for sn in sources]
-    for tn in targets:
-        for sn in sources:
-            keys += [f'pred/{model_name}/{tn}/{sn}', f'cyc/{model_name}/{tn}/{sn}']
-    return keys
-
-
 def main():
     IMG_ROOT.mkdir(parents=True, exist_ok=True)
     targets = load_targets()
-    if CACHE_PATH.exists():
-        cache = dict(np.load(CACHE_PATH))
-        srcs = {sn: dict(neutral_v=cache[f'src/{sn}/v'], faces=cache[f'src/{sn}/f'],
-                         frames=list(cache[f'src/{sn}/frames']), idx=list(cache[f'src/{sn}/idx']))
-                for sn in cache['sources']}
-    else:
-        cache = {}
-        # source frames and neutral templates depend only on the dataset, not the model
-        base_pipe = Pipeline(build_opts(MODELS[0][1], MODELS[0][2]))
-        srcs = load_sources(base_pipe)
+    cache = migrate_cache(dict(np.load(CACHE_PATH))) if CACHE_PATH.exists() else {}
+    srcs = load_sources(cache)
 
     for model_name, ckpt, version in MODELS:
         m_targets = {t: targets[t] for t in MODEL_TARGETS.get(model_name, targets)}
-        missing = [k for k in needed_keys(model_name, m_targets, srcs) if k not in cache]
-        if not missing:
+        # missing frames per (kind, target, source)
+        todo = {}
+        for sname, s in srcs.items():
+            todo[('self', None, sname)] = [f for f in s['idx'] if f'self/{model_name}/{sname}/{f}' not in cache]
+            for tname in m_targets:
+                for kind in ('pred', 'cyc'):
+                    todo[(kind, tname, sname)] = [
+                        f for f in s['idx'] if f'{kind}/{model_name}/{tname}/{sname}/{f}' not in cache]
+        n_missing = sum(len(v) for v in todo.values())
+        if not n_missing:
             print(f'===== {model_name}: cached, skip =====', flush=True)
             continue
-        print(f'===== {model_name} ({ckpt}): {len(missing)} missing =====', flush=True)
+        print(f'===== {model_name} ({ckpt}): {n_missing} missing =====', flush=True)
         opts = build_opts(ckpt, version, MODEL_EPOCH.get(model_name), use_nfr=model_name in USE_NFR)
         trainer = None if version == 6 else Trainer(opts)
         pipe = Pipeline(opts)
         pipe.model = build_pdbplus(opts) if version == 6 else trainer.model
         for sname, s in srcs.items():
             sv, sf = s['neutral_v'], s['faces']
-            k = f'self/{model_name}/{sname}'
-            if k not in cache:
-                cache[k] = np.stack(run_model(pipe, version, sv, sf, s['frames'], sv, sf))
-                print(f'  self {sname}', flush=True)
+            frame_of = dict(zip(s['idx'], s['frames']))
+            fs = todo[('self', None, sname)]
+            if fs:
+                for f, out in zip(fs, run_model(pipe, version, sv, sf, [frame_of[f] for f in fs], sv, sf)):
+                    cache[f'self/{model_name}/{sname}/{f}'] = out
+                print(f'  self {sname} {fs}', flush=True)
             for tname, (tv, tf) in m_targets.items():
-                k = f'pred/{model_name}/{tname}/{sname}'
-                if k not in cache:
-                    cache[k] = np.stack(run_model(pipe, version, sv, sf, s['frames'], tv, tf))
-                    print(f'  cross {tname} <- {sname}', flush=True)
-                k = f'cyc/{model_name}/{tname}/{sname}'
-                if k not in cache:
-                    cross = list(cache[f'pred/{model_name}/{tname}/{sname}'])
-                    cache[k] = np.stack(run_model(pipe, version, tv, tf, cross, sv, sf))
-                    print(f'  cyclic {sname} -> {tname} -> {sname}', flush=True)
+                fs = todo[('pred', tname, sname)]
+                if fs:
+                    for f, out in zip(fs, run_model(pipe, version, sv, sf, [frame_of[f] for f in fs], tv, tf)):
+                        cache[f'pred/{model_name}/{tname}/{sname}/{f}'] = out
+                    print(f'  cross {tname} <- {sname} {fs}', flush=True)
+                fs = todo[('cyc', tname, sname)]
+                if fs:
+                    cross = [cache[f'pred/{model_name}/{tname}/{sname}/{f}'] for f in fs]
+                    for f, out in zip(fs, run_model(pipe, version, tv, tf, cross, sv, sf)):
+                        cache[f'cyc/{model_name}/{tname}/{sname}/{f}'] = out
+                    print(f'  cyclic {sname} -> {tname} -> {sname} {fs}', flush=True)
         del trainer, pipe
         torch.cuda.empty_cache()
 
@@ -305,7 +343,7 @@ def main():
 
 
 def save_cache(cache, targets, srcs):
-    """Flat npz: target/source meshes, source frames and per-model predictions."""
+    """Flat npz: target/source meshes, per-frame source frames and predictions."""
     d = dict(cache)
     d.update({'targets': np.array(list(targets)), 'sources': np.array(list(srcs)),
               'models': np.array([m for m, _, _ in MODELS])})
@@ -314,10 +352,7 @@ def save_cache(cache, targets, srcs):
         d[f'tgt/{tname}/f'] = tf
         d[f'tgt/{tname}/file'] = np.array(TARGETS[tname])
     for sname, s in srcs.items():
-        d[f'src/{sname}/v'] = s['neutral_v']
-        d[f'src/{sname}/f'] = s['faces']
-        d[f'src/{sname}/idx'] = np.array(s['idx'])
-        d[f'src/{sname}/frames'] = np.stack(s['frames'])
+        d[f'src/{sname}/idx'] = np.array(s['idx'])  # frame order shown in the reports
     np.savez_compressed(CACHE_PATH, **d)
 
 
