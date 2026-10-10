@@ -23,7 +23,7 @@ package, so run it in isolated mode from outside the repo root:
 report: keys of REPORTS (default: all). 'main' = NC / NFS / NFR / PDB
 (vis_comparison_stylize_retarget.html), 'continue' = PDB vs the continued PDB
 run (continue_figure.html), 'ttt' = PDB before vs after test-time training on
-bowen (ttt_figure.html).
+each target (ttt_figure.html).
 """
 import sys
 import base64
@@ -59,13 +59,12 @@ REPORTS = {
              'PDBplus = ckpts_CBD/2026-10-06-01-00-32-PDBplusv6/model_best.pth (epoch 430, version 6, '
              'use_data8 via train_PDBplus.sh; run stopped at epoch 463). '),
     'ttt': dict(
-        models=['PDB', 'PDB-TTT-bowen'], targets=['bowen'], fig_root=IMG_ROOT / 'figure_ttt',
+        models=['PDB', 'PDB-TTT'], model_alias={'PDB-TTT': 'PDB-TTT-{t}'}, fig_root=IMG_ROOT / 'figure_ttt',
         html=OUT_ROOT / 'ttt_figure.html',
-        title='stylized mesh retargeting: PDB before vs after test-time training (bowen)',
+        title='stylized mesh retargeting: PDB before vs after test-time training',
         note='PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5/model_best.pth (epoch 920, before TTT). '
-             'PDB-TTT-bowen = ttt_CBD/2026-10-09-00-48-16-NGBCv5-TTT-test-bowen-aligned/model_010.pth '
-             '(after 10 epochs of ttt_CBD.py on test-bowen-aligned, from the PDB above; use_data2, lr 1e-4, '
-             'ttt-self + ttt-cross, lambda 1). '),
+             'PDB-TTT = that PDB after 1 epoch (--max_epoch 0, model_000.pth) of ttt_CBD.py on each target, '
+             'one model per target (ttt_CBD/*-TTT-<target mesh>; use_data2, lr 1e-4, ttt-self + ttt-cross, lambda 1). '),
 }
 
 SIZE = 8
@@ -135,8 +134,10 @@ def main():
         render_report(c, **REPORTS[key])
 
 
-def render_report(c, models, fig_root, html, title, note, targets=None):
+def render_report(c, models, fig_root, html, title, note, targets=None, model_alias=None):
     targets, sources = targets or list(c['targets']), list(c['sources'])
+    # column name -> cache model key per target (e.g. a per-target TTT model)
+    model_alias = model_alias or {}
     for sname in sources:
         sv, sf = c[f'src/{sname}/v'], c[f'src/{sname}/f']
         # plot_mesh_gouraud culls by face normal but doesn't fix inverted winding
@@ -149,6 +150,7 @@ def render_report(c, models, fig_root, html, title, note, targets=None):
             tf = fix_triangle_widning(tv, tf)
             tgt_fit = fit_transform(tv)
             tv_n = tgt_fit(tv)
+            mk = {m: model_alias.get(m, m).format(t=tname) for m in models}
             for fidx in c[f'src/{sname}/idx']:
                 d = fig_root / f'{sname}_to_{tname}' / f'frame_{fidx:06d}'
                 d.mkdir(parents=True, exist_ok=True)
@@ -157,9 +159,9 @@ def render_report(c, models, fig_root, html, title, note, targets=None):
                 save_mesh(tv_n, tf, d / 'target_neutral.png')
                 save_mesh(expr, sf, d / 'source_expression.png', joint_colors([expr], sf, sv_n)[0])
                 rows = [
-                    ('self', {m: src_fit(c[f'self/{m}/{sname}/{fidx}']) for m in models}, sf, sv_n),
-                    ('cross', {m: tgt_fit(c[f'pred/{m}/{tname}/{sname}/{fidx}']) for m in models}, tf, tv_n),
-                    ('cyclic', {m: src_fit(c[f'cyc/{m}/{tname}/{sname}/{fidx}']) for m in models}, sf, sv_n),
+                    ('self', {m: src_fit(c[f'self/{mk[m]}/{sname}/{fidx}']) for m in models}, sf, sv_n),
+                    ('cross', {m: tgt_fit(c[f'pred/{mk[m]}/{tname}/{sname}/{fidx}']) for m in models}, tf, tv_n),
+                    ('cyclic', {m: src_fit(c[f'cyc/{mk[m]}/{tname}/{sname}/{fidx}']) for m in models}, sf, sv_n),
                 ]
                 for row, vs, F, base in rows:
                     render_row(row, vs, F, base, d)

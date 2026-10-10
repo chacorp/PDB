@@ -82,15 +82,30 @@ MODELS = [
     # PDBplus (models/PDBplus.py, train_PDBplus.sh, use_data8); stopped at
     # epoch 463, model_best.pth = epoch 430. Shown in continue_figure.html.
     ('PDBplus', './ckpts_CBD/2026-10-06-01-00-32-PDBplusv6', 6),
-    # PDB after test-time training on bowen (ttt_CBD.py, 10 epochs from PDB
-    # model_best.pth). Shown in ttt_figure.html. (set once the TTT run finishes)
-    # ('PDB-TTT-bowen', './ttt_CBD/<run>', 5),
+    # PDB after test-time training (ttt_CBD.py, 1 epoch = --max_epoch 0, from PDB
+    # model_best.pth) on each target: 'PDB-TTT-<target>', appended below. Shown in ttt_figure.html.
 ]
 
 # per-model overrides: checkpoint epoch to load instead of model_best.pth, and the
 # only targets to infer (a TTT model is adapted to a single target)
-MODEL_EPOCH = {'PDB-TTT-bowen': 10}
-MODEL_TARGETS = {'PDB-TTT-bowen': ['bowen']}
+MODEL_EPOCH = {}
+MODEL_TARGETS = {}
+TTT_RUNS = {
+    'aura': 'ttt_CBD/2026-10-09-19-10-44-NGBCv5-TTT-test-aura-aligned',
+    'bowen': 'ttt_CBD/2026-10-09-19-17-49-NGBCv5-TTT-test-bowen-aligned',
+    'jupiter': 'ttt_CBD/2026-10-09-19-27-15-NGBCv5-TTT-test-jupiter-aligned',
+    'proteus': 'ttt_CBD/2026-10-09-19-34-16-NGBCv5-TTT-test-proteus-aligned',
+    'bonnie': 'ttt_CBD/2026-10-09-19-43-43-NGBCv5-TTT-bonnie-bald-align',
+    'malcolm': 'ttt_CBD/2026-10-09-19-50-08-NGBCv5-TTT-malcolm-align',
+    'mary': 'ttt_CBD/2026-10-09-19-56-33-NGBCv5-TTT-mary-align',
+    'morphy': 'ttt_CBD/2026-10-09-20-03-14-NGBCv5-TTT-morphy-bald-align',
+    'piers': 'ttt_CBD/2026-10-09-20-09-44-NGBCv5-TTT-piers-align',
+    'girl': 'ttt_CBD/2026-10-09-20-16-01-NGBCv5-TTT-girl-align',
+}
+for _t, _run in TTT_RUNS.items():
+    MODELS.append((f'PDB-TTT-{_t}', f'./{_run}', 5))
+    MODEL_EPOCH[f'PDB-TTT-{_t}'] = 0
+    MODEL_TARGETS[f'PDB-TTT-{_t}'] = [_t]
 USE_NFR = {'NFR'}
 
 OUT_ROOT = REPO_ROOT / 'vis_CBD' / 'vis_comparison'
