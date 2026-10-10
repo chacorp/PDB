@@ -103,6 +103,8 @@ TTT_RUNS = {
     'morphy': 'ttt_CBD/2026-10-09-20-03-14-NGBCv5-TTT-morphy-bald-align',
     'piers': 'ttt_CBD/2026-10-09-20-09-44-NGBCv5-TTT-piers-align',
     'girl': 'ttt_CBD/2026-10-09-20-16-01-NGBCv5-TTT-girl-align',
+    'face-reference': 'ttt_CBD/2026-10-10-12-57-42-NGBCv5-TTT-face-reference-aligned',
+    'head-reference': 'ttt_CBD/2026-10-10-13-07-49-NGBCv5-TTT-head-reference-aligned',
 }
 for _t, _run in TTT_RUNS.items():
     MODELS.append((f'PDB-TTT-{_t}', f'./{_run}', 5))
