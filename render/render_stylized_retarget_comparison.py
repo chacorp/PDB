@@ -53,6 +53,8 @@ TARGETS = {
     'morphy': 'morphy-bald-align.obj',
     'piers': 'piers-align.obj',
     'girl': 'girl-align.obj',
+    'face-reference': 'face-reference-aligned.obj',
+    'head-reference': 'head-reference-aligned.obj',
 }
 MF_TEST_IDX = 12
 ICT_ID_M00 = 0
