@@ -28,10 +28,10 @@ ROWS = [("self", "Self retargeting"), ("cross", "Cross retargeting"), ("cyclic",
 CELL_ASPECT = 0.7  # displayed cell width / height (left / right margins of each render trimmed)
 
 VIDEOS = {
-    # build_design_study_figure_gallery.COLUMNS
+    # build_design_study_figure_gallery.COLUMNS with capitalization / spacing fixed (video only)
     "design_study": dict(title="Design study", columns=[
-        ("ours", "Ours<sup>&dagger;</sup>"), ("no_activation", "no activation"), ("softplus", "w/softplus"),
-        ("elu", "w/ELU"), ("soft_pou", "w/softPOU"), ("wo_mask", "w/oMask"), ("eq15_delta", "Equation 15"),
+        ("ours", "Ours<sup>&dagger;</sup>"), ("no_activation", "No activation"), ("softplus", "w/ softplus"),
+        ("elu", "w/ ELU"), ("soft_pou", "w/ soft POU"), ("wo_mask", "w/o Mask"), ("eq15_delta", "Equation 15"),
         ("eq16_matrix", "Equation 16")]),
     # vis_comparison.html
     "comparison": dict(title="Comparison", columns=[("NC", "NC"), ("NFR", "NFR"), ("NFS", "NFS"), ("PDB", "PDB")]),
