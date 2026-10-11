@@ -30,8 +30,8 @@ TSV_PATH = REPO_ROOT / "report" / "quant_sheet_eve-s05_full.tsv"
 
 MODELS = [
     ("NC", "2025-10-20-00-15-40-CBD"),
-    ("NFS", "2024-08-18-23-32-29-all"),
     ("NFR", "exp_019_ICT_MF-jacob_NFR"),
+    ("NFS", "2024-08-18-23-32-29-all"),
     ("PDB", "2026-09-16-02-19-03-NGBCv5"),
 ]
 
@@ -247,7 +247,7 @@ def main():
 """ + FIG_CSS + """
 </style>
 </head><body>
-<h1>comparison baselines (NC / NFS / NFR / PDB): original / self / cross / cyclic retargeting</h1>
+<h1>comparison baselines (NC / NFR / NFS / PDB): original / self / cross / cyclic retargeting</h1>
 <p class="legend">Quantitative metrics, then the qualitative figure (mf / ict / coma / biwi scenarios):
 per-cell PNGs rendered by render/render_comparison_figure.py (matplotrender plot_mesh_gouraud, size=8, M_SCALE=0.6,
 whole mesh, frontal).</p>
