@@ -25,6 +25,7 @@ FONT_FALLBACK = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"  # has glyphs 
 REF_ROWS = [("source_neutral", "Source Neutral Mesh"), ("source_expression", "Source Expression Mesh"),
             ("target_neutral", "Target Neutral Mesh")]
 ROWS = [("self", "Self retargeting"), ("cross", "Cross retargeting"), ("cyclic", "Cyclic retargeting")]
+CELL_ASPECT = 0.7  # displayed cell width / height (left / right margins of each render trimmed)
 
 VIDEOS = {
     # build_design_study_figure_gallery.COLUMNS
@@ -59,14 +60,15 @@ def _font_for(text, size):
     return f if _has_glyphs(f, text) else _font(size, FONT_FALLBACK)
 
 
-def _fit(path, size):
-    canvas = Image.new("RGB", (size, size), BG)
+def _fit(path, w, h):
+    """square cell image -> center-cropped to the w:h aspect (trims the empty left/right
+    margins, like the HTML figure's .clip) and resized to w x h"""
     if path is None or not Path(path).exists():
-        return canvas
+        return Image.new("RGB", (w, h), BG)
     im = Image.open(path).convert("RGB")
-    im.thumbnail((size, size), Image.LANCZOS)
-    canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2))
-    return canvas
+    cw = min(im.width, round(im.height * w / h))
+    x0 = (im.width - cw) // 2
+    return im.crop((x0, 0, x0 + cw, im.height)).resize((w, h), Image.LANCZOS)
 
 
 def _segments(html_text):
@@ -127,35 +129,36 @@ def _vtext(img, text, xy_center, font, max_len=None):
     img.paste(tmp, (xy_center[0] - tmp.width // 2, xy_center[1] - tmp.height // 2), tmp)
 
 
-def compose_frame(ref_cells, result_cells, columns, title, frame_text):
+def compose_frame(ref_cells, result_cells, columns, header, frame_text):
     """ref_cells {ref key: png}, result_cells {(row, column key): png}, columns [(key, caption)]"""
-    top, bottom, label_w, gap = 70, 50, 34, 24
+    top, bottom, label_w, gap = 44, 38, 30, 14
     n = len(columns)
-    cell = min((H - top - bottom) // 3, (W - 2 * label_w - gap - 20) // (n + 1))
-    grid_w = 2 * label_w + gap + (n + 1) * cell
+    # cell height: as tall as the screen allows, unless the columns run out of width
+    ch = min((H - top - bottom) // 3, int((W - 2 * label_w - gap - 8) / ((n + 1) * CELL_ASPECT)))
+    cw = int(ch * CELL_ASPECT)
+    grid_w = 2 * label_w + gap + (n + 1) * cw
     x0 = (W - grid_w) // 2
-    top += (H - top - bottom - 3 * cell) // 2  # center vertically when width-limited
+    top += (H - top - bottom - 3 * ch) // 2  # center vertically when width-limited
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
-    d.text((x0, top - 52), title, fill=FG, font=_font(30))
-    fw = d.textlength(frame_text, font=_font(30))
-    d.text((x0 + grid_w - fw, top - 52), frame_text, fill=FG, font=_font(30))
+    hf = _font(26)
+    d.text((x0, top - 38), header, fill=FG, font=hf)
+    d.text((x0 + grid_w - d.textlength(frame_text, font=hf), top - 38), frame_text, fill=FG, font=hf)
     lab = _font(20)
     for r, (key, label) in enumerate(REF_ROWS):
-        y = top + r * cell
-        _vtext(img, label, (x0 + label_w // 2, y + cell // 2), lab, cell - 8)
-        img.paste(_fit(ref_cells.get(key), cell), (x0 + label_w, y))
-    xs = x0 + label_w + cell + gap // 2
-    d.line([(xs, top), (xs, top + 3 * cell)], fill=LINE, width=2)
-    gx = x0 + label_w + cell + gap
+        y = top + r * ch
+        _vtext(img, label, (x0 + label_w // 2, y + ch // 2), lab, ch - 8)
+        img.paste(_fit(ref_cells.get(key), cw, ch), (x0 + label_w, y))
+    xs = x0 + label_w + cw + gap // 2
+    d.line([(xs, top), (xs, top + 3 * ch)], fill=LINE, width=2)
+    gx = x0 + label_w + cw + gap
     for r, (rkey, rlabel) in enumerate(ROWS):
-        y = top + r * cell
-        _vtext(img, rlabel, (gx + label_w // 2, y + cell // 2), lab, cell - 8)
+        y = top + r * ch
+        _vtext(img, rlabel, (gx + label_w // 2, y + ch // 2), lab, ch - 8)
         for c, (ckey, _) in enumerate(columns):
-            img.paste(_fit(result_cells.get((rkey, ckey)), cell), (gx + label_w + c * cell, y))
+            img.paste(_fit(result_cells.get((rkey, ckey)), cw, ch), (gx + label_w + c * cw, y))
     for c, (_, caption) in enumerate(columns):
-        cx = gx + label_w + c * cell + cell // 2
-        _rich(img, caption, cx, top + 3 * cell + 10, 20)
+        _rich(img, caption, gx + label_w + c * cw + cw // 2, top + 3 * ch + 8, 20)
     return img
 
 
@@ -166,8 +169,8 @@ def video_frame(video, scenario, frame_idx):
     ref = {"source_neutral": d / "ref" / "source_neutral.png", "target_neutral": d / "ref" / "target_neutral.png",
            "source_expression": d / "source_expression" / fn}
     res = {(r, c): d / c / r / fn for r, _ in ROWS for c, _ in cfg["columns"]}
-    return compose_frame(ref, res, cfg["columns"], f"{cfg['title']}  |  {SCENARIO_TITLE[scenario]}",
-                         f"frame {frame_idx}")
+    # no video title on screen (e.g. "Comparison"); scenario + animation frame number only
+    return compose_frame(ref, res, cfg["columns"], SCENARIO_TITLE[scenario], f"frame {frame_idx}")
 
 
 def previs(frame_idx=4300):
