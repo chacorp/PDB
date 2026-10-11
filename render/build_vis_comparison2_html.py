@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FIG_ROOT = REPO_ROOT / "vis_CBD" / "vis_comparison" / "figure"
 CONT_ROOT = REPO_ROOT / "vis_CBD" / "vis_comparison" / "figure_continue"
 OUT_HTML = REPO_ROOT / "vis_CBD" / "vis_comparison" / "vis_comparison-2.html"
-COLUMNS = ["NC", "NFS", "NFR", "PDB"]
+COLUMNS = ["NC", "NFR", "NFS", "PDB"]
 COL_SRC = {"PDB": (CONT_ROOT, "PDB-cont")}
 
 SCENARIOS = [
@@ -36,14 +36,14 @@ CSS = fig_mod.CSS.replace("background:#111; color:#eee;", "background:#fff; colo
 def main():
     parts = [f"""<!doctype html>
 <html><head><meta charset="utf-8">
-<title>comparison: NC / NFS / NFR / PDB (mf / ict / coma / biwi)</title>
+<title>comparison: NC / NFR / NFS / PDB (mf / ict / coma / biwi)</title>
 <style>{CSS}</style></head><body>
-<h1>comparison baselines (NC / NFS / NFR / PDB): self / cross / cyclic retargeting</h1>
+<h1>comparison baselines (NC / NFR / NFS / PDB): self / cross / cyclic retargeting</h1>
 """]
     parts.append('<section class="figure-card figure-section"><h2 id="figure">Qualitative figure</h2>'
                  '<p class="legend">Two tables per (scenario, frame). Left: Source Neutral Mesh / Source Expression '
                  'Mesh (real captured GT deformation) / Target Neutral Mesh. Right: rows = self / cross / cyclic '
-                 'retargeting, columns = NC / NFS / NFR / PDB. Diff-heatmap colors (YlOrRd) show where each output '
+                 'retargeting, columns = NC / NFR / NFS / PDB. Diff-heatmap colors (YlOrRd) show where each output '
                  'deforms the mesh: every cell is normalized on its own, against that row&#39;s diff_base (source '
                  'template for self/cyclic, target template for cross).</p>')
     parts.append('<nav>' + "".join(f'<a href="#{k}">{k}</a>' for k, _ in SCENARIOS) + '</nav>')
