@@ -142,7 +142,8 @@ def compose_frame(ref_cells, result_cells, columns, header, frame_text):
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
     hf = _font(26)
-    d.text((x0, top - 38), header, fill=FG, font=hf)
+    if header:
+        d.text((x0, top - 38), header, fill=FG, font=hf)
     d.text((x0 + grid_w - d.textlength(frame_text, font=hf), top - 38), frame_text, fill=FG, font=hf)
     lab = _font(20)
     for r, (key, label) in enumerate(REF_ROWS):
@@ -169,8 +170,8 @@ def video_frame(video, scenario, frame_idx):
     ref = {"source_neutral": d / "ref" / "source_neutral.png", "target_neutral": d / "ref" / "target_neutral.png",
            "source_expression": d / "source_expression" / fn}
     res = {(r, c): d / c / r / fn for r, _ in ROWS for c, _ in cfg["columns"]}
-    # no video title on screen (e.g. "Comparison"); scenario + animation frame number only
-    return compose_frame(ref, res, cfg["columns"], SCENARIO_TITLE[scenario], f"frame {frame_idx}")
+    # no video title / scenario text on screen; only the animation frame number
+    return compose_frame(ref, res, cfg["columns"], "", f"frame {frame_idx}")
 
 
 def previs(frame_idx=4300):
