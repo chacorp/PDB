@@ -133,7 +133,12 @@ def get_template(data_name, id_num, exp_num):
             mesh = pickle.load(f)
         ids = [k for k in mesh.keys() if k != "face"]
         return np.asarray(mesh[ids[id_num]])
-    return cmp_mod.get_raw_vertices(data_name, id_num, exp_num, 0)
+    # identity template (ds[i][1]), same neutral the eval/retarget used as batch.template --
+    # not the capture clip's frame 0 (ds[0][0]), which carries an expression (e.g. ict m00)
+    key = (data_name, id_num, exp_num)
+    if key not in cmp_mod._raw_ds_cache:
+        cmp_mod.get_raw_vertices(data_name, id_num, exp_num, 0)
+    return cmp_mod._raw_ds_cache[key][0][1].numpy()
 
 
 def save_plain_mesh(V, F, out_path):
