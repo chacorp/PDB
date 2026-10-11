@@ -38,9 +38,12 @@ def img_tag(path):
     return '<div class="missing">missing</div>'
 
 
-def build_frame(key, frame_idx, root=None, columns=None):
+def build_frame(key, frame_idx, root=None, columns=None, col_src=None):
+    """col_src: optional {column caption: (cell root, model name in the PNG file name)}
+    to take a column's images from another render (default: root / caption)."""
     root = OUT_ROOT if root is None else root
     columns = COLUMNS if columns is None else columns
+    col_src = col_src or {}
     d = root / key / f"frame_{frame_idx:06d}"
     parts = []
     parts.append('<div class="figure-row">')
@@ -58,7 +61,9 @@ def build_frame(key, frame_idx, root=None, columns=None):
     for row_key, row_label in [("self", "Self retargeting"), ("cross", "Cross retargeting"), ("cyclic", "Cyclic retargeting")]:
         parts.append(f'<tr><th class="rowhead">{row_label}</th>')
         for col_name in columns:
-            parts.append(f'<td class="imgcell">{img_tag(d / f"{row_key}_{col_name}.png")}</td>')
+            c_root, c_name = col_src.get(col_name, (root, col_name))
+            c_path = c_root / key / f"frame_{frame_idx:06d}" / f"{row_key}_{c_name}.png"
+            parts.append(f'<td class="imgcell">{img_tag(c_path)}</td>')
         parts.append('</tr>')
     parts.append('</tbody><tfoot><tr><th class="rowhead-col"></th>')
     for col_name in columns:
