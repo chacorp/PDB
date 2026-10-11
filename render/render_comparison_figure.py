@@ -5,10 +5,10 @@ render_ablation_mask_figure.py:
   left  : source neutral / source expression (GT, frame-captioned) / target neutral
   right : rows = self / cross / cyclic retargeting, cols = NC / NFS / NFR / PDB
 
-Each cell is a single PNG. Diff heatmaps (YlOrRd) are normalized per row
+Each cell is a single PNG. Diff heatmaps (YlOrRd) show where each output deforms
+the mesh: every cell is normalized on its own (no shared scale across models),
 against that row's diff_base (source template for self/cyclic, target template
-for cross). NC is normalized on its own scale (it diverges, so sharing a scale
-would wash out the other three); NFS/NFR/PDB share one scale per row.
+for cross).
 
 Cache-only: reads the existing eval_CBD (self) and eval_cyc (cross/cyclic)
 `-masked-laplacian` results; coma / biwi cross/cyclic come from
@@ -178,16 +178,9 @@ def save_diff_mesh(V, F, color, out_path):
 
 
 def render_row(row, vs_by_col, F, diff_base, out_dir):
-    """vs_by_col: col_name -> V or None. NC on its own scale; the rest share one."""
+    """vs_by_col: col_name -> V or None. Each output is colored on its own scale."""
     present = {c: v for c, v in vs_by_col.items() if v is not None}
-    shared_cols = [c for c, _, _, g in COLUMNS if g == "shared" and c in present]
-    nc_cols = [c for c, _, _, g in COLUMNS if g == "NC" and c in present]
-    colors = {}
-    if shared_cols:
-        for c, col in zip(shared_cols, joint_colors([present[c] for c in shared_cols], F, diff_base)):
-            colors[c] = col
-    for c in nc_cols:
-        colors[c] = joint_colors([present[c]], F, diff_base)[0]
+    colors = {c: joint_colors([v], F, diff_base)[0] for c, v in present.items()}
     for c, _, _, _ in COLUMNS:
         out_path = out_dir / f"{row}_{c}.png"
         if c in colors:
