@@ -131,7 +131,7 @@ def _vtext(img, text, xy_center, font, max_len=None):
 
 def compose_frame(ref_cells, result_cells, columns, header, frame_text):
     """ref_cells {ref key: png}, result_cells {(row, column key): png}, columns [(key, caption)]"""
-    top, bottom, label_w, gap = 44, 38, 30, 14
+    top, bottom, label_w, gap = 44, 38, 30, 60  # gap: reference column | method outputs
     n = len(columns)
     # cell height: as tall as the screen allows, unless the columns run out of width
     ch = min((H - top - bottom) // 3, int((W - 2 * label_w - gap - 8) / ((n + 1) * CELL_ASPECT)))
