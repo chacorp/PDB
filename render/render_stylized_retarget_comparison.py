@@ -78,12 +78,10 @@ MODELS = [
     # NFR = version 0 with use_NFR (design nfr, jacob decoder), as eval_CBD_cyc.sh
     ('NFR', './ckpt_stage1/exp_019_ICT_MF-jacob_NFR', 0),
     ('PDB', './ckpts_CBD8/2026-09-16-02-19-03-NGBCv5', 5),
-    # PDB continued 1000 -> 2000 (train_continue.sh, use_data3); stopped at
-    # epoch 1221, model_best.pth = epoch 1220. Shown in continue_figure.html.
-    ('PDB-cont', './ckpts_CBD8/2026-10-07-00-58-27-NGBCv5', 5),
-    # PDBplus (models/PDBplus.py, train_PDBplus.sh, use_data8); stopped at
-    # epoch 463, model_best.pth = epoch 430. Shown in continue_figure.html.
-    ('PDBplus', './ckpts_CBD/2026-10-06-01-00-32-PDBplusv6', 6),
+    # PDB continued to epoch 2000 (use_data3), model_best.pth = epoch 1340. Shown in continue_figure.html.
+    ('PDB-cont', './ckpts_CBD8/2026-10-08-22-31-39-NGBCv5', 5),
+    # PDBplus (models/PDBplus.py, use_data3), 1000 epochs, model_best.pth = epoch 730. Shown in continue_figure.html.
+    ('PDBplus', './ckpts_CBD/2026-10-08-22-31-36-PDBplusv6', 6),
     # PDB after test-time training (ttt_CBD.py, 1 epoch = --max_epoch 0, from PDB
     # model_best.pth) on each target: 'PDB-TTT-<target>', appended below. Shown in ttt_figure.html.
 ]

@@ -54,10 +54,9 @@ REPORTS = {
         html=OUT_ROOT / 'continue_figure.html',
         title='stylized mesh retargeting: PDB vs continued PDB vs PDBplus',
         note='PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5/model_best.pth (epoch 920, use_data2). '
-             'PDB-cont = ckpts_CBD8/2026-10-07-00-58-27-NGBCv5/model_best.pth (epoch 1220, '
-             'continued from epoch 1000 with use_data3 via train_continue.sh; run stopped at epoch 1221). '
-             'PDBplus = ckpts_CBD/2026-10-06-01-00-32-PDBplusv6/model_best.pth (epoch 430, version 6, '
-             'use_data8 via train_PDBplus.sh; run stopped at epoch 463). '),
+             'PDB-cont = ckpts_CBD8/2026-10-08-22-31-39-NGBCv5/model_best.pth (epoch 1340 of 2000, use_data3). '
+             'PDBplus = ckpts_CBD/2026-10-08-22-31-36-PDBplusv6/model_best.pth (epoch 730 of 1000, version 6, '
+             'use_data3). '),
     'ttt': dict(
         models=['PDB', 'PDB-TTT'], model_alias={'PDB-TTT': 'PDB-TTT-{t}'}, fig_root=IMG_ROOT / 'figure_ttt',
         html=OUT_ROOT / 'ttt_figure.html',
