@@ -38,8 +38,10 @@ def img_tag(path):
     return '<div class="missing">missing</div>'
 
 
-def build_frame(key, frame_idx):
-    d = OUT_ROOT / key / f"frame_{frame_idx:06d}"
+def build_frame(key, frame_idx, root=None, columns=None):
+    root = OUT_ROOT if root is None else root
+    columns = COLUMNS if columns is None else columns
+    d = root / key / f"frame_{frame_idx:06d}"
     parts = []
     parts.append('<div class="figure-row">')
 
@@ -55,11 +57,11 @@ def build_frame(key, frame_idx):
     parts.append('<table class="grid"><tbody>')
     for row_key, row_label in [("self", "Self retargeting"), ("cross", "Cross retargeting"), ("cyclic", "Cyclic retargeting")]:
         parts.append(f'<tr><th class="rowhead">{row_label}</th>')
-        for col_name in COLUMNS:
+        for col_name in columns:
             parts.append(f'<td class="imgcell">{img_tag(d / f"{row_key}_{col_name}.png")}</td>')
         parts.append('</tr>')
     parts.append('</tbody><tfoot><tr><th class="rowhead-col"></th>')
-    for col_name in COLUMNS:
+    for col_name in columns:
         parts.append(f'<th>{col_name}</th>')
     parts.append('</tr></tfoot></table>')
     parts.append('</div>')

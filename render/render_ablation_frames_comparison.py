@@ -77,6 +77,17 @@ MODELS = [
     ("PDB", "./ckpts_CBD8/2026-09-16-02-19-03-NGBCv5",       5, {}),
 ]
 
+# model set used by the comparison cache/render scripts, picked with the env var
+# COMPARISON_SET (default 'main' = vis_comparison.html; 'continue' = continue_figure-2.html)
+MODEL_SETS = {
+    "main": MODELS,
+    "continue": [
+        ("PDB", "./ckpts_CBD8/2026-09-16-02-19-03-NGBCv5", 5, {}),
+        ("PDB-cont", "./ckpts_CBD8/2026-10-08-22-31-39-NGBCv5", 5, {}),
+    ],
+}
+COMPARISON_SET = os.environ.get("COMPARISON_SET", "main")
+
 MF_TEST_IDX = 12
 ICT_ID_M00 = 0
 ICT_ID_M02 = 2

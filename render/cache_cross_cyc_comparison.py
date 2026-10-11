@@ -46,15 +46,33 @@ SCENARIOS = [
 ]
 
 
+EVAL_CYC_ROOT = REPO_ROOT / "eval_cyc"
+
+
+def scenarios_for(ckpt_name):
+    """coma/biwi scenarios, plus mf<->ict when the model has no eval_cyc results."""
+    extra = [s for s in cmp_mod.SCENARIOS
+             if not (EVAL_CYC_ROOT / ckpt_name / eval_cyc_name(*s[1:6])).exists()]
+    return SCENARIOS + extra
+
+
+def eval_cyc_name(src_sel, src_mesh, tgt_sel, tgt_mesh, exp_num):
+    if src_sel == "ict-cap":
+        fn = f"ict-cap-ID_{src_mesh:03d}_test-to-{tgt_sel}-ID_{tgt_mesh:03d}_test_{exp_num:02d}"
+    else:
+        fn = f"{src_sel}-src{src_mesh:03d}_test-to-{tgt_sel}_test-ID_{tgt_mesh:03d}"
+    return f"{fn}-masked-laplacian"
+
+
 def done(out_dir, frames):
     return all((out_dir / f"frame_{i:06d}_{r}.npy").exists() for i in frames for r in ("cross", "cyclic"))
 
 
 def main():
-    for model_name, ckpt, version, override in cmp_mod.MODELS:
+    for model_name, ckpt, version, override in cmp_mod.MODEL_SETS[cmp_mod.COMPARISON_SET]:
         print(f"\n========== {model_name} ({ckpt}) ==========")
         ckpt_name = Path(ckpt).name
-        todo = [s for s in SCENARIOS if not done(OUT_ROOT / ckpt_name / s[0], s[-1])]
+        todo = [s for s in scenarios_for(ckpt_name) if not done(OUT_ROOT / ckpt_name / s[0], s[-1])]
         if not todo:
             print("  all cached")
             continue

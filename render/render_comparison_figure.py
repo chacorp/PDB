@@ -62,6 +62,11 @@ COLUMNS = [
     ("NFR", "exp_019_ICT_MF-jacob_NFR", "exp_019_ICT_MF-jacob_NFR-eval", "shared"),
     ("PDB", "2026-09-16-02-19-03-NGBCv5", "2026-09-16-02-19-03-NGBCv5-eval", "shared"),
 ]
+if cmp_mod.COMPARISON_SET != "main":
+    # e.g. COMPARISON_SET=continue -> PDB vs PDB-cont, cells under figure_continue/
+    COLUMNS = [(name, Path(ckpt).name, f"{Path(ckpt).name}-eval", "shared")
+               for name, ckpt, _, _ in cmp_mod.MODEL_SETS[cmp_mod.COMPARISON_SET]]
+    OUT_ROOT = REPO_ROOT / "vis_CBD" / "vis_comparison" / f"figure_{cmp_mod.COMPARISON_SET}"
 
 import cache_cross_cyc_comparison as cc_mod  # noqa: E402
 
@@ -110,9 +115,15 @@ def gather(scenario):
                 self_key = "ict_to_mf_" + key.rsplit("_", 1)[-1]
                 p = REPO_ROOT / "vis_CBD" / "vis_comparison" / "self_ict" / ckpt_dir / self_key / f"frame_{frame_idx:06d}.npy"
                 results[(frame_idx, "self", col_name)] = np.load(p) if p.exists() else None
-            else:
+            elif self_dir.exists():
                 results[(frame_idx, "self", col_name)] = load_npy(self_dir / "verts", frame_idx)
-            if key in CROSS_CYC_KEYS:
+            else:
+                # no eval_CBD result: per-frame cache from cache_ict_self_comparison.py
+                p = REPO_ROOT / "vis_CBD" / "vis_comparison" / "self_mf" / ckpt_dir / f"frame_{frame_idx:06d}.npy"
+                results[(frame_idx, "self", col_name)] = np.load(p) if p.exists() else None
+            if key in CROSS_CYC_KEYS or not cyc_dir.exists():
+                # coma/biwi, or mf<->ict for a model without eval_cyc results:
+                # per-frame cache from cache_cross_cyc_comparison.py
                 for row in ("cross", "cyclic"):
                     p = cc_mod.OUT_ROOT / ckpt_dir / key / f"frame_{frame_idx:06d}_{row}.npy"
                     results[(frame_idx, row, col_name)] = np.load(p) if p.exists() else None
