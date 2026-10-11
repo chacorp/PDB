@@ -1,12 +1,12 @@
 """
 Supplementary video, stage 2: render each output separately as a PNG sequence
-with pyrender (OSMesa, black background, plain shading -- no diff heatmap) from
+with pyrender (OSMesa, plain shading -- no diff heatmap) from
 the per-frame cache of render/supp_video_infer.py:
     vis_CBD/supp_video/cells/{video}/{scenario}/ref/source_neutral.png, target_neutral.png
     vis_CBD/supp_video/cells/{video}/{scenario}/source_expression/frame_XXXXXX.png
     vis_CBD/supp_video/cells/{video}/{scenario}/{model}/{self|cross|cyclic}/frame_XXXXXX.png
-Meshes of one identity share the framing of its neutral (center / scale), so the
-panels are comparable. Existing PNGs are skipped. Needs render/set_render.sh.
+Render settings follow render_trimesh_gpu_pyrender.render_sequence (raw mesh
+coordinates, same camera / lights). Existing PNGs are skipped. Needs render/set_render.sh.
 
     SUPP_VIDEO=comparison [SUPP_FRAMES=4300] [SUPP_CELL=400] python render/supp_video_render.py
 """
@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT))
 import numpy as np  # noqa: E402
 import trimesh  # noqa: E402
 import pyrender  # noqa: E402
+import cv2  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from utils.matplotlib_rnd import fix_triangle_widning  # noqa: E402
@@ -28,40 +29,44 @@ from utils.matplotlib_rnd import fix_triangle_widning  # noqa: E402
 VERTS_ROOT = REPO_ROOT / "vis_CBD" / "supp_video" / "verts"
 CELLS_ROOT = REPO_ROOT / "vis_CBD" / "supp_video" / "cells"
 CELL_PX = {"design_study": 256, "comparison": 400, "loss_ablation": 400}
-FIT = 1.8  # largest neutral extent -> this width of the [-1, 1] ortho view
 
 
 class CellRenderer:
+    """render_trimesh_gpu_pyrender.render_sequence settings: IntrinsicsCamera
+    f = 4754.98/2 at 800 px (scaled with the cell size), camera at z=1, vertices
+    * 0.5 - [0, 0, 3.6], five directional lights (intensity 1.0), ambient 0.2,
+    black background, default material, smooth shading, SKIP_CULL_FACES."""
+
     def __init__(self, size):
         self.size = size
-        self.r = pyrender.OffscreenRenderer(size, size)
-        self.material = pyrender.MetallicRoughnessMaterial(
-            baseColorFactor=[0.6, 0.6, 0.6, 1.0], metallicFactor=0.0, roughnessFactor=0.8)
+        k = size / 800.0
+        cam = pyrender.IntrinsicsCamera(fx=4754.97941935 / 2 * k, fy=4754.97941935 / 2 * k,
+                                        cx=size / 2, cy=size / 2, znear=0.001, zfar=10.0)
+        self.scene = pyrender.Scene(ambient_light=[.2, .2, .2], bg_color=[0, 0, 0])
+        self.scene.add(cam, pose=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 1], [0, 0, 0, 1]])
+        light = pyrender.DirectionalLight(color=np.array([1.0, 1.0, 1.0]), intensity=1.0)
+        angle, camera_pos = np.pi / 4.0, np.array([0.0, 0.0, 1.0 - 1.3])
+        for lrot in [None, np.array([angle, 0, 0]), np.array([-angle, 0, 0]),
+                     np.array([0, -angle, 0]), np.array([0, angle, 0])]:
+            lp = np.eye(4)
+            lp[:3, 3] = cv2.Rodrigues(lrot)[0].dot(camera_pos) if lrot is not None else camera_pos
+            self.scene.add(light, pose=lp)
+        self.r = pyrender.OffscreenRenderer(viewport_width=size, viewport_height=size)
+        self.node = None
 
-    def render(self, V, F, center, scale, out_path):
-        V = (np.asarray(V, float) - center) * scale
-        mesh = pyrender.Mesh.from_trimesh(
-            trimesh.Trimesh(vertices=V, faces=F, process=False), material=self.material, smooth=True)
-        scene = pyrender.Scene(bg_color=[0, 0, 0, 1], ambient_light=[0.05, 0.05, 0.05])
-        scene.add(mesh)
-        cam_pose = np.eye(4)
-        cam_pose[2, 3] = 5.0
-        scene.add(pyrender.OrthographicCamera(xmag=1.0, ymag=1.0, znear=0.1, zfar=20.0), pose=cam_pose)
-        # key light from upper left, weaker fill from lower right and a side light
-        for rx, ry, inten in [(-0.3, 0.3, 2.2), (0.3, -0.5, 0.5), (0, 0.8, 0.3)]:
-            pose = trimesh.transformations.euler_matrix(rx, ry, 0)
-            scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=inten), pose=pose)
-        color, _ = self.r.render(scene)
+    def render(self, V, F, out_path):
+        verts = np.asarray(V, float) * 0.5 - np.array([0.0, 0.0, 3.6])
+        mesh = pyrender.Mesh.from_trimesh(trimesh.Trimesh(vertices=verts, faces=F, process=False),
+                                          material=None, smooth=True)
+        if self.node is not None:
+            self.scene.remove_node(self.node)
+        self.node = self.scene.add(mesh, pose=np.eye(4))
+        color, _ = self.r.render(self.scene, flags=pyrender.RenderFlags.SKIP_CULL_FACES)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(color).save(out_path)
 
     def close(self):
         self.r.delete()
-
-
-def fit_of(neutral):
-    center = (neutral.max(0) + neutral.min(0)) * 0.5
-    return center, FIT / (neutral.max(0) - neutral.min(0)).max()
 
 
 def main():
@@ -75,24 +80,23 @@ def main():
         src_n, tgt_n = np.load(ref / "source_neutral.npy"), np.load(ref / "target_neutral.npy")
         f_src = fix_triangle_widning(src_n, np.load(ref / "faces_src.npy"))
         f_tgt = fix_triangle_widning(tgt_n, np.load(ref / "faces_tgt.npy"))
-        src_fit, tgt_fit = fit_of(src_n), fit_of(tgt_n)
-        for name, V, F, fit in [("source_neutral", src_n, f_src, src_fit), ("target_neutral", tgt_n, f_tgt, tgt_fit)]:
+        for name, V, F in [("source_neutral", src_n, f_src), ("target_neutral", tgt_n, f_tgt)]:
             p = out / "ref" / f"{name}.png"
             if not p.exists():
-                rnd.render(V, F, *fit, p)
-        # (output folder, faces, framing): source expression + every model / row
-        jobs = [(ref / "source_expression", out / "source_expression", f_src, src_fit)]
+                rnd.render(V, F, p)
+        # (output folder, faces): source expression + every model / row
+        jobs = [(ref / "source_expression", out / "source_expression", f_src)]
         for mdir in sorted(p for p in sc_dir.iterdir() if p.is_dir() and p.name != "ref"):
-            for row, F, fit in [("self", f_src, src_fit), ("cross", f_tgt, tgt_fit), ("cyclic", f_src, src_fit)]:
-                jobs.append((mdir / row, out / mdir.name / row, F, fit))
+            for row, F in [("self", f_src), ("cross", f_tgt), ("cyclic", f_src)]:
+                jobs.append((mdir / row, out / mdir.name / row, F))
         n = 0
-        for vdir, cdir, F, fit in jobs:
+        for vdir, cdir, F in jobs:
             for vp in sorted(vdir.glob("frame_*.npy")):
                 if only and int(vp.stem.split("_")[1]) not in only:
                     continue
                 cp = cdir / f"{vp.stem}.png"
                 if not cp.exists():
-                    rnd.render(np.load(vp), F, *fit, cp)
+                    rnd.render(np.load(vp), F, cp)
                     n += 1
         print(f"{video}/{sc_dir.name}: rendered {n} cells", flush=True)
     rnd.close()
