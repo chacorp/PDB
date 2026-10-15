@@ -11,9 +11,10 @@ Output (same file name in every method folder, as userstudy-pdf):
 seg = mf_S1..S3, ict_m00_S1..S2, ict_m02_S1 (userstudy-pdb/PLAN.md 2.1).
 No method name or frame number is drawn on the videos.
 
-PNG cells already rendered for vis_CBD/supp_video (source expression, self, and the
-other dataset as target) are reused; the rest go to vis_CBD/userstudy/cells/.
-Existing PNGs / mp4s are skipped. Clips with missing vertices are skipped and listed.
+Reads only vis_CBD/userstudy (verts/ and cells/; no supp_video). PNG cells go to
+vis_CBD/userstudy/cells/{source}/ref/source_expression, {source}/self/{model}/ and
+{source}/{target}/{model}/{cross|cyclic}/. Existing PNGs / mp4s are skipped.
+Clips with missing vertices are skipped and listed.
 
     python render/userstudy_render.py
     US_RENDER_SEGS=mf_S1 US_RENDER_TARGETS=coma US_RENDER_MAX=30 US_RENDER_OUT=_tmp/userstudy_render_test \
@@ -41,11 +42,7 @@ SEGMENTS = {
     "ict_m00": [(90, 389), (480, 779)],
     "ict_m02": [(0, 182)],
 }
-SOURCES = {  # source -> (supp_video scenario, the other dataset as target)
-    "mf": ("mf_to_ict", "ict"),
-    "ict_m00": ("ict_to_mf_m00", "mf"),
-    "ict_m02": ("ict_to_mf_m02", "mf"),
-}
+SOURCES = {"mf": "ict", "ict_m00": "mf", "ict_m02": "mf"}  # source -> the other dataset as target
 DATASET_TARGETS = ["coma", "biwi"]
 STYLIZED_TARGETS = ["aura", "piers", "face-reference", "head-reference"]
 MODEL_NAMES = ["NC", "NFR", "NFS", "PDB"]
@@ -53,7 +50,6 @@ MODEL_NAMES = ["NC", "NFR", "NFS", "PDB"]
 VERTS_ROOT = REPO_ROOT / "vis_CBD" / "userstudy" / "verts"
 CELLS_ROOT = REPO_ROOT / "vis_CBD" / "userstudy" / "cells"
 VIDEO_ROOT = Path(os.environ.get("US_RENDER_OUT", REPO_ROOT / "vis_CBD" / "userstudy" / "videos"))
-SUPP_CELLS = REPO_ROOT / "vis_CBD" / "supp_video" / "cells" / "comparison"
 FFMPEG = "/usr/bin/ffmpeg"  # system ffmpeg has libx264 (the conda one does not)
 CELL_PX = 400
 FPS = 30
@@ -131,19 +127,19 @@ def main():
             continue
         if max_frames:
             frames = frames[:max_frames]
-        scen, other = SOURCES[s]
+        other = SOURCES[s]
         src_ref = VERTS_ROOT / s / "ref"
         src_n = np.load(src_ref / "source_neutral.npy")
         f_src = fix_triangle_widning(src_n, np.load(src_ref / "faces_src.npy"))
         src_box = clip_box(src_n)
         neutral_png(rd, s, src_n, f_src)
 
-        # source expression and self rows: supp_video cells
-        jobs = [(VIDEO_ROOT / "ref" / f"{seg}-source_expression.mp4",
-                 [SUPP_CELLS / scen / "source_expression" / f"frame_{f:06d}.png" for f in frames])]
+        # (mp4, vertex dir, cell dir, faces, clip box)
+        clips = [(VIDEO_ROOT / "ref" / f"{seg}-source_expression.mp4", src_ref / "source_expression",
+                  CELLS_ROOT / s / "ref" / "source_expression", f_src, src_box)]
         for m in MODEL_NAMES:
-            jobs.append((VIDEO_ROOT / m / f"{seg}-self.mp4",
-                         [SUPP_CELLS / scen / m / "self" / f"frame_{f:06d}.png" for f in frames]))
+            clips.append((VIDEO_ROOT / m / f"{seg}-self.mp4", VERTS_ROOT / s / "self" / m,
+                          CELLS_ROOT / s / "self" / m, f_src, src_box))
 
         for t in [other] + DATASET_TARGETS + STYLIZED_TARGETS:
             if only_tgts and t not in only_tgts:
@@ -157,30 +153,18 @@ def main():
             neutral_png(rd, t, tgt_n, f_tgt)
             for m in MODEL_NAMES:
                 for row, F, box in (("cross", f_tgt, clip_box(tgt_n)), ("cyclic", f_src, src_box)):
-                    mp4 = VIDEO_ROOT / m / f"{seg}-{row}-{t}.mp4"
-                    if mp4.exists():
-                        continue
-                    if t == other:  # supp_video cells
-                        jobs.append((mp4, [SUPP_CELLS / scen / m / row / f"frame_{f:06d}.png" for f in frames]))
-                        continue
-                    vdir = VERTS_ROOT / s / t / m / row
-                    miss = [f for f in frames if not (vdir / f"frame_{f:06d}.npy").exists()]
-                    if miss:
-                        skipped.append(f"{m}/{mp4.name}: {len(miss)} frames missing")
-                        continue
-                    cdir = CELLS_ROOT / s / t / m / row
-                    cdir.mkdir(parents=True, exist_ok=True)
-                    pngs = [rd.cell(vdir / f"frame_{f:06d}.npy", cdir / f"frame_{f:06d}.png", F, box)
-                            for f in frames]
-                    jobs.append((mp4, pngs))
+                    clips.append((VIDEO_ROOT / m / f"{seg}-{row}-{t}.mp4", VERTS_ROOT / s / t / m / row,
+                                  CELLS_ROOT / s / t / m / row, F, box))
 
-        for mp4, pngs in jobs:
+        for mp4, vdir, cdir, F, box in clips:
             if mp4.exists():
                 continue
-            miss = [p for p in pngs if not p.exists()]
+            miss = [f for f in frames if not (vdir / f"frame_{f:06d}.npy").exists()]
             if miss:
-                skipped.append(f"{mp4.parent.name}/{mp4.name}: {len(miss)} cells missing")
+                skipped.append(f"{mp4.parent.name}/{mp4.name}: {len(miss)} frames missing")
                 continue
+            cdir.mkdir(parents=True, exist_ok=True)
+            pngs = [rd.cell(vdir / f"frame_{f:06d}.npy", cdir / f"frame_{f:06d}.png", F, box) for f in frames]
             encode(pngs, mp4)
             made += 1
         print(f"[render] {seg}: rendered cells so far {rd.n}, mp4 written so far {made}", flush=True)
