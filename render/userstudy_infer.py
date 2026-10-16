@@ -19,8 +19,8 @@ Targets and how their outputs are obtained:
   aura / piers / face-reference / head-reference
                                 : render_stylized_retarget_comparison.run_model, as
                                   vis_comparison_stylize_retarget.html
-PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5 for dataset targets and
-      ckpts_CBD8/2026-10-08-22-31-39-NGBCv5 for stylized targets.
+PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5 for every target (stylized: as in
+      vis_comparison_stylize_retarget.html).
 Only frames missing from the cache are computed.
 
 NFS / NFR spend most of a call on the neutral meshes' DiffusionNet operators
@@ -91,11 +91,11 @@ DATASET_MODELS = [
     ("NFS", "./ckpt_stage1/2024-08-18-23-32-29-all", 0, {}),
     ("PDB", "./ckpts_CBD8/2026-09-16-02-19-03-NGBCv5", 5, {}),
 ]
-STYLIZED_MODELS = [
+STYLIZED_MODELS = [  # same PDB as vis_comparison_stylize_retarget.html
     ("NC", "./ckpts_CBD/2025-10-20-00-15-40-CBD", 1, {}),
     ("NFR", "./ckpt_stage1/exp_019_ICT_MF-jacob_NFR", 0, {"use_NFR": True}),
     ("NFS", "./ckpt_stage1/2024-08-18-23-32-29-all", 0, {}),
-    ("PDB", "./ckpts_CBD8/2026-10-08-22-31-39-NGBCv5", 5, {}),
+    ("PDB", "./ckpts_CBD8/2026-09-16-02-19-03-NGBCv5", 5, {}),
 ]
 
 
