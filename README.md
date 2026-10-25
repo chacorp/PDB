@@ -12,7 +12,7 @@ This is the official implementation
 - [x] Inference
 - [x] Train code
 - [ ] Evaluation code
-- [ ] Pretrained model
+- [x] Pretrained model
 - [ ] Dataloader for custom data
     - [x] Preparation code `utils/data_prepare.py`
     - [ ] Custom data loader
@@ -61,6 +61,7 @@ The directory structure should look like this:
 ```text
 NeuralFacialAnimation/
   ├─ assets/
+  ├─ ckpts/PDB-model/     # pretrained model (Releases)
   ├─ ckpts_CBD/           # trained model checkpoints
   ├─ notebook/
   ├─ render/
@@ -86,7 +87,13 @@ NeuralFacialAnimation/
 ```
 
 ### Pretrained model
-TBD ...
+Download the pretrained checkpoint from [Releases](https://github.com/chacorp/PDB/releases) and extract it into `ckpts/`:
+```bash
+mkdir -p ckpts
+wget https://github.com/chacorp/PDB/releases/download/v1.0/PDB-model.zip -P ckpts
+unzip ckpts/PDB-model.zip -d ckpts
+```
+This yields `ckpts/PDB-model/` containing `model_best.pth`, `opts.json` and `train_opts.yml`.
 
 
 ## 2. Data Preparation
@@ -135,7 +142,7 @@ Use the provided Jupyter notebooks for visualization and inference:
 - **NFS baseline**: `notebook/NFS_inference.ipynb`
 - **NFR baseline**: `notebook/NFR_inference.ipynb`
 
-> Note: Requires a pretrained model — will be uploaded soon.
+> Note: Requires a pretrained model — see [Pretrained model](#pretrained-model).
 
 
 ## 4. Training
