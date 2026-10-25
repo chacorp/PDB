@@ -8,7 +8,7 @@ render/method_video_assets.py has written vis_CBD/method_video/assets/:
         -o pdb_method.mp4 render/method_video.py PDBMethod
 
 (LD_PRELOAD: the conda python's libffi clashes with the system GLib used by Pango.)
-Scenes: network (overview.png layout) / points v / weights w of 6 points v / blend
+Scenes: network (overview.png layout) / points v / weights w of 3 points v (mf, ict, coma) / blend
 (no title / end cards; it follows the render_weight_vis.py overview in the supplementary
 video). w and the points v use the render_weight_vis.py nipy_spectral colors. Target:
 mf_ROM ID_012 in every scene.
@@ -158,25 +158,30 @@ class PDBMethod(Scene):
         dots4.clear_updaters()
         self.play(FadeOut(Group(src4, sub4, head4)))
 
-        # 5. weights w of 6 points v (brow, cheek, jaw / forehead, nose, eye) ------------------
+        # 5. weights w of 3 points v on three neutrals (columns: points, rows: meshes) ---------
         head5 = label("Weights w", 40).to_edge(UP)
         sub5 = label("which part of the target each point moves", 26, GREY).next_to(head5, DOWN, buff=0.12)
         c5, h5 = np.array([-4.5, -0.7, 0]), 2.0            # smaller point cloud on the left
         pos5 = cloud_pos(P["seq"][0] * zoom, c5, h5)
-        self.play(FadeIn(head5), FadeIn(sub5),
+        xs5, ys5, fh5 = (1.0, 3.3, 5.6), (1.35, -0.6, -2.55), 1.85
+        mesh_names = {"mf": "Multiface", "ict": "ICT", "coma": "COMA"}
+        rows5 = [label(mesh_names[m], 22).move_to([xs5[0] - 1.45, y, 0]) for m, y in zip(P["meshes"], ys5)]
+        self.play(FadeIn(head5), FadeIn(sub5), *[FadeIn(r) for r in rows5],
                   *[d.animate.move_to(p).scale(0.7).set_opacity(0.3 if ok else 0.0)
                     for d, p, ok in zip(dots4, pos5, inside)])
-        grid = [[x, y] for y in (0.55, -2.35) for x in (0.4, 3.1, 5.8)]
-        shown = []
+        shown = rows5
+        name_dirs = {413: LEFT + DOWN}  # v413 / v509 are close in the cloud: labels on opposite sides
         for k, (row, col, pid) in enumerate(zip(pick_rows, pick_colors, picks)):
             d = dots4[row]
             big = Dot(d.get_center(), radius=0.07, color=col)
-            name = label(f"v{int(pid)}".translate(SUB), 22, col).next_to(big, UR, buff=0.03)
-            face = img(ASSETS / "face" / f"weight_{k}.png", 2.4).move_to([grid[k][0], grid[k][1], 0])
-            fname = label(f"v{int(pid)}".translate(SUB), 24, col).next_to(face, DOWN, buff=0.0)
+            name = label(f"v{int(pid)}".translate(SUB), 22, col).next_to(big, name_dirs.get(int(pid), UR), buff=0.03)
+            faces = [img(ASSETS / "face" / f"weight_{m}_{k}.png", fh5).move_to([xs5[k], y, 0])
+                     for m, y in zip(P["meshes"], ys5)]
+            cname = label(f"v{int(pid)}".translate(SUB), 24, col).next_to(faces[0], UP, buff=0.0)
             self.play(FadeIn(big, scale=2), FadeIn(name), run_time=0.5)
-            self.play(Indicate(big, color=col, scale_factor=1.6), FadeIn(face), FadeIn(fname), run_time=0.8)
-            shown += [big, name, face, fname]
+            self.play(Indicate(big, color=col, scale_factor=1.6), *[FadeIn(f) for f in faces], FadeIn(cname),
+                      run_time=0.8)
+            shown += [big, name, *faces, cname]
         self.wait(2)
         self.play(FadeOut(Group(dots4, head5, sub5, *shown)))
 
