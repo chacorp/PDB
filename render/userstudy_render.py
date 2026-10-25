@@ -46,6 +46,9 @@ SOURCES = {"mf": "ict", "ict_m00": "mf", "ict_m02": "mf"}  # source -> the other
 DATASET_TARGETS = ["coma", "biwi"]
 STYLIZED_TARGETS = ["aura", "piers", "face-reference", "head-reference"]
 MODEL_NAMES = ["NC", "NFR", "NFS", "PDB"]
+# stylized targets also have PDB-TTT (userstudy_infer.py step ttt, supplementary video only:
+# mf_S1, other segments are skipped as missing)
+STYLIZED_MODEL_NAMES = MODEL_NAMES + ["PDB-TTT"]
 
 VERTS_ROOT = REPO_ROOT / "vis_CBD" / "userstudy" / "verts"
 CELLS_ROOT = REPO_ROOT / "vis_CBD" / "userstudy" / "cells"
@@ -151,7 +154,7 @@ def main():
             tgt_n = np.load(tgt_ref / "target_neutral.npy")
             f_tgt = fix_triangle_widning(tgt_n, np.load(tgt_ref / "faces_tgt.npy"))
             neutral_png(rd, t, tgt_n, f_tgt)
-            for m in MODEL_NAMES:
+            for m in (STYLIZED_MODEL_NAMES if t in STYLIZED_TARGETS else MODEL_NAMES):
                 for row, F, box in (("cross", f_tgt, clip_box(tgt_n)), ("cyclic", f_src, src_box)):
                     clips.append((VIDEO_ROOT / m / f"{seg}-{row}-{t}.mp4", VERTS_ROOT / s / t / m / row,
                                   CELLS_ROOT / s / t / m / row, F, box))

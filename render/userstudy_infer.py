@@ -21,6 +21,9 @@ Targets and how their outputs are obtained:
                                   vis_comparison_stylize_retarget.html
 PDB = ckpts_CBD8/2026-09-16-02-19-03-NGBCv5 for every target (stylized: as in
       vis_comparison_stylize_retarget.html).
+PDB-TTT (step 'ttt', stylized targets only, for the supplementary video): that PDB after
+      test-time training on the target (render_stylized_retarget_comparison.TTT_RUNS,
+      model_000.pth), saved under {source}/{target}/PDB-TTT/.
 Only frames missing from the cache are computed.
 
 NFS / NFR spend most of a call on the neutral meshes' DiffusionNet operators
@@ -31,7 +34,7 @@ The 'precompute' step fills that cache by running every (source, target) once
 through the real NFS / NFR inference paths (1 frame), before the parallel runs.
 
 Options are env vars (eval_CBD_cyc.Options() parses sys.argv):
-    US_STEPS=precompute,link,dataset,stylized  steps to run (default: link,dataset,stylized)
+    US_STEPS=precompute,link,dataset,stylized,ttt  steps to run (default: link,dataset,stylized)
     US_MODELS=NFR,NFS               models (default: all)
     US_SOURCES=mf,ict_m00           sources (default: all)
     US_TARGETS=coma,aura            inferred targets (default: all)
@@ -325,25 +328,55 @@ def step_stylized(root, models, sources, targets, max_frames=0):
             print(f"[stylized] {name}: cached", flush=True)
             continue
         opts = sty_mod.build_opts(ckpt, version, use_nfr=name in sty_mod.USE_NFR)
-        trainer = Trainer(opts)
-        pipe = sty_mod.Pipeline(opts)  # vis_CBD_retarget_fig.Pipeline, as the original script
-        pipe.model = trainer.model
-        for s, t, out, todo in jobs:
-            sv, sf = cache[f"src/{s}/v"], cache[f"src/{s}/f"]
-            tv, tf = all_tgts[t]
-            expr = root / s / "ref" / "source_expression"
-            for i in range(0, len(todo), CHUNK):
-                fs = todo[i:i + CHUNK]
-                t0 = time.time()
-                src_frames = [np.load(expr / f"frame_{f:06d}.npy") for f in fs]
-                v_cross = sty_mod.run_model(pipe, version, sv, sf, src_frames, tv, tf)
-                v_cyc = sty_mod.run_model(pipe, version, tv, tf, v_cross, sv, sf)
-                save(out, fs, v_cross, v_cyc)
-                dt = time.time() - t0
-                print(f"[stylized] {name} {s}->{t}: {len(fs)} frames {dt:.1f}s ({dt / len(fs):.2f} s/frame)",
-                      flush=True)
-        del trainer, pipe
-        torch.cuda.empty_cache()
+        run_stylized_jobs(name, opts, version, jobs, root, all_tgts, cache)
+
+
+def run_stylized_jobs(name, opts, version, jobs, root, all_tgts, cache):
+    """jobs [(source, target, out dir, frames)]: cross / cyclic with one model"""
+    trainer = Trainer(opts)
+    pipe = sty_mod.Pipeline(opts)  # vis_CBD_retarget_fig.Pipeline, as the original script
+    pipe.model = trainer.model
+    for s, t, out, todo in jobs:
+        sv, sf = cache[f"src/{s}/v"], cache[f"src/{s}/f"]
+        tv, tf = all_tgts[t]
+        expr = root / s / "ref" / "source_expression"
+        for i in range(0, len(todo), CHUNK):
+            fs = todo[i:i + CHUNK]
+            t0 = time.time()
+            src_frames = [np.load(expr / f"frame_{f:06d}.npy") for f in fs]
+            v_cross = sty_mod.run_model(pipe, version, sv, sf, src_frames, tv, tf)
+            v_cyc = sty_mod.run_model(pipe, version, tv, tf, v_cross, sv, sf)
+            save(out, fs, v_cross, v_cyc)
+            dt = time.time() - t0
+            print(f"[stylized] {name} {s}->{t}: {len(fs)} frames {dt:.1f}s ({dt / len(fs):.2f} s/frame)",
+                  flush=True)
+    del trainer, pipe
+    torch.cuda.empty_cache()
+
+
+def step_ttt(root, sources, targets, max_frames=0):
+    """stylized targets with PDB after test-time training on that target (one checkpoint
+    per target, model_000.pth, as PDB-TTT-<target> of ttt_figure.html), saved as 'PDB-TTT'"""
+    targets = [t for t in targets if t in STYLIZED_TARGETS]
+    if not targets:
+        return
+    all_tgts = sty_mod.load_targets()
+    cache = np.load(sty_mod.CACHE_PATH)
+    for t in targets:
+        tv, tf = all_tgts[t]
+        jobs = []
+        for s in sources:
+            save_ref(root / s / t / "ref", tv, tf)
+            out = root / s / t / "PDB-TTT"
+            todo = missing(out, source_frames(s, max_frames))
+            if todo:
+                jobs.append((s, t, out, todo))
+        if not jobs:
+            print(f"[ttt] PDB-TTT {t}: cached", flush=True)
+            continue
+        name = f"PDB-TTT-{t}"
+        opts = sty_mod.build_opts(f"./{sty_mod.TTT_RUNS[t]}", 5, sty_mod.MODEL_EPOCH[name])
+        run_stylized_jobs(name, opts, 5, jobs, root, all_tgts, cache)
 
 
 def main():
@@ -368,6 +401,8 @@ def main():
         step_dataset(OUT_ROOT, models, sources, targets, max_frames)
     if "stylized" in steps:
         step_stylized(OUT_ROOT, models, sources, targets, max_frames)
+    if "ttt" in steps:
+        step_ttt(OUT_ROOT, sources, targets, max_frames)
     print("ALL DONE:", OUT_ROOT, flush=True)
 
 
