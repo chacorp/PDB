@@ -5,7 +5,8 @@ centered, 0.5 s fade in / out) + the rendered parts, joined with the concat filt
   paper title card -> weight_vis_combined.mp4 (fades out to black) -> "Method" card ->
   pdb_method_final.mp4 -> "Design Study" card -> design_study.mp4 -> "Loss Ablation" card ->
   loss_ablation.mp4 -> "Comparison" card -> comparison.mp4 -> "Retargeting on Stylized Meshes" card ->
-  stylized.mp4 -> "Test-Time Training" card -> ttt.mp4   (experiment videos fade in / out)
+  stylized.mp4 -> "Test-Time Training" card -> ttt.mp4 -> "Thank you" card
+  (experiment videos fade in / out)
 
     python render/supp_final_video.py
 """
@@ -37,6 +38,7 @@ PARTS = [
     ("video", SUPP / "stylized.mp4", True, True),
     ("card", "Test-Time Training"),
     ("video", SUPP / "ttt.mp4", True, True),
+    ("card", "Thank you"),
 ]
 
 
