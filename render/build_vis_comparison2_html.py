@@ -45,7 +45,10 @@ def main():
                  'Mesh (real captured GT deformation) / Target Neutral Mesh. Right: rows = self / cross / cyclic '
                  'retargeting, columns = NC / NFR / NFS / PDB. Diff-heatmap colors (YlOrRd) show where each output '
                  'deforms the mesh: every cell is normalized on its own, against that row&#39;s diff_base (source '
-                 'template for self/cyclic, target template for cross).</p>')
+                 'template for self/cyclic, target template for cross). An NC output that leaves the camera view is '
+                 'centered and rescaled on its own (fit to its 1-99 percentile range, so a few spike vertices are '
+                 'ignored and clipped); the ratio under the cell (e.g. &times;0.12) is its drawn size '
+                 'relative to the other cells (heatmap colors unchanged).</p>')
     parts.append('<nav>' + "".join(f'<a href="#{k}">{k}</a>' for k, _ in SCENARIOS) + '</nav>')
     for key, frames in SCENARIOS:
         parts.append(f'<h2 id="{key}">{fig_mod.TITLES[key]}</h2>')

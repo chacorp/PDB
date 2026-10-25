@@ -34,7 +34,12 @@ OUT_HTML = REPO_ROOT / "vis_CBD" / "vis_comparison" / "figure.html"
 def img_tag(path):
     if path.exists():
         b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f'<div class="clip"><img src="data:image/png;base64,{b64}" loading="lazy"></div>'
+        tag = f'<div class="clip"><img src="data:image/png;base64,{b64}" loading="lazy"></div>'
+        # sidecar from render_comparison_figure.py: output refit to stay in view
+        txt = path.with_suffix(".rescale.txt")
+        if txt.exists():
+            tag += f'<div class="rescale">&times;{txt.read_text().strip()}</div>'
+        return tag
     return '<div class="missing">missing</div>'
 
 
@@ -103,6 +108,7 @@ table.grid tbody th.rowhead { font-size:12px; color:#333; font-weight:normal; wh
 table.grid td .clip { width:100px; overflow:hidden; margin:0 auto; }
 table.grid td .clip img { width:120px; height:auto; display:block; margin-left:-10px; background:#fff; }
 table.grid td.missing { color:#bbb; font-size:11px; }
+table.grid td .rescale { font-size:11px; color:#c00; }
 table.ref-grid { border-right:1px solid #ddd; padding-right:14px; }
 """
 

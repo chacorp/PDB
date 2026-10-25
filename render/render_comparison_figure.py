@@ -52,6 +52,12 @@ M_SCALE = 0.6
 M_TRNS = np.array([0, 0, 0])
 SIZE = 8
 LIGHT_DIR = np.array([0, 0, 1])
+# columns whose outputs are refit when they leave matplotrender's [-1, 1] view
+# (NC can blow up far past the template); the shrink ratio goes into a
+# `<cell>.rescale.txt` sidecar that the HTML shows under the cell
+RESCALE_COLS = {"NC"}
+FIT = 1.8  # a refit output's largest robust extent maps to this width
+Q_LO, Q_HI = 1, 99  # robust extent: per-axis percentile range, ignores a few spike vertices
 
 OUT_ROOT = REPO_ROOT / "vis_CBD" / "vis_comparison" / "figure"
 
@@ -179,25 +185,49 @@ def joint_colors(Vs, F, diff_base):
     return colors
 
 
-def save_diff_mesh(V, F, color, out_path):
+def save_diff_mesh(V, F, color, out_path, mesh_scale=M_SCALE, mesh_trans=M_TRNS):
     plot_mesh_gouraud(
-        [V], [F], Cs=[color], mesh_scale=M_SCALE, mesh_trans=M_TRNS,
+        [V], [F], Cs=[color], mesh_scale=mesh_scale, mesh_trans=mesh_trans,
         is_color=True, backface_culling=True, rot_list=[[0, 0, 0]],
         size=SIZE, mode="shade", bg_black=False,
         logdir=str(out_path.parent), name=out_path.stem, save=True, show=False,
     )
 
 
+def refit_if_out_of_view(V):
+    """Drawn vertices (V * M_SCALE + M_TRNS); if their bulk (per-axis Q_LO-Q_HI
+    percentile range) leaves the [-1, 1] view in x / y, center them on their median
+    and fit that range to FIT, so a few spike vertices get clipped instead of
+    shrinking the face. Returns (drawn V, shrink ratio or None when V stays in view)."""
+    Vd = np.asarray(V) * M_SCALE + M_TRNS
+    lo, hi = np.percentile(Vd, [Q_LO, Q_HI], axis=0)
+    if max(np.abs(lo[:2]).max(), np.abs(hi[:2]).max()) <= 1:
+        return Vd, None
+    ratio = FIT / (hi - lo).max()
+    return (Vd - np.median(Vd, axis=0)) * ratio, ratio
+
+
 def render_row(row, vs_by_col, F, diff_base, out_dir):
-    """vs_by_col: col_name -> V or None. Each output is colored on its own scale."""
+    """vs_by_col: col_name -> V or None. Each output is colored on its own scale
+    (on the original vertices, so a refit doesn't change the heatmap)."""
     present = {c: v for c, v in vs_by_col.items() if v is not None}
     colors = {c: joint_colors([v], F, diff_base)[0] for c, v in present.items()}
     for c, _, _, _ in COLUMNS:
         out_path = out_dir / f"{row}_{c}.png"
+        txt_path = out_path.with_suffix(".rescale.txt")
+        ratio = None
         if c in colors:
-            save_diff_mesh(present[c], F, colors[c], out_path)
+            if c in RESCALE_COLS:
+                Vd, ratio = refit_if_out_of_view(present[c])
+            if ratio is None:
+                save_diff_mesh(present[c], F, colors[c], out_path)
+            else:
+                save_diff_mesh(Vd, F, colors[c], out_path, mesh_scale=1.0, mesh_trans=np.zeros(3))
+                txt_path.write_text(f"{ratio:.2g}")
         else:
             out_path.unlink(missing_ok=True)
+        if ratio is None:
+            txt_path.unlink(missing_ok=True)
 
 
 def run_scenario(scenario):
