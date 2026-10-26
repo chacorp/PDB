@@ -99,6 +99,8 @@ def Options():
     
     parser.add_argument("--no_pou",dest='no_pou', action='store_true')
     parser.set_defaults(no_pou=False)
+    parser.add_argument("--no_col_norm",dest='no_col_norm', action='store_true')
+    parser.set_defaults(no_col_norm=False)
     
     parser.add_argument("--pou_loss",dest='pou_loss', action='store_true')
     parser.set_defaults(pou_loss=False)
