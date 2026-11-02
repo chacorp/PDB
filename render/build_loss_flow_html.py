@@ -2,10 +2,11 @@
 background, serif (Times-like) font, two inline-SVG panels:
   (a) one-step loss flow with real inputs / W / cage / outputs of one sample
       (assets from save_loss_flow_assets.py)
-  (b) the shared LinearEncoder architecture of phi / g / psi + per-module table
+  (b) the LinearEncoder architecture + per-module table
+phi = exp_z_model -> key_d_model is drawn as one model; psi = key_weight_model.
 
-Active losses are the ckpts_CBD9 setting only (in_type 1, out_type 1, relu,
-align_latent, no optional losses): recon-def, recon-neu, exp-z.
+Losses drawn: recon-def, recon-neu (ckpts_CBD9 setting: in_type 1, out_type 1, relu).
+The latent loss (exp-z) is intentionally left out of the diagram.
 
 Run from repo root (after render/save_loss_flow_assets.py):
     python render/build_loss_flow_html.py
@@ -104,15 +105,6 @@ def tensor(x, cy, w, label, shape, stroke=C_TEN, h=44):
     ])
 
 
-def latent_strip(x, cy, colors, cell=11, h=22):
-    out = []
-    for i, c in enumerate(colors):
-        out.append(f'<rect x="{x + i * cell}" y="{cy - h / 2}" width="{cell}" height="{h}" '
-                   f'fill="{c}" stroke="#ffffff" stroke-width="1"/>')
-    out.append(f'<rect x="{x}" y="{cy - h / 2}" width="{cell * len(colors)}" height="{h}" '
-               f'fill="none" stroke="{C_TEN}" stroke-width="1.2"/>')
-    return "".join(out)
-
 
 def blend(cx, cy):
     return (f'<circle cx="{cx}" cy="{cy}" r="15" fill="#fff" stroke="{C_TXT}" stroke-width="1.4"/>'
@@ -128,12 +120,13 @@ DEFS = f"""<defs>
 
 
 def svg_wrap(w, h, parts):
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" font-family="{FONT}">'
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" font-family="{FONT}" '
+            f'style="max-width:{w}px">'
             f'{DEFS}<rect width="100%" height="100%" fill="#ffffff"/>{"".join(parts)}</svg>')
 
 
 # ================================================================ (a) loss flow
-WA, HA = 1560, 520
+WA, HA = 1320, 520
 A, B, C = 100, 295, 455  # rows: expression / neutral / weight
 
 p = [text(4, 18, "(a)", 20, anchor="start", weight="bold")]
@@ -159,40 +152,22 @@ p += [
     path([(80, B + 116), (80, C), (XF, C)]),
 ]
 
-# phi (shared by both branches) -> z, z_s
-XP, WP = 410, 92
+# phi = exp_z_model -> key_d_model (one model, shared by both branches) -> c_d, c_s
+XP, WP = 410, 150
+XC, WC = 590, 112
 p += [
-    net(XP, A - 32, WP, B - A + 64, "&#966;", "exp_z_model"),
+    net(XP, A - 32, WP, B - A + 64, "&#966;", "exp_z_model + key_d_model"),
     path([(XF + WF, A), (XP, A)]),
     path([(XF + WF, B), (XP, B)]),
-]
-XZ, CELL, NCELL = 545, 11, 12
-z_cols = ["#2b5d9b", "#7fa6d1", "#c5d7ec", "#4f7fb8", "#e3ecf6", "#2b5d9b",
-          "#9dbbe0", "#3d6ea9", "#d4e2f1", "#6a95c8", "#b1cae6", "#2b5d9b"]
-zs_cols = ["#e6e6e6"] * NCELL
-WZ = CELL * NCELL
-p += [
-    latent_strip(XZ, A, z_cols, CELL), text(XZ + WZ / 2, A + 30, f"{var('z')}  (1 &#215; {L})", 15),
-    latent_strip(XZ, B, zs_cols, CELL), text(XZ + WZ / 2, B + 30, f"{var('z', 's')}  (1 &#215; {L})", 15),
-    path([(XP + WP, A), (XZ, A)]),
-    path([(XP + WP, B), (XZ, B)]),
-]
-
-# g (key_d_model, shared) -> c_d, c_s (+ cage scatter)
-XG, WG = 735, 92
-XC, WC = 870, 112
-p += [
-    net(XG, A - 32, WG, B - A + 64, "g", "key_d_model"),
-    path([(XZ + WZ, A), (XG, A)]),
-    path([(XZ + WZ, B), (XG, B)]),
     tensor(XC, A, WC, var('c', 'd'), f"{M} &#215; 3", C_CD),
     tensor(XC, B, WC, var('c', 's'), f"{M} &#215; 3", C_CS),
-    path([(XG + WG, A), (XC, A)]),
-    path([(XG + WG, B), (XC, B)]),
+    path([(XP + WP, A), (XC, A)]),
+    path([(XP + WP, B), (XC, B)]),
     img("cage", XC - 8, A + 30, WC + 16, B - A - 60),
 ]
 
 # psi -> W
+XZ = 600
 p += [
     net(XP, C - 30, WP, 60, "&#968;", "key_weight_model"),
     path([(XF + WF, C), (XP, C)]),
@@ -205,8 +180,8 @@ p += [
 ]
 
 # blend + outputs
-XB = 1030
-XO, WO = 1060, 120
+XB = 790
+XO, WO = 820, 120
 p += [
     blend(XB, A), blend(XB, B),
     path([(XC + WC, A), (XB - 15, A)]),
@@ -224,7 +199,7 @@ p += [
 ]
 
 # losses
-XL, WL, HL = 1210, 320, 70
+XL, WL, HL = 970, 320, 70
 m_ = var('m')
 p += [
     box(XL, A - HL / 2, WL, HL, C_LOSS, C_LOSS_BG),
@@ -249,7 +224,7 @@ BUS = XL + WL + 14
 p += [
     box(XL, TY, WL, 80, C_LOSS, "#ffffff"),
     text(XL + WL / 2, TY + 32, f"{var('L')} = {var('L', 'def')} + {var('L', 'neu')}", 18),
-    text(XL + WL / 2, TY + 60, f"&#8711; &#8594; &#966;, g, &#968;", 15, C_LOSS),
+    text(XL + WL / 2, TY + 60, f"&#8711; &#8594; &#966;, &#968;", 15, C_LOSS),
     path([(XL + WL, A), (BUS, A)], C_LOSS, head=False),
     path([(XL + WL, B), (BUS, B)], C_LOSS, head=False),
     path([(BUS, A), (BUS, C)], C_LOSS, head=False),
@@ -262,7 +237,7 @@ svg_a = svg_wrap(WA, HA, p)
 WB, HB = 1560, 300
 Y1, Y2 = 110, 240  # main path / style path
 q = [text(4, 22, "(b)", 20, anchor="start", weight="bold"),
-     text(50, 22, "LinearEncoder  (shared by &#966;, g, &#968;)", 17, anchor="start")]
+     text(50, 22, "LinearEncoder  (building block of &#966; and &#968;)", 17, anchor="start")]
 
 q += [
     tensor(20, Y1, 100, var('x'), f"{var('N')} &#215; {var('C')}"),
@@ -290,11 +265,10 @@ q += [
     path([(MX + MW, Y1), (OX, Y1)]),
 ]
 # heads
-HX, HW = 890, 320
+HX, HW = 890, 340
 heads = [
-    (Y1 - 75, f"&#966; :  mean<sub>N</sub> &#8594; {var('z')}  (1 &#215; {L})"),
-    (Y1, f"g :  reshape &#8594; {var('c')}  ({M} &#215; 3)"),
-    (Y1 + 75, f"&#968; :  col-norm &#8594; ReLU &#8594; row-norm &#8594; {var('W')}"),
+    (Y1 - 45, f"&#966; :  mean<sub>N</sub> &#8594; LinearEncoder &#8594; {var('c')}  ({M} &#215; 3)"),
+    (Y1 + 45, f"&#968; :  col-norm &#8594; ReLU &#8594; row-norm &#8594; {var('W')}"),
 ]
 for hy, s in heads:
     q += [box(HX, hy - 22, HW, 44, C_TEN), text(HX + 12, hy + 6, s, 15, anchor="start"),
@@ -320,12 +294,11 @@ q += [
 ]
 
 # module table
-TX, TY0 = 1250, 55
+TX, TY0 = 1270, 70
 cols = [0, 70, 140, 225]
 rows = [
     ("", f"in {var('C')}", "out", "params"),
-    ("&#966;", "12", f"{L}", "486 K"),
-    ("g", f"{L}", f"{M}&#183;3", "524 K"),
+    ("&#966;", "12", f"{M}&#183;3", "1,010 K"),
     ("&#968;", "6", f"{M}", "476 K"),
 ]
 for r, row in enumerate(rows):
@@ -334,8 +307,8 @@ for r, row in enumerate(rows):
         q.append(text(TX + cols[c], y, s, 16 if c == 0 else 15,
                       C_NET if c == 0 else (C_SUB if r == 0 else C_TXT), anchor="start", italic=(c == 0)))
 q += [
-    f'<line x1="{TX - 6}" y1="{TY0 + 10}" x2="{TX + 290}" y2="{TY0 + 10}" stroke="{C_TEN}" stroke-width="1"/>',
-    text(TX, TY0 + 34 * 4 + 6, f"{var('N')} = {N} vertices,  {M} cage points", 13, C_SUB, anchor="start"),
+    f'<line x1="{TX - 6}" y1="{TY0 + 10}" x2="{TX + 280}" y2="{TY0 + 10}" stroke="{C_TEN}" stroke-width="1"/>',
+    text(TX, TY0 + 34 * 3 + 6, f"{var('N')} = {N} vertices,  {M} cage points", 13, C_SUB, anchor="start"),
 ]
 svg_b = svg_wrap(WB, HB, q)
 
@@ -347,7 +320,7 @@ html = f"""<!doctype html>
 <title>NGBC loss flow</title>
 <style>
   html, body {{ background:#ffffff; margin:0; font-family:{FONT}; }}
-  .wrap {{ max-width:{WA}px; margin:0 auto; padding:6px; }}
+  .wrap {{ max-width:{max(WA, WB)}px; margin:0 auto; padding:6px; }}
   svg {{ width:100%; height:auto; display:block; margin-bottom:4px; }}
 </style>
 </head><body>
