@@ -126,7 +126,7 @@ def svg_wrap(w, h, parts):
 
 
 # ================================================================ (a) loss flow
-WA, HA = 1040, 522
+WA, HA = 1150, 522
 A, B, C = 95, 290, 432  # rows: expression / neutral / weight
 
 p = [text(4, 18, "(a)", 20, anchor="start", weight="bold")]
@@ -134,24 +134,37 @@ p = [text(4, 18, "(a)", 20, anchor="start", weight="bold")]
 # inputs
 p += [
     img("expression", 10, A - 80, 140, 150),
-    text(80, A + 90, f"expression {var('v', 'def')}", 16),
+    text(80, A + 88, "expression", 16),
+    text(80, A + 108, f"({var('v', 'def')}, {var('n', 'def')})", 16),
     img("neutral", 10, B - 80, 140, 150),
-    text(80, B + 90, f"neutral {var('v', 'src')}", 16),
+    text(80, B + 88, "neutral", 16),
+    text(80, B + 108, f"({var('v', 'src')}, {var('n', 'src')})", 16),
 ]
 
 # phi (exp_z_model + key_d_model) -> c_d, c_s ; psi -> W
-XP, WP = 225, 100
+XP, WP = 335, 100
+XJ = 190  # junction where the expression / neutral inputs are concatenated
+dot = lambda x, y: f'<circle cx="{x}" cy="{y}" r="3.5" fill="{C_TEN}"/>'  # noqa: E731
 p += [
     net(XP, A - 30, WP, B - A + 60, "&#966;", ""),
-    path([(150, A), (XP, A)]),
-    path([(150, B - 20), (XP, A + 22)]),
-    path([(150, B), (XP, B)]),
+    # phi input 1: [dv, n_def, v_src, n_src]  (expression + neutral)
+    path([(150, A), (XJ, A)], head=False),
+    path([(150, B - 20), (XJ, A)], head=False),
+    dot(XJ, A), path([(XJ, A), (XP, A)]),
+    text((XJ + XP) / 2, A - 9, f"[&#916;{var('v')}, {var('n', 'def')}, {var('v', 'src')}, {var('n', 'src')}]", 13),
+    # phi input 2: [0, n_def, v_src, n_src]  (neutral + expression normals)
+    path([(150, B), (XJ, B)], head=False),
+    path([(150, A + 20), (XJ, B)], head=False),
+    dot(XJ, B), path([(XJ, B), (XP, B)]),
+    text((XJ + XP) / 2, B - 9, f"[0, {var('n', 'def')}, {var('v', 'src')}, {var('n', 'src')}]", 13),
+    # psi input: [v_src, n_src]  (neutral only)
     net(XP, C - 28, WP, 56, "&#968;", ""),
-    path([(80, B + 100), (80, C), (XP, C)]),
+    path([(80, B + 116), (80, C), (XP, C)]),
+    text((XJ + XP) / 2, C - 9, f"[{var('v', 'src')}, {var('n', 'src')}]", 13),
 ]
 
 # c_d / c_s : predicted cage points (shared framing)
-XC, WC, HC = 362, 84, 100
+XC, WC, HC = 472, 84, 100
 p += [
     img("cage_d", XC, A - HC / 2, WC, HC), box(XC, A - HC / 2, WC, HC, C_CD, "none", rx=4),
     text(XC + WC / 2, A + HC / 2 + 18, var('c', 'd'), 17),
@@ -162,7 +175,7 @@ p += [
 ]
 
 # W (argmax over cage points)
-XW, WW = 368, 94
+XW, WW = 478, 94
 p += [
     img("weight_argmax", XW, C - 50, WW, 100),
     text(XW + WW / 2, C + 64, var('W'), 17),
@@ -170,8 +183,8 @@ p += [
 ]
 
 # blend + outputs
-XB = 512
-XO, WO = 540, 120
+XB = 622
+XO, WO = 650, 120
 p += [
     blend(XB, A), blend(XB, B),
     path([(XC + WC, A), (XB - 15, A)]),
@@ -187,7 +200,7 @@ p += [
 ]
 
 # losses
-XL, WL, HL = 700, 318, 64
+XL, WL, HL = 810, 318, 64
 m_ = var('m')
 p += [
     box(XL, A - HL / 2, WL, HL, C_LOSS, C_LOSS_BG),
