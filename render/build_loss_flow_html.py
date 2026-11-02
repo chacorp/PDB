@@ -133,10 +133,10 @@ def svg_wrap(w, h, parts):
 
 
 # ================================================================ (a) loss flow
-WA, HA = 1560, 640
-A, B, C = 170, 380, 545  # rows: expression / neutral / weight
+WA, HA = 1560, 520
+A, B, C = 100, 295, 455  # rows: expression / neutral / weight
 
-p = [text(14, 30, "(a)", 20, anchor="start", weight="bold")]
+p = [text(4, 18, "(a)", 20, anchor="start", weight="bold")]
 
 # inputs
 p += [
@@ -242,37 +242,27 @@ p += [
     path([(XO + 6 + WO, B), (XL, B)], C_LOSS),
 ]
 
-# L_z above z
-ZX, ZY, ZW, ZH = XZ - 85, 22, 310, 66
-p += [
-    box(ZX, ZY, ZW, ZH, C_LOSS, C_LOSS_BG),
-    text(ZX + 12, ZY + 24, var('L', 'z'), 19, C_LOSS, anchor="start"),
-    text(ZX + ZW - 12, ZY + 24, "&#955; = 0.5", 14, C_SUB, anchor="end"),
-    text(ZX + 12, ZY + 50, f"L<sub>FACS</sub>({var('z')}[:53]) + &#8214;{var('z')}[53:]&#8214;&#178;"
-         f"   (ICT: &#8214;{var('z')} &#8722; {var('e')}&#8214;&#178;)", 13.5, anchor="start"),
-    path([(XZ + WZ / 2, A - 11), (XZ + WZ / 2, ZY + ZH)], C_LOSS),
-]
 
 # total
 TY = C - 40
 BUS = XL + WL + 14
 p += [
     box(XL, TY, WL, 80, C_LOSS, "#ffffff"),
-    text(XL + WL / 2, TY + 32, f"{var('L')} = {var('L', 'def')} + {var('L', 'neu')} + 0.5 {var('L', 'z')}", 18),
+    text(XL + WL / 2, TY + 32, f"{var('L')} = {var('L', 'def')} + {var('L', 'neu')}", 18),
     text(XL + WL / 2, TY + 60, f"&#8711; &#8594; &#966;, g, &#968;", 15, C_LOSS),
     path([(XL + WL, A), (BUS, A)], C_LOSS, head=False),
     path([(XL + WL, B), (BUS, B)], C_LOSS, head=False),
-    path([(ZX + ZW, ZY + ZH / 2), (BUS, ZY + ZH / 2), (BUS, C)], C_LOSS, head=False),
+    path([(BUS, A), (BUS, C)], C_LOSS, head=False),
     path([(BUS, C), (XL + WL + 2, C)], C_LOSS),
 ]
 svg_a = svg_wrap(WA, HA, p)
 
 
 # ================================================================ (b) LinearEncoder
-WB, HB = 1560, 370
-Y1, Y2 = 130, 290  # main path / style path
-q = [text(14, 30, "(b)", 20, anchor="start", weight="bold"),
-     text(60, 30, "LinearEncoder  (shared by &#966;, g, &#968;)", 17, anchor="start")]
+WB, HB = 1560, 300
+Y1, Y2 = 110, 240  # main path / style path
+q = [text(4, 22, "(b)", 20, anchor="start", weight="bold"),
+     text(50, 22, "LinearEncoder  (shared by &#966;, g, &#968;)", 17, anchor="start")]
 
 q += [
     tensor(20, Y1, 100, var('x'), f"{var('N')} &#215; {var('C')}"),
@@ -290,7 +280,7 @@ q += [
     text(MX + 225, Y1 + 6, f"{var('h')} &#8857; &#963;<sub>k</sub>({var('s')}) + &#956;<sub>k</sub>({var('s')})", 16),
     path([(MX + 130, Y1), (MX + 160, Y1)]),
     path([(280, Y1), (MX + 20, Y1)]),
-    text(20, Y2 + 62, "MLP = Linear &#8594; LayerNorm &#8594; LeakyReLU(0.2) &#8594; Linear  (no residual);  MLP&#8325;: 5 Linear layers", 13, C_SUB, anchor="start"),
+    text(20, Y2 + 50, "MLP = Linear &#8594; LayerNorm &#8594; LeakyReLU(0.2) &#8594; Linear  (no residual);  MLP&#8325;: 5 Linear layers", 13, C_SUB, anchor="start"),
 ]
 # output linear
 OX = 710
@@ -330,7 +320,7 @@ q += [
 ]
 
 # module table
-TX, TY0 = 1250, 70
+TX, TY0 = 1250, 55
 cols = [0, 70, 140, 225]
 rows = [
     ("", f"in {var('C')}", "out", "params"),
@@ -357,8 +347,8 @@ html = f"""<!doctype html>
 <title>NGBC loss flow</title>
 <style>
   html, body {{ background:#ffffff; margin:0; font-family:{FONT}; }}
-  .wrap {{ max-width:{WA}px; margin:0 auto; padding:16px; }}
-  svg {{ width:100%; height:auto; display:block; margin-bottom:12px; }}
+  .wrap {{ max-width:{WA}px; margin:0 auto; padding:6px; }}
+  svg {{ width:100%; height:auto; display:block; margin-bottom:4px; }}
 </style>
 </head><body>
 <div class="wrap">
