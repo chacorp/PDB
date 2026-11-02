@@ -84,7 +84,6 @@ def save_cage_plot(V, cage_s, cage_d, out_path):
         ax.plot([s[0], d[0]], [s[1], d[1]], c="#888", lw=0.6, zorder=2)
     ax.set_aspect("equal")
     ax.axis("off")
-    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.08), ncol=2, frameon=False, fontsize=8)
     fig.savefig(out_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
