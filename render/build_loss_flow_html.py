@@ -126,7 +126,7 @@ def svg_wrap(w, h, parts):
 
 
 # ================================================================ (a) loss flow
-WA, HA = 1040, 500
+WA, HA = 1040, 522
 A, B, C = 95, 290, 432  # rows: expression / neutral / weight
 
 p = [text(4, 18, "(a)", 20, anchor="start", weight="bold")]
@@ -150,14 +150,15 @@ p += [
     path([(80, B + 100), (80, C), (XP, C)]),
 ]
 
-# c_d / c_s + cage points between them
-XC, WC, HC = 375, 80, 34
+# c_d / c_s : predicted cage points (shared framing)
+XC, WC, HC = 362, 84, 100
 p += [
-    box(XC, A - HC / 2, WC, HC, C_CD), text(XC + WC / 2, A + 6, var('c', 'd'), 17),
-    box(XC, B - HC / 2, WC, HC, C_CS), text(XC + WC / 2, B + 6, var('c', 's'), 17),
+    img("cage_d", XC, A - HC / 2, WC, HC), box(XC, A - HC / 2, WC, HC, C_CD, "none", rx=4),
+    text(XC + WC / 2, A + HC / 2 + 18, var('c', 'd'), 17),
+    img("cage_s", XC, B - HC / 2, WC, HC), box(XC, B - HC / 2, WC, HC, C_CS, "none", rx=4),
+    text(XC + WC / 2, B + HC / 2 + 18, var('c', 's'), 17),
     path([(XP + WP, A), (XC, A)]),
     path([(XP + WP, B), (XC, B)]),
-    img("cage", XC - 25, A + HC / 2 + 6, WC + 50, B - A - HC - 12),
 ]
 
 # W (argmax over cage points)
@@ -199,6 +200,15 @@ p += [
          f" + &#8214;(1&#8722;{m_})&#8857;({var('v', 'src', True)} &#8722; {var('v', 'src')})&#8214;&#178;", 13.5, anchor="start"),
     path([(XO + 6 + WO, A), (XL, A)], C_LOSS),
     path([(XO + 6 + WO, B), (XL, B)], C_LOSS),
+]
+
+# ground-truth targets (dashed): v_def -> L_def (over the top), v_src -> L_neu (along the bottom)
+GY_TOP, GY_BOT = 8, HA - 10
+p += [
+    path([(80, A - 78), (80, GY_TOP), (XL + WL / 2, GY_TOP), (XL + WL / 2, A - HL / 2)], dash=True),
+    text(XL + WL / 2 - 10, GY_TOP + 18, var('v', 'def'), 15, C_SUB, anchor="end"),
+    path([(80, C), (80, GY_BOT), (XL - 18, GY_BOT), (XL - 18, B + 16), (XL, B + 16)], dash=True),
+    text(XL - 26, GY_BOT - 8, var('v', 'src'), 15, C_SUB, anchor="end"),
 ]
 
 # total

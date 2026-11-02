@@ -12,7 +12,7 @@ test frame (absolute idx 8880, same sample as the design_study figure), full mes
                                        max-displacement vertex)
   - weight_argmax.png                  argmax_m W (dominant cage point per vertex)
   - pred_def.png / pred_neu.png        outputs (same diff scale as expression.png)
-  - cage.png                           cage_s / cage_d points only (front xy projection)
+  - cage_s.png / cage_d.png            cage points (front xy projection, shared framing)
   - exp_z.png                          exp_z (128D) bar plot
   - values.json                        per-sample loss terms + tensor shapes
 
@@ -75,17 +75,24 @@ def save_side_mesh(V, F_, color, out_path, yaw=70):
     )
 
 
-def save_cage_plot(cage_s, cage_d, out_path):
-    """cage_s / cage_d points only (front xy projection), cropped tight to the points."""
-    fig, ax = plt.subplots(figsize=(2.4, 3.0), dpi=300)
-    for s, d in zip(cage_s, cage_d):
-        ax.plot([s[0], d[0]], [s[1], d[1]], c="#999999", lw=0.8, zorder=2)
-    ax.scatter(cage_s[:, 0], cage_s[:, 1], s=18, c="#2b6cb0", linewidths=0, zorder=3)
-    ax.scatter(cage_d[:, 0], cage_d[:, 1], s=18, c="#d1462f", linewidths=0, zorder=4)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    fig.savefig(out_path, bbox_inches="tight", pad_inches=0.01, facecolor="white")
-    plt.close(fig)
+def save_cage_points(cage_s, cage_d, out_dir):
+    """cage_s.png (blue) / cage_d.png (red): one point set each, front xy projection,
+    identical framing (shared limits) so the two images are directly comparable."""
+    both = np.concatenate([cage_s, cage_d])[:, :2]
+    lo, hi = both.min(0), both.max(0)
+    pad = 0.05 * (hi - lo).max()
+    lo, hi = lo - pad, hi + pad
+    w, h = hi - lo
+    for name, pts, color in (("cage_s", cage_s, "#2b6cb0"), ("cage_d", cage_d, "#d1462f")):
+        fig = plt.figure(figsize=(2.4 * w / h, 2.4), dpi=300)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.scatter(pts[:, 0], pts[:, 1], s=45, c=color, linewidths=0)
+        ax.set_xlim(lo[0], hi[0])
+        ax.set_ylim(lo[1], hi[1])
+        ax.set_aspect("equal")
+        ax.axis("off")
+        fig.savefig(out_dir / f"{name}.png", facecolor="white")
+        plt.close(fig)
 
 
 def save_exp_z_plot(z, out_path):
@@ -162,7 +169,7 @@ def main():
     base.save_diff_mesh(V_src, faces, categorical_colors(V_src, faces, W_np.argmax(-1)),
                         OUT_DIR / "weight_argmax.png")
 
-    save_cage_plot(cage_s[0].cpu().numpy(), cage_d[0].cpu().numpy(), OUT_DIR / "cage.png")
+    save_cage_points(cage_s[0].cpu().numpy(), cage_d[0].cpu().numpy(), OUT_DIR)
     save_exp_z_plot(exp_z[0, 0].cpu().numpy(), OUT_DIR / "exp_z.png")
     print("ALL DONE:", OUT_DIR, "m* =", m_star, "v* =", v_star)
 
