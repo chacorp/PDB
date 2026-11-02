@@ -92,8 +92,8 @@ def path(points, color=C_TEN, head=True, dash=False, width=1.4):
 def net(x, y, w, h, sym, name):
     return "".join([
         box(x, y, w, h, C_NET, C_NET_BG),
-        text(x + w / 2, y + h / 2 + 2, sym, 24, C_NET, italic=True),
-        text(x + w / 2, y + h / 2 + 22, name, 12, C_SUB),
+        text(x + w / 2, y + h / 2 + 9, sym, 26, C_NET, italic=True),
+        text(x + w / 2, y + h / 2 + 22, name, 12, C_SUB) if name else "",
     ])
 
 
@@ -126,105 +126,87 @@ def svg_wrap(w, h, parts):
 
 
 # ================================================================ (a) loss flow
-WA, HA = 1320, 520
-A, B, C = 100, 295, 455  # rows: expression / neutral / weight
+WA, HA = 1040, 500
+A, B, C = 95, 290, 432  # rows: expression / neutral / weight
 
 p = [text(4, 18, "(a)", 20, anchor="start", weight="bold")]
 
 # inputs
 p += [
     img("expression", 10, A - 80, 140, 150),
-    text(80, A + 88, "expression", 15),
-    text(80, A + 108, f"({var('v', 'def')}, {var('n', 'def')})", 15),
+    text(80, A + 90, f"expression {var('v', 'def')}", 16),
     img("neutral", 10, B - 80, 140, 150),
-    text(80, B + 88, "neutral", 15),
-    text(80, B + 108, f"({var('v', 'src')}, {var('n', 'src')})", 15),
-]
-XF, WF = 190, 180
-p += [
-    tensor(XF, A, WF, f"[&#916;{var('v')}, {var('n', 'def')}, {var('v', 'src')}, {var('n', 'src')}]", f"{N} &#215; 12"),
-    tensor(XF, B, WF, f"[0, {var('n', 'def')}, {var('v', 'src')}, {var('n', 'src')}]", f"{N} &#215; 12"),
-    tensor(XF, C, WF, f"[{var('v', 'src')}, {var('n', 'src')}]", f"{N} &#215; 6"),
-    path([(150, A - 8), (XF, A - 8)]),
-    path([(150, B - 30), (XF - 2, A + 12)]),
-    path([(150, A + 30), (XF - 2, B - 12)]),
-    path([(150, B + 8), (XF, B + 8)]),
-    path([(80, B + 116), (80, C), (XF, C)]),
+    text(80, B + 90, f"neutral {var('v', 'src')}", 16),
 ]
 
-# phi = exp_z_model -> key_d_model (one model, shared by both branches) -> c_d, c_s
-XP, WP = 410, 150
-XC, WC = 590, 112
+# phi (exp_z_model + key_d_model) -> c_d, c_s ; psi -> W
+XP, WP = 225, 100
 p += [
-    net(XP, A - 32, WP, B - A + 64, "&#966;", "exp_z_model + key_d_model"),
-    path([(XF + WF, A), (XP, A)]),
-    path([(XF + WF, B), (XP, B)]),
-    tensor(XC, A, WC, var('c', 'd'), f"{M} &#215; 3", C_CD),
-    tensor(XC, B, WC, var('c', 's'), f"{M} &#215; 3", C_CS),
+    net(XP, A - 30, WP, B - A + 60, "&#966;", ""),
+    path([(150, A), (XP, A)]),
+    path([(150, B - 20), (XP, A + 22)]),
+    path([(150, B), (XP, B)]),
+    net(XP, C - 28, WP, 56, "&#968;", ""),
+    path([(80, B + 100), (80, C), (XP, C)]),
+]
+
+# c_d / c_s + cage points between them
+XC, WC, HC = 375, 80, 34
+p += [
+    box(XC, A - HC / 2, WC, HC, C_CD), text(XC + WC / 2, A + 6, var('c', 'd'), 17),
+    box(XC, B - HC / 2, WC, HC, C_CS), text(XC + WC / 2, B + 6, var('c', 's'), 17),
     path([(XP + WP, A), (XC, A)]),
     path([(XP + WP, B), (XC, B)]),
-    img("cage", XC - 8, A + 30, WC + 16, B - A - 60),
+    img("cage", XC - 25, A + HC / 2 + 6, WC + 50, B - A - HC - 12),
 ]
 
-# psi -> W
-XZ = 600
+# W (argmax over cage points)
+XW, WW = 368, 94
 p += [
-    net(XP, C - 30, WP, 60, "&#968;", "key_weight_model"),
-    path([(XF + WF, C), (XP, C)]),
-    img("weight_col", XZ - 12, C - 55, 80, 92),
-    img("weight_argmax", XZ + 72, C - 55, 80, 92),
-    text(XZ + 70, C + 58, f"{var('W')}  ({N} &#215; {M}),  &#931;<sub>m</sub> {var('W')} = 1", 15),
-    text(XZ + 28, C + 40, f"{var('W')}[:, m]", 12, C_SUB),
-    text(XZ + 112, C + 40, f"argmax<sub>m</sub> {var('W')}", 12, C_SUB),
-    path([(XP + WP, C), (XZ - 14, C)]),
+    img("weight_argmax", XW, C - 50, WW, 100),
+    text(XW + WW / 2, C + 64, var('W'), 17),
+    path([(XP + WP, C), (XW - 2, C)]),
 ]
 
 # blend + outputs
-XB = 790
-XO, WO = 820, 120
+XB = 512
+XO, WO = 540, 120
 p += [
     blend(XB, A), blend(XB, B),
     path([(XC + WC, A), (XB - 15, A)]),
     path([(XC + WC, B), (XB - 15, B)]),
-    path([(XZ + 156, C), (XB, C), (XB, B + 15)], head=False),
-    path([(XB, C), (XB, B + 15)]),
+    path([(XW + WW + 2, C), (XB, C), (XB, B + 15)]),
     path([(XB - 26, C), (XB - 26, A + 34), (XB - 10, A + 11)]),
-    text(XB + 8, C - 8, var('W'), 15, C_SUB, anchor="start"),
     img("pred_def", XO + 6, A - 75, WO, 140),
     img("pred_neu", XO + 6, B - 75, WO, 140),
-    text(XO + 6 + WO / 2, A + 84, f"{var('v', 'def', hat=True)} = {var('W')}{var('c', 'd')}", 16),
-    text(XO + 6 + WO / 2, B + 84, f"{var('v', 'src', hat=True)} = {var('W')}{var('c', 's')}", 16),
+    text(XO + 6 + WO / 2, A + 88, f"{var('v', 'def', hat=True)} = {var('W')}{var('c', 'd')}", 17),
+    text(XO + 6 + WO / 2, B + 88, f"{var('v', 'src', hat=True)} = {var('W')}{var('c', 's')}", 17),
     path([(XB + 15, A), (XO + 10, A)]),
     path([(XB + 15, B), (XO + 10, B)]),
 ]
 
 # losses
-XL, WL, HL = 970, 320, 70
+XL, WL, HL = 700, 318, 64
 m_ = var('m')
 p += [
     box(XL, A - HL / 2, WL, HL, C_LOSS, C_LOSS_BG),
-    text(XL + 12, A - 10, var('L', 'def'), 19, C_LOSS, anchor="start"),
-    text(XL + WL - 12, A - 10, "&#955; = 1", 14, C_SUB, anchor="end"),
+    text(XL + 12, A - 8, var('L', 'def'), 19, C_LOSS, anchor="start"),
     text(XL + 12, A + 20, f"&#8214;{m_}&#8857;({var('v', 'def', True)} &#8722; {var('v', 'def')})&#8214;&#178;"
          f" + &#8214;(1&#8722;{m_})&#8857;({var('v', 'def', True)} &#8722; {var('v', 'src')})&#8214;&#178;", 13.5, anchor="start"),
     box(XL, B - HL / 2, WL, HL, C_LOSS, C_LOSS_BG),
-    text(XL + 12, B - 10, var('L', 'neu'), 19, C_LOSS, anchor="start"),
-    text(XL + WL - 12, B - 10, "&#955; = 1", 14, C_SUB, anchor="end"),
+    text(XL + 12, B - 8, var('L', 'neu'), 19, C_LOSS, anchor="start"),
     text(XL + 12, B + 20, f"&#8214;{m_}&#8857;({var('v', 'src', True)} &#8722; {var('v', 'src')})&#8214;&#178;"
          f" + &#8214;(1&#8722;{m_})&#8857;({var('v', 'src', True)} &#8722; {var('v', 'src')})&#8214;&#178;", 13.5, anchor="start"),
-    text(XL + 12, B + 58, f"{m_} = hat({var('v', 'src')}) : face mask", 13, C_SUB, anchor="start"),
     path([(XO + 6 + WO, A), (XL, A)], C_LOSS),
     path([(XO + 6 + WO, B), (XL, B)], C_LOSS),
 ]
 
-
 # total
-TY = C - 40
-BUS = XL + WL + 14
+TH = 56
+BUS = XL + WL + 12
 p += [
-    box(XL, TY, WL, 80, C_LOSS, "#ffffff"),
-    text(XL + WL / 2, TY + 32, f"{var('L')} = {var('L', 'def')} + {var('L', 'neu')}", 18),
-    text(XL + WL / 2, TY + 60, f"&#8711; &#8594; &#966;, &#968;", 15, C_LOSS),
+    box(XL, C - TH / 2, WL, TH, C_LOSS, "#ffffff"),
+    text(XL + WL / 2, C + 7, f"{var('L')} = {var('L', 'def')} + {var('L', 'neu')}", 19),
     path([(XL + WL, A), (BUS, A)], C_LOSS, head=False),
     path([(XL + WL, B), (BUS, B)], C_LOSS, head=False),
     path([(BUS, A), (BUS, C)], C_LOSS, head=False),

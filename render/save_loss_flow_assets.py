@@ -12,7 +12,7 @@ test frame (absolute idx 8880, same sample as the design_study figure), full mes
                                        max-displacement vertex)
   - weight_argmax.png                  argmax_m W (dominant cage point per vertex)
   - pred_def.png / pred_neu.png        outputs (same diff scale as expression.png)
-  - cage.png                           cage_s / cage_d points (front xy projection)
+  - cage.png                           cage_s / cage_d points only (front xy projection)
   - exp_z.png                          exp_z (128D) bar plot
   - values.json                        per-sample loss terms + tensor shapes
 
@@ -75,16 +75,16 @@ def save_side_mesh(V, F_, color, out_path, yaw=70):
     )
 
 
-def save_cage_plot(V, cage_s, cage_d, out_path):
-    fig, ax = plt.subplots(figsize=(3.2, 3.6), dpi=200)
-    ax.scatter(V[:, 0], V[:, 1], s=0.6, c="#8a8a8a", linewidths=0)
-    ax.scatter(cage_s[:, 0], cage_s[:, 1], s=10, c="#2b6cb0", label="cage_s", zorder=3)
-    ax.scatter(cage_d[:, 0], cage_d[:, 1], s=10, c="#d1462f", label="cage_d", zorder=4)
+def save_cage_plot(cage_s, cage_d, out_path):
+    """cage_s / cage_d points only (front xy projection), cropped tight to the points."""
+    fig, ax = plt.subplots(figsize=(2.4, 3.0), dpi=300)
     for s, d in zip(cage_s, cage_d):
-        ax.plot([s[0], d[0]], [s[1], d[1]], c="#888", lw=0.6, zorder=2)
+        ax.plot([s[0], d[0]], [s[1], d[1]], c="#999999", lw=0.8, zorder=2)
+    ax.scatter(cage_s[:, 0], cage_s[:, 1], s=18, c="#2b6cb0", linewidths=0, zorder=3)
+    ax.scatter(cage_d[:, 0], cage_d[:, 1], s=18, c="#d1462f", linewidths=0, zorder=4)
     ax.set_aspect("equal")
     ax.axis("off")
-    fig.savefig(out_path, bbox_inches="tight", facecolor="white")
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=0.01, facecolor="white")
     plt.close(fig)
 
 
@@ -162,7 +162,7 @@ def main():
     base.save_diff_mesh(V_src, faces, categorical_colors(V_src, faces, W_np.argmax(-1)),
                         OUT_DIR / "weight_argmax.png")
 
-    save_cage_plot(V_src, cage_s[0].cpu().numpy(), cage_d[0].cpu().numpy(), OUT_DIR / "cage.png")
+    save_cage_plot(cage_s[0].cpu().numpy(), cage_d[0].cpu().numpy(), OUT_DIR / "cage.png")
     save_exp_z_plot(exp_z[0, 0].cpu().numpy(), OUT_DIR / "exp_z.png")
     print("ALL DONE:", OUT_DIR, "m* =", m_star, "v* =", v_star)
 
