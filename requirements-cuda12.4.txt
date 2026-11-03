@@ -10,3 +10,4 @@ easydict==1.13
 tensorboard==2.19.0
 pygeodesic==0.1.9
 # pip install torch_cluster -f https://data.pyg.org/whl/torch-2.1.0+cu121.html --no-cache-dir
+matplotrender @ git+https://github.com/chacorp/matplotrender.git  # for visualization
