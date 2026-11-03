@@ -157,6 +157,7 @@ class NeuralGeneralizedBarycentricCoordinate(nn.Module):
             no_activation=no_activation,
             use_pou=use_pou,
             use_col_norm=not getattr(opts, 'no_col_norm', False),
+            relu_first=getattr(opts, 'relu_first', False),
         ).to(device)
 
         # expression encoder
