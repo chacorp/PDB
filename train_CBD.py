@@ -49,6 +49,7 @@ from utils.ckpt_utils import *
 from utils.remesh_utils import build_padded_neighbors, pca_normal_axis_vectorized
 from utils.exp_utils import plateau_hat_points
 from utils.mesh_utils import calc_norm_torch
+from utils.vertex_augment import sample_vertex_indices
 
 from models.baseline import CageNet
 from models.NGBC import NeuralGeneralizedBarycentricCoordinate
@@ -63,7 +64,8 @@ def Options():
     
     parser.add_argument("--log_dir",      type=str,   default="ckpts_CBD")
 
-    parser.add_argument("--version",      type=int,   default=1,      help='train model (1: baseline, 5: NGBC, 6: PDBplus)')
+    parser.add_argument("--version",      type=int,   default=1,      help='train model (1: baseline, 5: NGBC, 6: PDBplus, 7: PDB2)')
+    parser.add_argument("--heat_alpha",   type=float, default=0.02,   help='PDB2: heat diffusion length / sqrt(mesh area)')
     parser.add_argument("--num_cage_v",   type=int,   default=1024,   help='number of cage vertices')
     
     parser.add_argument("--in_type",      type=int,   default=1,
@@ -92,6 +94,10 @@ def Options():
     parser.add_argument("--use_decimate", dest='use_decimate', action='store_true')
     parser.set_defaults(use_decimate=False)
 
+    # train_v5 vertex-subsampling augmentation
+    parser.add_argument("--data_augment", dest='data_augment', action='store_true')
+    parser.set_defaults(data_augment=False)
+
     #### Choose a last layer activation for key_weight_model()
     parser.add_argument("--last_activation", choices=["relu", "elu", "softmax", "softplus", "none", "sqrelu"],
         help="Choose a last layer activation for NGBC.key_weight_model()"
@@ -99,8 +105,14 @@ def Options():
     
     parser.add_argument("--no_pou",dest='no_pou', action='store_true')
     parser.set_defaults(no_pou=False)
+    # default (None) is resolved after parsing: True for PDBplus (--version 6), else False.
+    # --col_norm forces column-wise norm on (e.g. PDBplus with col norm).
     parser.add_argument("--no_col_norm",dest='no_col_norm', action='store_true')
-    parser.set_defaults(no_col_norm=False)
+    parser.add_argument("--col_norm",dest='no_col_norm', action='store_false')
+    parser.set_defaults(no_col_norm=None)
+    parser.add_argument("--relu_first",dest='relu_first', action='store_true',
+        help='relu: ReLU -> column-wise norm -> row-wise norm (default: column-wise norm -> ReLU -> row-wise norm)')
+    parser.set_defaults(relu_first=False)
     
     parser.add_argument("--pou_loss",dest='pou_loss', action='store_true')
     parser.set_defaults(pou_loss=False)
@@ -142,6 +154,9 @@ def Options():
     parser.set_defaults(use_data2=False)
     parser.add_argument("--use_data3",dest='use_data3', action='store_true')
     parser.set_defaults(use_data3=False)
+    parser.add_argument("--use_data4",dest='use_data4', action='store_true',
+        help='coma + biwi + mf (SEN+ROM) + ict')
+    parser.set_defaults(use_data4=False)
     parser.add_argument("--use_data9",dest='use_data9', action='store_true')
     parser.set_defaults(use_data9=False)
     parser.add_argument("--use_data8",dest='use_data8', action='store_true')
@@ -157,8 +172,13 @@ def Options():
     
     parser.add_argument("--align_latent",dest='align_latent', action='store_true')
     parser.set_defaults(align_latent=False)
-    
+
     args = parser.parse_args()
+    if args.no_col_norm is None:
+        # PDBplus default: no column-wise norm (relu_first needs col norm, so keep it then)
+        args.no_col_norm = (args.version == 6) and not args.relu_first
+    if args.relu_first and args.no_col_norm:
+        parser.error("--relu_first and --no_col_norm can not be used together")
     return args
 
 
@@ -177,9 +197,10 @@ class Trainer():
     def __init__(self, opts):
         # set opts
         self.opts = opts
-        if opts.version == 6:
-            if opts.out_type != 0:
-                raise ValueError('PDBplus requires --version 6 --out_type 0.')
+        if opts.version in (6, 7):
+            allowed_out = (0, 4) if opts.version == 6 else (0,)
+            if opts.out_type not in allowed_out:
+                raise ValueError(f'version {opts.version} requires --out_type in {allowed_out}.')
             if opts.use_cyclic_loss:
                 raise ValueError('PDBplus cyclic loss is not implemented; omit --use_cyclic_loss.')
             if opts.use_dist_loss:
@@ -195,11 +216,14 @@ class Trainer():
         
         if opts.version==1:
             self.model = CageNet(device=self.device, optim_cage=self.opts.optim_cage)
-        elif opts.version in (5, 6):
+        elif opts.version in (5, 6, 7):
             model_cls = NeuralGeneralizedBarycentricCoordinate
             if opts.version == 6:
                 from models.PDBplus import PDBplus
                 model_cls = PDBplus
+            elif opts.version == 7:
+                from models.PDB2 import PDB2
+                model_cls = PDB2
             self.model = model_cls(
                 opts, num_layers=4,
                 num_cage_vertices=self.opts.num_cage_v,
@@ -211,6 +235,7 @@ class Trainer():
                 use_softmax=last_act_list[2],
                 use_softplus=last_act_list[3],
                 no_activation=last_act_list[4],
+                use_sqrelu=last_act_list[5],
                 use_least_N_on_V=False,
                 is_train=True,
                 use_pou = not self.opts.no_pou,
@@ -711,6 +736,10 @@ class Trainer():
         
         return template, vertices, scale, trans
 
+    def _model_kw(self, batch):
+        """PDB2 (version 7) needs the mesh faces for its surface heat operator."""
+        return {'faces': batch.faces} if self.opts.version == 7 else {}
+
     def _neutral_prediction_vertices(self, pred_source, template):
         """NGBC delta outputs need grounding; PDBplus already returns positions."""
         if self.opts.version == 6 or self.model.use_full_vertex:
@@ -997,8 +1026,14 @@ class Trainer():
                     ## random sampling and random permutation
                     N = batch.template.shape[1]
                     use_perm = torch.rand(1) > 0.3
+                    if self.opts.version == 7:  # PDB2 runs a heat solve on the full mesh: no vertex subsampling
+                        use_perm = False
                     # use_perm= False
-                    if use_perm:
+                    if self.opts.data_augment and self.opts.version != 7:
+                        # sparse, non-uniform density, holes
+                        randperm_idx, use_perm = sample_vertex_indices(batch.template[0])
+                        randperm_idx = randperm_idx.to(batch.template.device)
+                    elif use_perm:
                         N_range = N-torch.randint(100, N//6, (1,)).item()
                         randperm_idx = torch.randperm(N)[:N_range]
                     else:
@@ -1022,7 +1057,7 @@ class Trainer():
                 pred_vertices, recon_vertices, recon_source, exp_z, \
                 pred_source, t_mask, pred_key_weight, pred_cage_s, pred_cage_d = self.model(
                     batch_template_v, batch_vertices_v, batch_template_n, batch_vertices_n,
-                    batch.mesh_data, epoch=epoch
+                    batch.mesh_data, epoch=epoch, **self._model_kw(batch)
                 )
                 # cage-consistency target: only needed when the loss is enabled, and it's a
                 # stop-gradient target so no graph needs to be built for it.
@@ -1031,7 +1066,7 @@ class Trainer():
                         _, _, _, _, \
                         _, _, _, pred_cage_s_full, pred_cage_d_full = self.model(
                             batch.template, batch.vertices, batch.template_normal, batch.vertices_normal,
-                            batch.mesh_data, epoch=epoch
+                            batch.mesh_data, epoch=epoch, **self._model_kw(batch)
                         )
                 # ------------------------------------------------------------------------------------------------
 
@@ -1261,7 +1296,7 @@ class Trainer():
                         pred_vertices, _, _, exp_z, key_d, key_weight = self.model(
                             batch.template[IDX], batch.vertices[IDX],
                             batch.template_normal[IDX], batch.vertices_normal[IDX],
-                            batch.mesh_data, epoch=epoch, out_kw=True
+                            batch.mesh_data, epoch=epoch, out_kw=True, **self._model_kw(batch)
                         )
                     # for visualization
                     vertices = batch.vertices.cpu()
@@ -1394,7 +1429,7 @@ class Trainer():
                         pred_source, _, pred_weight, pred_cage_s, pred_cage_d = self.model(
                             batch.template, batch.vertices,
                             batch.template_normal, batch.vertices_normal,
-                            batch.mesh_data, epoch=epoch
+                            batch.mesh_data, epoch=epoch, **self._model_kw(batch)
                         )
                     # ------------------------------------------------------------------------------------------------
                 
