@@ -64,10 +64,14 @@ from utils.matplotlib_rnd import plot_image_array  # noqa: E402
 from utils.remesh_utils import ICT_face_model  # noqa: E402
 
 MODELS = [
-    ("baseline", "./ckpts_CBD7/2026-08-03-09-09-59-NGBCv5"),
-    ("cage-consistency+mask", "./ckpts_CBD8/2026-09-06-16-56-01-NGBCv5"),
-    ("cyclic+mask", "./ckpts_CBD8/2026-09-06-23-43-19-NGBCv5"),
-    ("cage+cyclic+mask", "./ckpts_CBD8/2026-09-07-08-23-51-NGBCv5"),
+    # align_latent=False generation (matches design_study's relu-chosen schedule:
+    # sc_step=20, batch=16, lr=2e-4, use_data1), replacing the earlier
+    # align_latent=True set. PDBplus (different architecture, out_type=0 only)
+    # dropped from this gallery.
+    ("baseline", "./ckpts_CBD/2026-09-14-22-59-50-NGBCv5", {}),
+    ("cage-consistency+mask", "./ckpts_CBD8/2026-09-21-00-47-38-NGBCv5", {}),
+    ("cyclic+mask", "./ckpts_CBD8/2026-09-21-06-49-16-NGBCv5", {}),
+    ("cage+cyclic+mask", "./ckpts_CBD8/2026-09-21-14-16-37-NGBCv5", {}),
 ]
 
 MF_TEST_IDX = 12
@@ -186,7 +190,7 @@ def clear_filter():
     _active_filter["indices"] = None
 
 
-def build_opts(ckpt):
+def build_opts(ckpt, override=None):
     opts = Options()
     opts.ckpt = ckpt
     opts.version = 5
@@ -196,8 +200,15 @@ def build_opts(ckpt):
     opts = argparse.Namespace(**opts_yaml)
     opts.use_t_mask = True
     opts.continue_ckpt = False
-    opts.align_latent = True
+    # NOTE: previously hardcoded True here because the old 4 mask-ablation
+    # checkpoints were all align_latent=True. The 2026-09-21 refresh checkpoints
+    # are align_latent=False (hid_dim=256 vs 128), so this must come from each
+    # checkpoint's own train_opts.yml (via Options()'s argparse default False)
+    # instead of being forced -- hardcoding it wrong causes a hid_dim mismatch
+    # and load_state_dict shape errors.
     opts.batch_size = 1
+    for k, v in (override or {}).items():
+        setattr(opts, k, v)
     eval_CBD_cyc.opts = opts  # save_vis_data references the bare module-level name
     return opts
 
@@ -315,9 +326,9 @@ def run_scenario(pipeline, ckpt, model_name, scenario):
 
 
 def main():
-    for model_name, ckpt in MODELS:
+    for model_name, ckpt, override in MODELS:
         print(f"\n========== {model_name} ({ckpt}) ==========")
-        opts = build_opts(ckpt)
+        opts = build_opts(ckpt, override)
         trainer = Trainer(opts)
         pipeline = Pipeline(opts)
         pipeline.model = trainer.model

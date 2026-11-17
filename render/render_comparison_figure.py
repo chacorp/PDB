@@ -40,7 +40,8 @@ def _is_repo(p):
 _repo_paths = [p for p in sys.path if _is_repo(p)]
 sys.path = [p for p in sys.path if not _is_repo(p)]
 try:
-    from matplotrender import plot_mesh_gouraud, calc_face_norm  # noqa: E402
+    from matplotrender import plot_mesh_gouraud  # noqa: E402
+    from matplotrender.utils import calc_face_norm  # noqa: E402
 finally:
     sys.path[:0] = _repo_paths
     for _m in [m for m in sys.modules if m == "utils" or m.startswith("utils.")]:

@@ -1,6 +1,6 @@
 """
 Supplementary video, stage 2: render each output separately as a PNG sequence
-with pyrender (OSMesa, plain shading -- no diff heatmap) from
+with pyrender (EGL, plain shading -- no diff heatmap) from
 the per-frame cache of render/supp_video_infer.py:
     vis_CBD/supp_video/cells/{video}/{scenario}/ref/source_neutral.png, target_neutral.png
     vis_CBD/supp_video/cells/{video}/{scenario}/source_expression/frame_XXXXXX.png
@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")  # GPU offscreen; PYOPENGL_PLATFORM=osmesa for CPU
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -28,7 +28,20 @@ from utils.matplotlib_rnd import fix_triangle_widning  # noqa: E402
 
 VERTS_ROOT = REPO_ROOT / "vis_CBD" / "supp_video" / "verts"
 CELLS_ROOT = REPO_ROOT / "vis_CBD" / "supp_video" / "cells"
-CELL_PX = {"design_study": 256, "comparison": 400, "loss_ablation": 400}
+CELL_PX = {"design_study": 320, "comparison": 400, "loss_ablation": 400}
+BASE_DIST = 4.6   # render_trimesh_gpu_pyrender: camera at z=1, mesh around z=-3.6
+CAM_DIST = 18.0   # camera-mesh distance used here (between 4.6 and an almost-orthographic 30)
+F_DIST = 15.0     # f is scaled as for this distance (f kept from the CAM_DIST=15 setting)
+CLIP_MARGIN = 0.25  # outputs are clipped to the identity neutral's bbox grown by this fraction per side
+
+
+def clip_box(neutral):
+    """bbox of the identity neutral grown by CLIP_MARGIN of its extent: diverged outputs
+    (e.g. NC cyclic, coordinates in the thousands) are clamped into view instead of
+    vanishing outside the camera; outputs inside the box are unchanged"""
+    lo, hi = neutral.min(0), neutral.max(0)
+    m = (hi - lo) * CLIP_MARGIN
+    return lo - m, hi + m
 
 
 class CellRenderer:
@@ -39,11 +52,16 @@ class CellRenderer:
 
     def __init__(self, size):
         self.size = size
-        k = size / 800.0
+        # weaker perspective: the camera is pulled back from 4.6 to CAM_DIST from the mesh and
+        # f is scaled by the same ratio (same framing); near/far tightened around the mesh to
+        # keep depth precision
+        k = size / 800.0 * F_DIST / BASE_DIST
         cam = pyrender.IntrinsicsCamera(fx=4754.97941935 / 2 * k, fy=4754.97941935 / 2 * k,
-                                        cx=size / 2, cy=size / 2, znear=0.001, zfar=10.0)
+                                        cx=size / 2, cy=size / 2,
+                                        znear=CAM_DIST - 3.0, zfar=CAM_DIST + 3.0)
         self.scene = pyrender.Scene(ambient_light=[.2, .2, .2], bg_color=[0, 0, 0])
-        self.scene.add(cam, pose=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 1], [0, 0, 0, 1]])
+        cam_z = 1.0 + (CAM_DIST - BASE_DIST)
+        self.scene.add(cam, pose=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, cam_z], [0, 0, 0, 1]])
         light = pyrender.DirectionalLight(color=np.array([1.0, 1.0, 1.0]), intensity=1.0)
         angle, camera_pos = np.pi / 4.0, np.array([0.0, 0.0, 1.0 - 1.3])
         for lrot in [None, np.array([angle, 0, 0]), np.array([-angle, 0, 0]),
@@ -84,19 +102,20 @@ def main():
             p = out / "ref" / f"{name}.png"
             if not p.exists():
                 rnd.render(V, F, p)
-        # (output folder, faces): source expression + every model / row
-        jobs = [(ref / "source_expression", out / "source_expression", f_src)]
+        # (output folder, faces, clip box): source expression + every model / row
+        src_box, tgt_box = clip_box(src_n), clip_box(tgt_n)
+        jobs = [(ref / "source_expression", out / "source_expression", f_src, src_box)]
         for mdir in sorted(p for p in sc_dir.iterdir() if p.is_dir() and p.name != "ref"):
-            for row, F in [("self", f_src), ("cross", f_tgt), ("cyclic", f_src)]:
-                jobs.append((mdir / row, out / mdir.name / row, F))
+            for row, F, box in [("self", f_src, src_box), ("cross", f_tgt, tgt_box), ("cyclic", f_src, src_box)]:
+                jobs.append((mdir / row, out / mdir.name / row, F, box))
         n = 0
-        for vdir, cdir, F in jobs:
+        for vdir, cdir, F, box in jobs:
             for vp in sorted(vdir.glob("frame_*.npy")):
                 if only and int(vp.stem.split("_")[1]) not in only:
                     continue
                 cp = cdir / f"{vp.stem}.png"
                 if not cp.exists():
-                    rnd.render(np.load(vp), F, cp)
+                    rnd.render(np.clip(np.load(vp), *box), F, cp)
                     n += 1
         print(f"{video}/{sc_dir.name}: rendered {n} cells", flush=True)
     rnd.close()

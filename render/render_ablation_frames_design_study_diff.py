@@ -41,7 +41,7 @@ import numpy as np  # noqa: E402
 # the eval_cyc/ reuse-or-filtered-run helpers, so none of that is duplicated.
 import render_ablation_frames_design_study as base  # noqa: E402
 from eval_CBD import Trainer  # noqa: E402
-from utils.matplotlib_rnd import plot_image_array_diff  # noqa: E402
+from utils.matplotlib_rnd import plot_image_array  # noqa: E402
 
 REPO_ROOT = base.REPO_ROOT
 OUT_ROOT = REPO_ROOT / "vis_CBD" / "vis_design_study_diff"
@@ -130,11 +130,17 @@ def main():
             out_dir.mkdir(parents=True, exist_ok=True)
             for fr in all_data[(ckpt, key)]:
                 name = f"frame_{fr['frame_idx']:06d}"
-                plot_image_array_diff(
-                    fr["v"], fr["f"], fr["d"],
-                    rot_list=[[0, 0, 0]] * 5,  # plot_image_array_diff indexes rot_list[idx+1]
-                    size=8, bg_black=False, draw_base=False,
-                    vmin=0.0, vmax=vmax,
+                # Same call shape (rot_list/size/mode/bg_black/M_SCALE-equivalent) as
+                # render_ablation_frames_design_study.py's render_frame, so this goes
+                # through the identical camera path as the plain shaded render of the
+                # same mesh -- only is_diff/diff_base/vmin/vmax differ.
+                M_SCALE = 0.6
+                v_scaled = [v * M_SCALE for v in fr["v"]]
+                d_scaled = [d * M_SCALE for d in fr["d"]]
+                plot_image_array(
+                    v_scaled, fr["f"],
+                    rot_list=[[0, 0, 0]] * 4, size=8, mode="shade", bg_black=False,
+                    is_diff=True, diff_base=d_scaled, vmin=0.0, vmax=vmax * M_SCALE,
                     logdir=str(out_dir), name=name, save=True,
                 )
                 print(f"  [saved] {out_dir / (name + '.png')}")

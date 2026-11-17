@@ -248,7 +248,7 @@ def render_frame_multi(
 
 
 # ── main render loop ───────────────────────────────────────────────────────────
-def render_all(debug: bool = False):
+def render_all(debug: bool = False, start: int = 0):
     from PIL import Image
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -257,11 +257,12 @@ def render_all(debug: bool = False):
 
     print("Loading mesh topologies...")
     faces_cache = {}
-    for _, mesh_type, _ in SEQUENCES:
-        if mesh_type not in faces_cache:
-            _, f = get_mesh(mesh_type)
-            faces_cache[mesh_type] = f
-            print(f"  {mesh_type}: faces={f.shape}")
+    for seq_name, mesh_type, _ in SEQUENCES:
+        # faces.npy saved next to verts (save_dynamic_6faces_data.py); get_mesh needs torch
+        fp = os.path.join(VIS_DIR, seq_name, 'faces.npy')
+        f = np.load(fp) if os.path.exists(fp) else get_mesh(mesh_type)[1]
+        faces_cache[seq_name] = f
+        print(f"  {seq_name}: faces={f.shape}")
 
     print("Loading npy paths...")
     seq_data = []
@@ -270,21 +271,22 @@ def render_all(debug: bool = False):
         paths   = sorted(glob(os.path.join(npy_dir, '*.npy')))
         if not paths:
             raise FileNotFoundError(f"No .npy in {npy_dir}")
-        seq_data.append((paths, mesh_type, x_off))
+        seq_data.append((paths, seq_name, x_off))
         print(f"  {seq_name}: {len(paths)} frames, x={x_off}")
 
     n_frames = min(len(p) for p, _, _ in seq_data)
-    frame_indices = DEBUG_FRAMES if debug else list(range(n_frames))
+    # start > 0: frames before it come from render_weight_vis.py (weight_vis_combined)
+    frame_indices = DEBUG_FRAMES if debug else list(range(start, n_frames))
     print(f"\nRendering {len(frame_indices)} frames  ({W}x{H})")
 
     for i in tqdm(frame_indices, desc='frames'):
         cam_dist, cam_tx = camera_interp(i)
 
         verts_list = []
-        for (paths, mesh_type, x_off) in seq_data:
+        for (paths, seq_name, x_off) in seq_data:
             idx   = min(i, len(paths) - 1)
             verts = np.load(paths[idx])
-            faces = faces_cache[mesh_type]
+            faces = faces_cache[seq_name]
             verts_list.append((verts, faces, x_off))
 
         alphas = face_alphas_at(i)
@@ -313,8 +315,9 @@ def render_all(debug: bool = False):
             fh.write(f"duration {1/FPS:.6f}\n")
 
     subprocess.run([
-        'ffmpeg', '-y',
+        '/usr/bin/ffmpeg', '-y',  # system ffmpeg has libx264 (the conda one does not)
         '-framerate', str(FPS),
+        '-start_number', str(start),
         '-i', os.path.join(frame_dir, '%06d.png'),
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
         mp4_path,
@@ -326,5 +329,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--debug', action='store_true',
                         help='Render 6 key frames only (no MP4)')
+    parser.add_argument('--start', type=int, default=0,
+                        help='first frame to render (200 for weight_vis_combined)')
     args = parser.parse_args()
-    render_all(debug=args.debug)
+    render_all(debug=args.debug, start=args.start)

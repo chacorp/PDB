@@ -74,11 +74,12 @@ MODELS = [
     ("no activation",        "./ckpts_CBD/2025-09-30-16-28-51-NGBCv5", {"last_activation": "none"}),
     ("softplus",             "./ckpts_CBD/2025-09-28-14-50-34-NGBCv5", {"last_activation": "softplus"}),
     ("elu",                  "./ckpts_CBD/2025-10-08-02-55-02-NGBCv5", {"last_activation": "elu"}),
-    ("relu (chosen)",        "./ckpts_CBD/2025-10-23-17-32-49-NGBCv5", {}),
-    ("delta (displacement)", "./ckpts_CBD/2025-10-22-16-22-45-NGBCv5", {}),
-    ("matrix (transform)",   "./ckpts_CBD/2025-10-22-16-26-26-NGBCv5", {}),
+    ("relu (chosen)",        "./ckpts_CBD/2026-09-14-22-59-50-NGBCv5", {}),
+    ("delta (displacement)", "./ckpts_CBD/2026-09-13-15-13-52-NGBCv5", {}),
+    ("matrix (transform)",   "./ckpts_CBD/2026-09-13-20-06-46-NGBCv5", {}),
     ("soft POU",             "./ckpts_CBD/2025-10-03-22-40-03-NGBCv5", {"no_pou": True}),
     ("w/o mask",             "./ckpts_CBD/2025-09-26-10-16-32-NGBCv5", {"last_activation": "relu"}),
+    ("PDBplus",              "./ckpts_CBD8/2026-09-15-23-20-58-PDBplusv6", {"version": 6}),
 ]
 
 MF_TEST_IDX = 12

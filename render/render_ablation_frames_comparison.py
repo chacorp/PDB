@@ -85,6 +85,16 @@ MODEL_SETS = {
         ("PDB", "./ckpts_CBD8/2026-09-16-02-19-03-NGBCv5", 5, {}),
         ("PDB-cont", "./ckpts_CBD8/2026-10-08-22-31-39-NGBCv5", 5, {}),
     ],
+    # --no_col_norm model, shown in the PDB column of vis_comparison-3.html
+    "no_col_norm": [
+        ("PDB", "./ckpts_CBD/2026-11-04-01-05-29-NGBCv5", 5, {}),
+    ],
+    # PDBplus (version 6) out_type 0, extra column of vis_comparison-4.html.
+    # last_activation must be forced: Options()' argparse default (relu) overrides train_opts.yml.
+    "pdbplus_out0": [
+        ("PDBplus-out0", "./ckpts_PDBplus_ds/out_type0/2026-11-13-08-57-46-PDBplusv6", 6,
+         {"last_activation": "sqrelu"}),
+    ],
 }
 COMPARISON_SET = os.environ.get("COMPARISON_SET", "main")
 

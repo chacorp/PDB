@@ -45,8 +45,8 @@ from render_mitsuba import (
 )
 
 # ── Paths ───────────────────────────────────────────────────────────────────────
-DATA_DIR = os.path.join(ROOT, 'vis_CBD', '2026-04-27-15-36-49-NGBCv5',
-                        'ict-cap-ID_000_test-to-ict-neutral_01-masked')
+DATA_DIR = os.path.join(ROOT, 'vis_CBD', '2026-04-27-15-36-49-NGBCv5-best',
+                        'ict-cap-ID_000_test-to-ict-neutral_01-masked')  # save_dynamic_6faces_data.py
 OUT_DIR  = os.path.join(ROOT, 'video_mi')
 
 # ── Timeline ────────────────────────────────────────────────────────────────────
@@ -424,8 +424,12 @@ def render_all(debug: bool = False):
     print(f"  key_weight shape={key_weight.shape},  key_d frames={len(key_d_all)}")
 
     # ── Mesh topology ────────────────────────────────────────────────────────
-    from utils.remesh_utils import ICT_face_model
-    faces = ICT_face_model().faces
+    faces_path = os.path.join(DATA_DIR, 'faces.npy')   # saved by save_weight_vis_data.py
+    if os.path.exists(faces_path):
+        faces = np.load(faces_path)
+    else:
+        from utils.remesh_utils import ICT_face_model
+        faces = ICT_face_model().faces
     print(f"  faces shape={faces.shape}")
 
     # ── Colormaps (constant across frames) ───────────────────────────────────
@@ -464,7 +468,7 @@ def render_all(debug: bool = False):
 
     mp4_path = os.path.join(OUT_DIR, 'weight_vis.mp4')
     subprocess.run([
-        'ffmpeg', '-y',
+        '/usr/bin/ffmpeg', '-y',  # system ffmpeg has libx264 (the conda one does not)
         '-framerate', str(FPS),
         '-i', os.path.join(frame_dir, '%06d.png'),
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
